@@ -1,15 +1,21 @@
 const APP_PREFIX: &'static str = "tsk";
 const DATABASE: &'static str = "tsk.db";
 const CONFIG: &'static str = "config.toml";
+use crate::error::{Error, Result};
 use std::path::PathBuf;
 use xdg;
-
-const XDG_DIRS: xdg::BaseDirectories = xdg::BaseDirectories::with_prefix(APP_PREFIX).unwrap();
+impl From<xdg::BaseDirectoriesError> for Error {
+    fn from(value: xdg::BaseDirectoriesError) -> Self {
+        Error::Internal(format!("Error getting XDG_DIRS: {value:?}"))
+    }
+}
 
 pub(super) fn get_database_file() -> Result<PathBuf> {
-    XDG_DIRS.place_state_file(&DATABASE)
+    let xdg_dirs = xdg::BaseDirectories::with_prefix(APP_PREFIX)?;
+    Ok(xdg_dirs.place_state_file(&DATABASE)?)
 }
 
 pub fn get_config_file() -> Result<PathBuf> {
-    XDG_DIRS.place_config_file(&CONFIG)
+    let xdg_dirs = xdg::BaseDirectories::with_prefix(APP_PREFIX)?;
+    Ok(xdg_dirs.place_config_file(&CONFIG)?)
 }

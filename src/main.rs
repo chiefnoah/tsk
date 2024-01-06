@@ -1,21 +1,26 @@
-mod app;
 mod config;
 mod db;
 mod error;
+use crate::db::Db;
+use crate::error::Result;
+//use chrono::{DateTime, Utc};
 use crossterm::{
     event::{self, KeyCode, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use chrono::{DateTime, Utc};
 use ratatui::{
     prelude::{CrosstermBackend, Stylize, Terminal},
     widgets::Paragraph,
 };
-use std::io::{stdout, Result};
-
+use std::io::stdout;
+use log::debug;
 
 fn main() -> Result<()> {
+    env_logger::init();
+    debug!("Initializing db...");
+    let _db = Db::new()?;
+    debug!("Initialized db.");
     stdout().execute(EnterAlternateScreen)?;
     enable_raw_mode()?;
 
