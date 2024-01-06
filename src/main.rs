@@ -1,3 +1,7 @@
+mod app;
+mod config;
+mod db;
+mod error;
 use crossterm::{
     event::{self, KeyCode, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -9,7 +13,6 @@ use ratatui::{
     widgets::Paragraph,
 };
 use std::io::{stdout, Result};
-mod app;
 
 
 fn main() -> Result<()> {

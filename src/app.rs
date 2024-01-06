@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use chrono::{DateTime, Utc};
 use sqlite::Connection;
+
 struct Task {
     created: DateTime<Utc>,
     resolved: Option<DateTime<Utc>>,
