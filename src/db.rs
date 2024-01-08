@@ -19,6 +19,13 @@ CREATE TABLE IF NOT EXISTS 'TAG' (
 	'NAME'	TEXT NOT NULL UNIQUE,
 	PRIMARY KEY('NAME')
 );
+CREATE TABLE IF NOT EXISTS 'TASK' (
+	'ID'	INTEGER NOT NULL UNIQUE,
+	'TITLE'	TEXT NOT NULL,
+	'CREATED'	INTEGER NOT NULL DEFAULT (datetime('now', 'localtime')),
+	'PRIORITY'	INTEGER NOT NULL DEFAULT 4294967295,
+	PRIMARY KEY('ID' AUTOINCREMENT)
+);
 CREATE TABLE IF NOT EXISTS 'TASK_CONTENT' (
 	'TASK_ID'	INTEGER NOT NULL,
 	'BODY'	TEXT,
@@ -33,10 +40,6 @@ CREATE TABLE IF NOT EXISTS 'TASK_STATUS' (
 	'TASK_ID'	INTEGER NOT NULL,
 	FOREIGN KEY('TASK_ID') REFERENCES 'TASK'('ID') ON DELETE CASCADE,
 	PRIMARY KEY('UPDATED','TASK_ID')
-);
-CREATE TABLE IF NOT EXISTS 'TAG' (
-	'NAME'	TEXT NOT NULL UNIQUE,
-	PRIMARY KEY('NAME')
 );
 CREATE TABLE IF NOT EXISTS 'RELATIONSHIP' (
 	'LEFT'	INTEGER NOT NULL,
@@ -75,25 +78,23 @@ impl Db {
         Ok(())
     }
 
-    pub(super) fn create_task(&self, title: String, priority: Option<u64>) -> Result<u64> {
+    pub(super) fn create_task(&mut self, title: String, priority: Option<u64>) -> Result<u64> {
+        let conn = &mut self.conn;
+        let tx = conn.transaction()?;
         if let Some(priority) = priority {
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO TASK(TITLE, PRIORITY) VALUES(?, ?)",
                 (title, priority),
             )?;
         } else {
-            self.conn
-                .execute("INSERT INTO TASK(TITLE) VALUES(?)", (title,))?;
+            tx.execute("INSERT INTO TASK(TITLE) VALUES(?)", (title,))?;
         }
-        let row_id = self.conn.last_insert_rowid();
-        let task_id =
-            self.conn
-                .query_row("SELECT ID FROM TASK WHERE ROWID = ?", (row_id,), |row| {
-                    row.get(0)
-                })?;
-        self.conn
-            .execute("INSERT INTO TASK_STATUS(TASK_ID)", (task_id,))?;
-        // TODO: create status
+        let row_id = tx.last_insert_rowid();
+        let task_id = tx.query_row("SELECT ID FROM TASK WHERE ROWID = ?", (row_id,), |row| {
+            row.get(0)
+        })?;
+        tx.execute("INSERT INTO TASK_STATUS(TASK_ID)", (task_id,))?;
+        tx.commit()?;
         Ok(task_id)
     }
 
@@ -125,12 +126,12 @@ impl Db {
     }
 
     pub(super) fn get_task(&self, task_id: u64) -> Result<Task> {
-        let task_int: u8 = self.conn.query_row(
+        let status_int: u8 = self.conn.query_row(
             "SELECT STATE FROM TASK_STATUS WHERE TASK_ID = ? HAVING MAX(UPDATED)",
             (task_id,),
             |row| row.get(0),
         )?;
-        let task_status: TaskStatus = task_int.try_into()?;
+        let task_status: TaskStatus = status_int.try_into()?;
         let mut task = self.conn.query_row(
             "SELECT TASK(TITLE, CREATED, PRIORITY) WHERE TASK_ID = ?",
             (task_id,),
@@ -168,5 +169,33 @@ impl Db {
             task.content = Some(content);
         }
         Ok(task)
+    }
+
+    pub(super) fn get_top_n_tasks(&self, n: u16) -> Result<Vec<Task>> {
+        let mut out = Vec::with_capacity(n.into());
+        let mut stmt = self.conn.prepare(
+            "SELECT TASK.ID, TASK_STATUS.STATUS, TASK.TITLE, TASK.CREATED, TASK.PRIORITY
+                      FROM TASK
+                      JOIN TASK_STATUS ON TASK_STATUS.TASK_ID = TASK.ID
+                      GROUP BY TASK_STATUS.TASK_ID
+                      HAVING MAX(TASK_STATUS.UPDATED)
+                      ORDER BY TASK.PRIORITY
+                      LIMIT ?;",
+        )?;
+        let mut rows = stmt.query((n,))?;
+        while let Some(row) = rows.next()? {
+            let status_int: u8 = row.get(1)?;
+            let status: TaskStatus = status_int.try_into()?;
+            out.push(Task::new(
+                row.get(0)?,
+                status,
+                row.get(2)?,
+                DateTime::from_timestamp(row.get(3)?, 0)
+                    .or(DateTime::from_timestamp(0, 0))
+                    .unwrap(),
+                row.get(4)?,
+            ));
+        }
+        Ok(out)
     }
 }

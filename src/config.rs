@@ -4,6 +4,17 @@ const CONFIG: &'static str = "config.toml";
 use crate::error::{Error, Result};
 use std::path::PathBuf;
 use xdg;
+
+pub(crate) struct Config {
+    pub num_top_tasks: u16,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { num_top_tasks: 10 }
+    }
+}
+
 impl From<xdg::BaseDirectoriesError> for Error {
     fn from(value: xdg::BaseDirectoriesError) -> Self {
         Error::Internal(format!("Error getting XDG_DIRS: {value:?}"))

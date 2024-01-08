@@ -936,8 +936,30 @@ dependencies = [
  "parsell",
  "ratatui",
  "rusqlite",
+ "tui-textarea",
+ "tui-widget-list",
  "uris",
  "xdg",
+]
+
+[[package]]
+name = "tui-textarea"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3e38ced1f941a9cfc923fbf2fe6858443c42cc5220bfd35bdd3648371e7bd8e"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "unicode-width",
+]
+
+[[package]]
+name = "tui-widget-list"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04f1ae8d52324edc08600c7e3583f104c5872138f95b35572f6f9e068990192e"
+dependencies = [
+ "ratatui",
 ]
 
 [[package]]

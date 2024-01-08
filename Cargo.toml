@@ -15,5 +15,7 @@ open = "5.0.1"
 parsell = "0.6.5"
 ratatui = { version = "0.25.0", features = ["all-widgets"] }
 rusqlite = "0.30.0"
+tui-textarea = "0.4.0"
+tui-widget-list = "0.6.0"
 uris = "0.1.1"
 xdg = "2.5.2"
