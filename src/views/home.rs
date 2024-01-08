@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 use crate::{
     config::Config,
     db::Db,
@@ -9,7 +9,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use log::error;
+use log::{error, debug};
 use ratatui::{
     prelude::*,
     style::Style,
@@ -25,23 +25,34 @@ pub(crate) enum AppState {
     Exit,
 }
 
-pub(crate) fn render_home(term: &mut Terminal, db: &mut Db, config: &Config) -> Result<AppState> {
+pub(crate) fn render_home<B>(
+    term: &mut Terminal<B>,
+    db: &mut Db,
+    config: &Config,
+) -> Result<AppState>
+where
+    B: Backend,
+{
     let tasks = db.get_top_n_tasks(config.num_top_tasks)?;
-    let layout = Layout::default().constraints([Constraint::Length(3), Constraint::Min(1)]);
-    let list = List::new(tasks.iter().map(|t| t.title.as_str()))
-        .block(Block::default().title("tasks").borders(Borders::ALL))
-        .style(Style::default().fg(Color::White))
-        .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
-        .direction(ListDirection::BottomToTop);
+    let layout = Layout::default()
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .direction(Direction::Vertical);
     let mut command_editor = TextArea::default();
     command_editor.set_cursor_line_style(Style::default());
     command_editor.set_placeholder_text("Enter a command...");
     command_editor.set_style(Style::default().fg(Color::White));
-    command_editor.set_block(Block::default().borders(Borders::ALL).title("cmd"));
+    let mut count = 0;
+    //command_editor.set_block(Block::default().borders(Borders::ALL).title("cmd"));
     loop {
+        let list = List::new(tasks.iter().map(|t| t.title.as_str()))
+            .block(Block::default().title("tasks").borders(Borders::ALL))
+            .style(Style::default().fg(Color::White))
+            .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
+            .direction(ListDirection::BottomToTop);
         term.draw(|frame| {
             let chunks = layout.split(frame.size());
-            frame.render_widget(command_editor.widget(), chunks[0]);
+            frame.render_widget(list, chunks[0]);
+            frame.render_widget(command_editor.widget(), chunks[1]);
         })?;
 
         match crossterm::event::read()?.into() {
@@ -60,8 +71,10 @@ pub(crate) fn render_home(term: &mut Terminal, db: &mut Db, config: &Config) -> 
                 key: Key::Enter, ..
             } => {}
             input => {
-                command_editor.input(input);
-                ()
+                if command_editor.input(input) {
+                    command_editor.set_placeholder_text(format!("Count: {count}"));
+                    count += 1;
+                }
             }
         }
     }

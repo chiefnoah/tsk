@@ -27,22 +27,15 @@ fn main() -> Result<()> {
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
-    terminal.draw(|frame| {
-        let mut next = AppState::Home;
-        loop {
-            match next {
-                AppState::Home => {
-                    next = match render_home(frame, &mut db, &config) {
-                        Ok(n) => n,
-                        Err(_) => return,
-                    }
-                }
-                AppState::Details => todo!(),
-                AppState::Query => todo!(),
-                AppState::Exit => return,
-            }
+    let mut next = AppState::Home;
+    loop {
+        match next {
+            AppState::Home => next = render_home(&mut terminal, &mut db, &config)?,
+            AppState::Details => todo!(),
+            AppState::Query => todo!(),
+            AppState::Exit => break,
         }
-    })?;
+    }
 
     stdout().execute(LeaveAlternateScreen)?;
     disable_raw_mode()?;

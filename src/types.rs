@@ -11,6 +11,7 @@ pub(crate) enum TaskStatus {
     InProgress = 1,
     Complete = 2,
     Cancelled = 3,
+    Hidden = 4,
 }
 
 impl TryFrom<u8> for TaskStatus {
@@ -22,6 +23,7 @@ impl TryFrom<u8> for TaskStatus {
             1 => Self::InProgress,
             2 => Self::Complete,
             3 => Self::Cancelled,
+            4 => Self::Hidden,
             _ => {
                 return Err(Error::Bug(format!(
                     "Invalid task status integer {value}, this is a bug."
