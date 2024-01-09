@@ -7,12 +7,12 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4.31"
+combine = "4.6.6"
 crossbeam = "0.8.3"
 crossterm = "0.27.0"
 env_logger = "0.10.1"
 log = "0.4.20"
 open = "5.0.1"
-parsell = "0.6.5"
 ratatui = { version = "0.25.0", features = ["all-widgets"] }
 rusqlite = "0.30.0"
 tui-textarea = "0.4.0"
