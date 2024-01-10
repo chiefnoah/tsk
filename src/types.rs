@@ -39,9 +39,13 @@ impl Default for TaskStatus {
     }
 }
 
+pub(crate) type TaskId = u64;
+
+pub(crate) struct Tag(String);
+
 #[derive(Default)]
 pub(crate) struct Task {
-    pub(crate) id: u64,
+    pub(crate) id: TaskId,
     pub(crate) title: String,
     pub(crate) status: TaskStatus,
     pub(crate) created: DateTime<Utc>,

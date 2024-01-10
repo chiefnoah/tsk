@@ -42,7 +42,6 @@ where
     command_editor.set_placeholder_text("Enter a command...");
     command_editor.set_style(Style::default().fg(Color::White));
     let mut count = 0;
-    //command_editor.set_block(Block::default().borders(Borders::ALL).title("cmd"));
     loop {
         let list = List::new(tasks.iter().map(|t| t.title.as_str()))
             .block(Block::default().title("tasks").borders(Borders::ALL))
