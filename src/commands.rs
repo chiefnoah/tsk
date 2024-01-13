@@ -2,30 +2,36 @@
 use crate::types::{Tag, TaskId, TaskStatus};
 
 use combine::error::ParseError;
-use combine::parser::char::{char, spaces, string};
+use combine::parser::char::{char, string};
 use combine::{
+    between,
     parser::choice::{choice, optional},
-    stream::{position, ResetStream},
-    EasyParser, Parser, Stream,
+    stream::position,
+    EasyParser, Parser, StdParseResult, Stream,
 };
+use combine::{many, parser, satisfy};
 
-pub(crate) trait Command {
+pub(crate) trait Command<S: Stream<Token = char>>: Sized
+where
+    S::Error: ParseError<char, S::Range, S::Position>,
+{
     type Arg;
-    fn suggestion(&self) -> Option<&'static str> {
-        None
-    }
-    fn arg(&self) -> Option<&Self::Arg>;
+    fn args(&self) -> Option<&Self::Arg>;
     fn valid<F>(&self, check: Option<F>) -> bool
     where
         F: FnMut(&Self::Arg) -> bool;
     fn wait() -> bool {
         true
     }
+    fn parse(input: &mut S) -> StdParseResult<Self, S>
+    where
+        S::Error: ParseError<char, S::Range, S::Position>;
 }
 
 macro_rules! simple_command {
-    ($name:ident, $arg:ident, $argty:ty) => {
-        struct $name {
+    {$name:ident, $arg:ident -> $argty:ty, $parser:expr} => {
+        #[derive(Debug)]
+        pub(crate) struct $name {
             $arg: Option<$argty>,
         }
 
@@ -37,10 +43,10 @@ macro_rules! simple_command {
             }
         }
 
-        impl Command for $name {
+        impl<S: Stream<Token = char>> Command<S> for $name {
             type Arg = $argty;
 
-            fn arg(&self) -> Option<&Self::Arg> {
+            fn args(&self) -> Option<&Self::Arg> {
                 self.$arg.as_ref()
             }
 
@@ -54,55 +60,80 @@ macro_rules! simple_command {
                     self.$arg.is_some()
                 }
             }
+            fn parse(input: &mut S) -> StdParseResult<Self, S>
+            where
+                S::Error: ParseError<char, S::Range, S::Position>,
+            {
+                $parser.parse_stream(input).into()
+            }
         }
     };
-    ($name:ident) => {
-        simple_command!($name, none, ());
+    ($name:ident, $parser:expr) => {
+        simple_command!($name, none, (), $parser);
     };
 }
 
-simple_command!(Push, title, String);
-simple_command!(Edit, task_id, TaskId);
+simple_command! {
+    Push,
+    title -> String,
+    char('p').and(optional(string("ush")).silent()).map(|_| Push::default())
+}
+simple_command! {
+    Edit,
+    task_id -> TaskId,
+    char('e').and(optional(string("edit")).silent()).map(|_| Edit::default())
+}
+/*
+simple_command!(New, title, String);
+simple_command!(Start);
+simple_command!(Complete);
+simple_command!(Backlog);
+simple_command!(Todo, task_id, TaskId);
+simple_command!(Make, tag, String);
+simple_command!(Query, query, Vec<QueryArgs>);
+simple_command!(Link, task_id, TaskId);
+simple_command!(Drop, task_id, TaskId);
+simple_command!(Rot);
+simple_command!(NRot);
+simple_command!(Swap);
+simple_command!(Reprioritize, relative_order, u8);
+simple_command!(Deprioritize);
+simple_command!(Quit);
+*/
 
 /// `Query` represents a segment of a query when entering "query mode".
-enum Query {
+enum QueryArgs {
     Tag(bool, Tag),
     Status(bool, TaskStatus),
     Text(String),
 }
 
-enum HomeCommand {
+#[derive(Debug)]
+pub(crate) enum HomeCommand {
     Push(Push),
     Edit(Edit),
-    New(Option<String>),
-    Start,
-    Complete,
+    /*
+    New(New),
+    Start(Start),
+    Complete(Complete),
     //Undo
-    Backlog,
-    Todo(Option<TaskId>),
+    Backlog(Backlog),
+    Todo(Todo),
     Connect(Option<(TaskId, Tag, TaskId)>),
-    Make(Tag),
-    Query(Vec<Query>),
-    Link(TaskId),
-    Drop(TaskId),
-    Rot,
-    NRot,
-    Swap,
-    Reprioritize(u8),
-    Deprioritize(Option<TaskId>),
-    Quit,
-}
-
-enum QueryCommand {
-    Filter(Vec<Query>),
+    Make(Make),
+    Query(Query),
+    Link(Link),
+    Drop(Drop),
+    Rot(Rot),
+    NRot(NRot),
+    Swap(Swap),
+    Reprioritize(Reprioritize),
+    Deprioritize(Deprioritize),
+    Quit(Quit),
+    */
 }
 
 enum DetailCommand {}
-
-enum HomeParseResult {
-    Partial(HomeCommand),
-    Complete(HomeCommand, Vec<String>),
-}
 
 #[derive(Debug)]
 pub(crate) enum CommandParseError {
@@ -111,25 +142,30 @@ pub(crate) enum CommandParseError {
     Unknown,
 }
 
+fn str<Input>() -> impl Parser<Input, Output = String>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    between(char('"'), char('"'), many(satisfy(|c| c != '"')))
+}
+
 fn command<Input>() -> impl Parser<Input, Output = HomeCommand>
 where
     Input: Stream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
-    let push = || char('p').and(optional(string("ush")).silent());
-    let edit = || char('e').and(optional(string("edit")).silent());
-
     choice((
-        push().map(|_| HomeCommand::Push(Push::default())),
-        edit().map(|_| HomeCommand::Edit(Edit::default())),
+        parser(Push::parse).map(HomeCommand::Push),
+        parser(Edit::parse).map(HomeCommand::Edit),
     ))
-    .skip(spaces().silent())
 }
 
-fn parse_home_commands(input: &str) -> HomeCommand {
+pub(crate) fn parse_home_command(input: &str) -> Option<HomeCommand> {
     let lower = input.to_ascii_uppercase();
-    let (out, _) = command()
+    let out = command()
         .easy_parse(position::Stream::new(lower.as_str()))
-        .unwrap();
+        .map(|c| c.0)
+        .ok();
     out
 }
