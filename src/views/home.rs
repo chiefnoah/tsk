@@ -131,6 +131,12 @@ where
                                 first.status = TaskStatus::Todo;
                             }
                         }
+                        HomeCommand::Reprioritize(r) => {
+                            if let Some(task_id) = r.args() {
+                                db.prioritize(*task_id)?;
+                                tasks = db.get_top_n_tasks(config.num_top_tasks)?;
+                            }
+                        },
                     }
                 } else {
                     command_editor.set_placeholder_text("Error parsing command");

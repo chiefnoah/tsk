@@ -84,6 +84,10 @@ simple_command!(Start);
 simple_command!(Quit);
 simple_command!(Swap);
 simple_command!(Todo);
+simple_command! {
+    Reprioritize,
+    task_id -> TaskId
+}
 
 macro_rules! simple_parser(
     ($name:ident, $c:literal, $rest:literal, $type:ty) => {
@@ -123,15 +127,14 @@ where
         })
 }
 
-fn tsk<S: Stream<Token = char>>(input: &mut S) -> StdParseResult<TaskId, S>
+fn tsk<Input>() -> impl Parser<Input, Output = TaskId>
 where
-    S::Error: ParseError<char, S::Range, S::Position>,
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
-    attempt(string("TSK-"))
+    attempt(string("tsk-"))
         .with(many1(digit()))
         .map(|s: String| s.parse::<TaskId>().unwrap())
-        .parse_stream(input)
-        .into()
 }
 
 simple_parser!(edit, 'e', "dit", Edit);
@@ -141,6 +144,18 @@ simple_parser!(quit, 'q', "uit", Quit);
 simple_parser!(swap, "swap", Swap);
 simple_parser!(start, 's', "tart", Start);
 simple_parser!(todo, 't', "odo", Todo);
+
+fn reprioritize<Input>() -> impl Parser<Input, Output = Reprioritize>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    char('r')
+        .and(optional(string("ep")))
+        .skip(spaces())
+        .with(tsk())
+        .map(|s| Reprioritize { task_id: Some(s) })
+}
 /*
 simple_command!(New, title, String);
 simple_command!(Start);
@@ -176,6 +191,7 @@ pub(crate) enum HomeCommand {
     Swap(Swap),
     Start(Start),
     Todo(Todo),
+    Reprioritize(Reprioritize),
     /*
     New(New),
     Start(Start),
@@ -223,6 +239,7 @@ where
         swap().map(HomeCommand::Swap),
         start().map(HomeCommand::Start),
         todo().map(HomeCommand::Todo),
+        reprioritize().map(HomeCommand::Reprioritize),
         quit().map(HomeCommand::Quit),
     ))
 }
