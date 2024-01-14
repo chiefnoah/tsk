@@ -34,7 +34,7 @@ pub(crate) fn render_home<B>(
 where
     B: Backend,
 {
-    let tasks = db.get_top_n_tasks(config.num_top_tasks)?;
+    let mut tasks = db.get_top_n_tasks(config.num_top_tasks)?;
     let layout = Layout::default()
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .direction(Direction::Vertical);
@@ -43,8 +43,6 @@ where
     command_editor.set_placeholder_text("Enter a command...");
     command_editor.set_style(Style::default().fg(Color::White));
     let mut count = 0;
-    let mut should_parse = true;
-    let mut command: Option<HomeCommand> = None;
     loop {
         let list = List::new(tasks.iter().map(|t| t.title.as_str()))
             .block(Block::default().title("tasks").borders(Borders::ALL))
@@ -67,42 +65,31 @@ where
                 key: Key::Char('m'),
                 ctrl: true,
                 ..
-            }
-            | Input {
-                key: Key::Enter, ..
             } => {}
             Input {
-                key: Key::Delete, ..
+                key: Key::Enter, ..
             } => {
-                should_parse = true;
-                command = None;
-            },
-            Input {
-                key: Key::Enter,
-                ..
-            } => {
-                command = parse_home_command(command_editor.lines()[0].as_str());
-                if let Some(c) = command {
-
+                if let Some(c) = parse_home_command(command_editor.lines()[0].as_str()) {
+                    match c {
+                        HomeCommand::Push(p) => {
+                            if let Some(a) = p.args() {
+                                db.create_task((*a).clone(), Some(0))?;
+                                tasks = db.get_top_n_tasks(config.num_top_tasks)?;
+                            } else {
+                                eprintln!("No arg.")
+                            }
+                        }
+                        HomeCommand::Edit(_) => unimplemented!("Edit command isn't implemented."),
+                    }
                 } else {
                     command_editor.set_placeholder_text("Error parsing command");
                 }
+                command_editor.delete_line_by_head();
             }
             input => {
                 if command_editor.input(input) {
                     command_editor.set_placeholder_text(format!("Count: {count}"));
                     count += 1;
-                    if should_parse {
-                        command = parse_home_command(command_editor.lines()[0].as_str());
-                        if let Some(c) = command {
-                            match c {
-                                HomeCommand::Push(_) | HomeCommand::Edit(_) => {
-                                    should_parse = false;
-                                },
-                            }
-                            println!("Command: {c:?}");
-                        }
-                    }
                 }
             }
         }

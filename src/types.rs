@@ -49,7 +49,6 @@ pub(crate) struct Task {
     pub(crate) title: String,
     pub(crate) status: TaskStatus,
     pub(crate) created: DateTime<Utc>,
-    pub(crate) priority: u64,
     pub(crate) content: Option<TaskContent>,
 }
 
@@ -59,19 +58,12 @@ pub(crate) struct TaskContent {
 }
 
 impl Task {
-    pub(crate) fn new(
-        id: u64,
-        status: TaskStatus,
-        title: String,
-        created: DateTime<Utc>,
-        priority: u64,
-    ) -> Self {
+    pub(crate) fn new(id: u64, status: TaskStatus, title: String, created: DateTime<Utc>) -> Self {
         Task {
             id,
             status,
             title,
             created,
-            priority,
             content: None,
         }
     }

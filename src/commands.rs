@@ -2,18 +2,17 @@
 use crate::types::{Tag, TaskId, TaskStatus};
 
 use combine::error::ParseError;
-use combine::parser::char::{char, string};
+use combine::parser::char::{char, spaces, string, alpha_num};
+use combine::parser::repeat::repeat_until;
+use combine::{any, eof, many, many1, parser, satisfy};
 use combine::{
     between,
     parser::choice::{choice, optional},
     stream::position,
     EasyParser, Parser, StdParseResult, Stream,
 };
-use combine::{many, parser, satisfy};
 
-pub(crate) trait Command<S: Stream<Token = char>>: Sized
-where
-    S::Error: ParseError<char, S::Range, S::Position>,
+pub(crate) trait Command: Sized
 {
     type Arg;
     fn args(&self) -> Option<&Self::Arg>;
@@ -23,13 +22,10 @@ where
     fn wait() -> bool {
         true
     }
-    fn parse(input: &mut S) -> StdParseResult<Self, S>
-    where
-        S::Error: ParseError<char, S::Range, S::Position>;
 }
 
 macro_rules! simple_command {
-    {$name:ident, $arg:ident -> $argty:ty, $parser:expr} => {
+    {$name:ident, $arg:ident -> $argty:ty} => {
         #[derive(Debug)]
         pub(crate) struct $name {
             $arg: Option<$argty>,
@@ -43,7 +39,7 @@ macro_rules! simple_command {
             }
         }
 
-        impl<S: Stream<Token = char>> Command<S> for $name {
+        impl Command for $name {
             type Arg = $argty;
 
             fn args(&self) -> Option<&Self::Arg> {
@@ -60,12 +56,6 @@ macro_rules! simple_command {
                     self.$arg.is_some()
                 }
             }
-            fn parse(input: &mut S) -> StdParseResult<Self, S>
-            where
-                S::Error: ParseError<char, S::Range, S::Position>,
-            {
-                $parser.parse_stream(input).into()
-            }
         }
     };
     ($name:ident, $parser:expr) => {
@@ -73,15 +63,35 @@ macro_rules! simple_command {
     };
 }
 
+fn push<Input>() -> impl Parser<Input, Output = Push>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    (char('p')
+     .and(optional(string("ush")))
+     .skip(spaces()),
+     repeat_until(any(), eof()))
+        .map(|(_, title)| Push { title: Some(title) })
+}
+
+fn edit<Input>() -> impl Parser<Input, Output = Edit>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    char('e')
+        .and(optional(string("edit")).silent())
+        .map(|_| Edit::default())
+}
+
 simple_command! {
     Push,
-    title -> String,
-    char('p').and(optional(string("ush")).silent()).map(|_| Push::default())
+    title -> String
 }
 simple_command! {
     Edit,
-    task_id -> TaskId,
-    char('e').and(optional(string("edit")).silent()).map(|_| Edit::default())
+    task_id -> TaskId
 }
 /*
 simple_command!(New, title, String);
@@ -156,16 +166,30 @@ where
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     choice((
-        parser(Push::parse).map(HomeCommand::Push),
-        parser(Edit::parse).map(HomeCommand::Edit),
+        push().map(HomeCommand::Push),
+        edit().map(HomeCommand::Edit),
     ))
 }
 
 pub(crate) fn parse_home_command(input: &str) -> Option<HomeCommand> {
-    let lower = input.to_ascii_uppercase();
+    let lower = input.to_ascii_lowercase();
     let out = command()
         .easy_parse(position::Stream::new(lower.as_str()))
-        .map(|c| c.0)
-        .ok();
-    out
+        .map(|c| c.0);
+    if let Err(e) = &out {
+        eprintln!("Error parsing: {e}");
+    }
+    out.ok()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_push() {
+        let input = "push this is a test";
+        let command = parse_home_command(input);
+        assert!(command.is_some());
+    }
 }
