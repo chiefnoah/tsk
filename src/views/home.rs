@@ -48,7 +48,8 @@ where
         let list = List::new(
             tasks
                 .iter()
-                .map(|t| format!("{} TSK-{} {}", t.status, t.id, t.title.as_str())),
+                .enumerate()
+                .map(|(i, t)| format!("{}: {} TSK-{} {}", i, t.status, t.id, t.title.as_str())),
         )
         .block(Block::default().title("tasks").borders(Borders::ALL))
         .style(Style::default().fg(Color::White))
