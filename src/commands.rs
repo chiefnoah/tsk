@@ -2,11 +2,11 @@
 use crate::types::{Tag, TaskId, TaskStatus};
 
 use combine::error::ParseError;
-use combine::parser::char::{alpha_num, char, spaces, string};
+use combine::parser::char::{alpha_num, char, digit, spaces, string};
 use combine::parser::repeat::repeat_until;
 use combine::{any, eof, many, many1, parser, satisfy};
 use combine::{
-    between,
+    attempt, between,
     parser::choice::{choice, optional},
     stream::position,
     EasyParser, Parser, StdParseResult, Stream,
@@ -79,9 +79,11 @@ simple_command! {
     Complete,
     task_id -> TaskId
 }
+simple_command!(Start);
 
 simple_command!(Quit);
 simple_command!(Swap);
+simple_command!(Todo);
 
 macro_rules! simple_parser(
     ($name:ident, $c:literal, $rest:literal, $type:ty) => {
@@ -92,6 +94,16 @@ macro_rules! simple_parser(
         {
             char($c)
                 .and(optional(string($rest)).silent())
+                .map(|_| <$type>::default())
+        }
+    };
+    ($name:ident, $command:literal, $type:ty) => {
+        fn $name<Input>() -> impl Parser<Input, Output = $type>
+        where
+            Input: Stream<Token = char>,
+            Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+        {
+            attempt(string($command))
                 .map(|_| <$type>::default())
         }
     };
@@ -111,11 +123,24 @@ where
         })
 }
 
+fn tsk<S: Stream<Token = char>>(input: &mut S) -> StdParseResult<TaskId, S>
+where
+    S::Error: ParseError<char, S::Range, S::Position>,
+{
+    attempt(string("TSK-"))
+        .with(many1(digit()))
+        .map(|s: String| s.parse::<TaskId>().unwrap())
+        .parse_stream(input)
+        .into()
+}
+
 simple_parser!(edit, 'e', "dit", Edit);
 simple_parser!(drop, 'd', "rop", Drop);
 simple_parser!(complete, 'c', "omplete", Complete);
 simple_parser!(quit, 'q', "uit", Quit);
-simple_parser!(swap, 's', "wap", Swap);
+simple_parser!(swap, "swap", Swap);
+simple_parser!(start, 's', "tart", Start);
+simple_parser!(todo, 't', "odo", Todo);
 /*
 simple_command!(New, title, String);
 simple_command!(Start);
@@ -149,12 +174,13 @@ pub(crate) enum HomeCommand {
     Complete(Complete),
     Quit(Quit),
     Swap(Swap),
+    Start(Start),
+    Todo(Todo),
     /*
     New(New),
     Start(Start),
     //Undo
     Backlog(Backlog),
-    Todo(Todo),
     Connect(Option<(TaskId, Tag, TaskId)>),
     Make(Make),
     Query(Query),
@@ -195,6 +221,8 @@ where
         drop().map(HomeCommand::Drop),
         complete().map(HomeCommand::Complete),
         swap().map(HomeCommand::Swap),
+        start().map(HomeCommand::Start),
+        todo().map(HomeCommand::Todo),
         quit().map(HomeCommand::Quit),
     ))
 }

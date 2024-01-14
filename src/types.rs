@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::mem::replace;
+use std::{mem::replace, fmt::Display};
 
 use crate::error::Error;
 use chrono::{DateTime, Utc};
@@ -12,6 +12,19 @@ pub(crate) enum TaskStatus {
     Complete = 2,
     Cancelled = 3,
     Hidden = 4,
+}
+
+impl Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let c = match self {
+            TaskStatus::Todo => ' ',
+            TaskStatus::InProgress => '/',
+            TaskStatus::Complete => 'x',
+            TaskStatus::Cancelled => '-',
+            TaskStatus::Hidden => '?',
+        };
+        write!(f, "[{c}]")
+    }
 }
 
 impl TryFrom<u8> for TaskStatus {

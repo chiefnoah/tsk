@@ -4,7 +4,7 @@ use crate::{
     config::Config,
     db::Db,
     error::{Error, Result},
-    types::{TaskId, TaskStatus},
+    types::{Task, TaskId, TaskStatus},
 };
 use crossterm::{
     event::{self, KeyCode, KeyEventKind},
@@ -45,11 +45,15 @@ where
     command_editor.set_style(Style::default().fg(Color::White));
     let mut count = 0;
     loop {
-        let list = List::new(tasks.iter().map(|t| format!("TSK-{} {}", t.id, t.title.as_str())))
-            .block(Block::default().title("tasks").borders(Borders::ALL))
-            .style(Style::default().fg(Color::White))
-            .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
-            .direction(ListDirection::BottomToTop);
+        let list = List::new(
+            tasks
+                .iter()
+                .map(|t| format!("{} TSK-{} {}", t.status, t.id, t.title.as_str())),
+        )
+        .block(Block::default().title("tasks").borders(Borders::ALL))
+        .style(Style::default().fg(Color::White))
+        .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
+        .direction(ListDirection::BottomToTop);
         term.draw(|frame| {
             let chunks = layout.split(frame.size());
             frame.render_widget(list, chunks[0]);
@@ -113,6 +117,20 @@ where
                             }
                         }
                         HomeCommand::Quit(_) => break,
+                        HomeCommand::Start(_) => {
+                            if tasks.len() > 0 {
+                                let first: &mut Task = &mut tasks[0];
+                                db.update_status(first.id, TaskStatus::InProgress)?;
+                                first.status = TaskStatus::InProgress;
+                            }
+                        }
+                        HomeCommand::Todo(_) => {
+                            if tasks.len() > 0 {
+                                let first: &mut Task = &mut tasks[0];
+                                db.update_status(first.id, TaskStatus::InProgress)?;
+                                first.status = TaskStatus::Todo;
+                            }
+                        }
                     }
                 } else {
                     command_editor.set_placeholder_text("Error parsing command");
