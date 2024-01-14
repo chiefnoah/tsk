@@ -140,7 +140,7 @@ where
 simple_parser!(edit, 'e', "dit", Edit);
 simple_parser!(drop, 'd', "rop", Drop);
 simple_parser!(complete, 'c', "omplete", Complete);
-simple_parser!(quit, 'q', "uit", Quit);
+simple_parser!(quit, "quit", Quit);
 simple_parser!(swap, "swap", Swap);
 simple_parser!(start, 's', "tart", Start);
 simple_parser!(todo, 't', "odo", Todo);

@@ -127,7 +127,7 @@ where
                         HomeCommand::Todo(_) => {
                             if tasks.len() > 0 {
                                 let first: &mut Task = &mut tasks[0];
-                                db.update_status(first.id, TaskStatus::InProgress)?;
+                                db.update_status(first.id, TaskStatus::Todo)?;
                                 first.status = TaskStatus::Todo;
                             }
                         }
