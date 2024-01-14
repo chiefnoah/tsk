@@ -2,7 +2,7 @@
 use crate::types::{Tag, TaskId, TaskStatus};
 
 use combine::error::ParseError;
-use combine::parser::char::{char, spaces, string, alpha_num};
+use combine::parser::char::{alpha_num, char, spaces, string};
 use combine::parser::repeat::repeat_until;
 use combine::{any, eof, many, many1, parser, satisfy};
 use combine::{
@@ -12,8 +12,7 @@ use combine::{
     EasyParser, Parser, StdParseResult, Stream,
 };
 
-pub(crate) trait Command: Sized
-{
+pub(crate) trait Command: Sized {
     type Arg;
     fn args(&self) -> Option<&Self::Arg>;
     fn valid<F>(&self, check: Option<F>) -> bool
@@ -68,11 +67,11 @@ where
     Input: Stream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
-    (char('p')
-     .and(optional(string("ush")))
-     .skip(spaces()),
-     repeat_until(any(), eof()))
-        .map(|(_, title)| Push { title: Some(title) })
+    char('p')
+        .and(optional(string("ush")))
+        .skip(spaces())
+        .with(alpha_num().and(repeat_until(any(), eof())))
+        .map(|(f, rest): (char, String)| Push { title: Some(format!("{f}{rest}")) })
 }
 
 fn edit<Input>() -> impl Parser<Input, Output = Edit>
@@ -81,8 +80,18 @@ where
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     char('e')
-        .and(optional(string("edit")).silent())
+        .and(optional(string("dit")).silent())
         .map(|_| Edit::default())
+}
+
+fn drop<Input>() -> impl Parser<Input, Output = Drop>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    char('d')
+        .and(optional(string("rop")).silent())
+        .map(|_| Drop::default())
 }
 
 simple_command! {
@@ -91,6 +100,10 @@ simple_command! {
 }
 simple_command! {
     Edit,
+    task_id -> TaskId
+}
+simple_command! {
+    Drop,
     task_id -> TaskId
 }
 /*
@@ -122,6 +135,7 @@ enum QueryArgs {
 pub(crate) enum HomeCommand {
     Push(Push),
     Edit(Edit),
+    Drop(Drop),
     /*
     New(New),
     Start(Start),
@@ -133,7 +147,6 @@ pub(crate) enum HomeCommand {
     Make(Make),
     Query(Query),
     Link(Link),
-    Drop(Drop),
     Rot(Rot),
     NRot(NRot),
     Swap(Swap),
@@ -168,6 +181,7 @@ where
     choice((
         push().map(HomeCommand::Push),
         edit().map(HomeCommand::Edit),
+        drop().map(HomeCommand::Drop),
     ))
 }
 

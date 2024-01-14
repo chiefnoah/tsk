@@ -189,6 +189,26 @@ impl Db {
         Ok(task)
     }
 
+    pub(super) fn deprioritize(&self, task_id: TaskId) -> Result<()> {
+        let prev: Option<TaskId> = self
+            .conn
+            .query_row("SELECT ID FROM TASK WHERE NEXT = ?", (task_id,), |row| {
+                row.get(0)
+            })
+            .ok();
+        if let Some(prev) = prev {
+            let next: Option<TaskId> = self
+                .conn
+                .query_row("SELECT NEXT FROM TASK WHERE ID = ?", (task_id,), |row| {
+                    row.get(0)
+                })
+                .ok();
+            self.conn
+                .execute("UPDATE TASK SET NEXT = ? WHERE ID = ?", (next, prev))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn get_top_n_tasks(&self, n: u16) -> Result<Vec<Task>> {
         let mut out = Vec::with_capacity(n.into());
         let mut stmt = self.conn.prepare(

@@ -4,6 +4,7 @@ use crate::{
     config::Config,
     db::Db,
     error::{Error, Result},
+    types::TaskId,
 };
 use crossterm::{
     event::{self, KeyCode, KeyEventKind},
@@ -80,6 +81,17 @@ where
                             }
                         }
                         HomeCommand::Edit(_) => unimplemented!("Edit command isn't implemented."),
+                        HomeCommand::Drop(c) => {
+                            let task_id = if let Some(task_id) = c.args() {
+                                Some(*task_id)
+                            } else {
+                                tasks.last().map(|t| t.id)
+                            };
+                            if let Some(task_id) = task_id {
+                                db.deprioritize(task_id)?;
+                                tasks = db.get_top_n_tasks(config.num_top_tasks)?;
+                            }
+                        }
                     }
                 } else {
                     command_editor.set_placeholder_text("Error parsing command");
