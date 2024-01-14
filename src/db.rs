@@ -109,10 +109,10 @@ impl Db {
             row.get(0)
         })?;
         if let Some(parent) = parent {
-            let old_parent_child: TaskId =
+            let old_parent_child: Option<TaskId> =
                 tx.query_row("SELECT NEXT FROM TASK WHERE ID = ?", (parent,), |row| {
                     row.get(0)
-                })?;
+                }).ok();
             tx.execute("UPDATE TASK SET NEXT = ? WHERE ID = ?", (task_id, parent))?;
             tx.execute(
                 "UPDATE TASK SET NEXT = ? WHERE ID = ?",

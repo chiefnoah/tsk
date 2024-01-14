@@ -190,9 +190,6 @@ pub(crate) fn parse_home_command(input: &str) -> Option<HomeCommand> {
     let out = command()
         .easy_parse(position::Stream::new(lower.as_str()))
         .map(|c| c.0);
-    if let Err(e) = &out {
-        eprintln!("Error parsing: {e}");
-    }
     out.ok()
 }
 

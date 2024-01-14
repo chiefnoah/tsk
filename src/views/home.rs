@@ -76,8 +76,6 @@ where
                             if let Some(a) = p.args() {
                                 db.create_task((*a).clone(), Some(0))?;
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
-                            } else {
-                                eprintln!("No arg.")
                             }
                         }
                         HomeCommand::Edit(_) => unimplemented!("Edit command isn't implemented."),
