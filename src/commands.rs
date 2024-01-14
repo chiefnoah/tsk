@@ -57,41 +57,9 @@ macro_rules! simple_command {
             }
         }
     };
-    ($name:ident, $parser:expr) => {
-        simple_command!($name, none, (), $parser);
+    ($name:ident) => {
+        simple_command!($name, none -> ());
     };
-}
-
-fn push<Input>() -> impl Parser<Input, Output = Push>
-where
-    Input: Stream<Token = char>,
-    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
-{
-    char('p')
-        .and(optional(string("ush")))
-        .skip(spaces())
-        .with(alpha_num().and(repeat_until(any(), eof())))
-        .map(|(f, rest): (char, String)| Push { title: Some(format!("{f}{rest}")) })
-}
-
-fn edit<Input>() -> impl Parser<Input, Output = Edit>
-where
-    Input: Stream<Token = char>,
-    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
-{
-    char('e')
-        .and(optional(string("dit")).silent())
-        .map(|_| Edit::default())
-}
-
-fn drop<Input>() -> impl Parser<Input, Output = Drop>
-where
-    Input: Stream<Token = char>,
-    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
-{
-    char('d')
-        .and(optional(string("rop")).silent())
-        .map(|_| Drop::default())
 }
 
 simple_command! {
@@ -106,6 +74,48 @@ simple_command! {
     Drop,
     task_id -> TaskId
 }
+
+simple_command! {
+    Complete,
+    task_id -> TaskId
+}
+
+simple_command!(Quit);
+simple_command!(Swap);
+
+macro_rules! simple_parser(
+    ($name:ident, $c:literal, $rest:literal, $type:ty) => {
+        fn $name<Input>() -> impl Parser<Input, Output = $type>
+        where
+            Input: Stream<Token = char>,
+            Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+        {
+            char($c)
+                .and(optional(string($rest)).silent())
+                .map(|_| <$type>::default())
+        }
+    };
+);
+
+fn push<Input>() -> impl Parser<Input, Output = Push>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    char('p')
+        .and(optional(string("ush")))
+        .skip(spaces())
+        .with(alpha_num().and(repeat_until(any(), eof())))
+        .map(|(f, rest): (char, String)| Push {
+            title: Some(format!("{f}{rest}")),
+        })
+}
+
+simple_parser!(edit, 'e', "dit", Edit);
+simple_parser!(drop, 'd', "rop", Drop);
+simple_parser!(complete, 'c', "omplete", Complete);
+simple_parser!(quit, 'q', "uit", Quit);
+simple_parser!(swap, 's', "wap", Swap);
 /*
 simple_command!(New, title, String);
 simple_command!(Start);
@@ -136,10 +146,12 @@ pub(crate) enum HomeCommand {
     Push(Push),
     Edit(Edit),
     Drop(Drop),
+    Complete(Complete),
+    Quit(Quit),
+    Swap(Swap),
     /*
     New(New),
     Start(Start),
-    Complete(Complete),
     //Undo
     Backlog(Backlog),
     Todo(Todo),
@@ -149,7 +161,6 @@ pub(crate) enum HomeCommand {
     Link(Link),
     Rot(Rot),
     NRot(NRot),
-    Swap(Swap),
     Reprioritize(Reprioritize),
     Deprioritize(Deprioritize),
     Quit(Quit),
@@ -182,6 +193,9 @@ where
         push().map(HomeCommand::Push),
         edit().map(HomeCommand::Edit),
         drop().map(HomeCommand::Drop),
+        complete().map(HomeCommand::Complete),
+        swap().map(HomeCommand::Swap),
+        quit().map(HomeCommand::Quit),
     ))
 }
 

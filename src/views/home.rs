@@ -4,7 +4,7 @@ use crate::{
     config::Config,
     db::Db,
     error::{Error, Result},
-    types::TaskId,
+    types::{TaskId, TaskStatus},
 };
 use crossterm::{
     event::{self, KeyCode, KeyEventKind},
@@ -45,7 +45,7 @@ where
     command_editor.set_style(Style::default().fg(Color::White));
     let mut count = 0;
     loop {
-        let list = List::new(tasks.iter().map(|t| t.title.as_str()))
+        let list = List::new(tasks.iter().map(|t| format!("TSK-{} {}", t.id, t.title.as_str())))
             .block(Block::default().title("tasks").borders(Borders::ALL))
             .style(Style::default().fg(Color::White))
             .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
@@ -74,7 +74,8 @@ where
                     match c {
                         HomeCommand::Push(p) => {
                             if let Some(a) = p.args() {
-                                db.create_task((*a).clone(), Some(0))?;
+                                let task_id = db.create_task((*a).clone())?;
+                                db.prioritize(task_id)?;
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
                             }
                         }
@@ -83,13 +84,35 @@ where
                             let task_id = if let Some(task_id) = c.args() {
                                 Some(*task_id)
                             } else {
-                                tasks.last().map(|t| t.id)
+                                tasks.first().map(|t| t.id)
                             };
                             if let Some(task_id) = task_id {
                                 db.deprioritize(task_id)?;
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
                             }
                         }
+                        HomeCommand::Complete(c) => {
+                            let task_id = if let Some(task_id) = c.args() {
+                                Some(*task_id)
+                            } else {
+                                tasks.first().map(|t| t.id)
+                            };
+                            if let Some(task_id) = task_id {
+                                db.update_status(task_id, TaskStatus::Complete)?;
+                                db.deprioritize(task_id)?;
+                                tasks = db.get_top_n_tasks(config.num_top_tasks)?;
+                            }
+                        }
+                        HomeCommand::Swap(_) => {
+                            if tasks.len() >= 2 {
+                                let second = &tasks[1];
+                                db.prioritize(second.id)?;
+                                command_editor
+                                    .set_placeholder_text(format!("Prioritized {}", second.id));
+                                tasks = db.get_top_n_tasks(config.num_top_tasks)?;
+                            }
+                        }
+                        HomeCommand::Quit(_) => break,
                     }
                 } else {
                     command_editor.set_placeholder_text("Error parsing command");

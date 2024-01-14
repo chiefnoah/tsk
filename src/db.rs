@@ -1,6 +1,4 @@
 #![allow(dead_code)]
-use std::cell::RefCell;
-
 use crate::{
     config::get_database_file,
     error::{Error, Result},
@@ -8,7 +6,7 @@ use crate::{
 };
 use chrono::DateTime;
 use log::debug;
-use rusqlite::{Connection, Error as SQLiteError, Transaction};
+use rusqlite::{Connection, Error as SQLiteError, OptionalExtension, Transaction};
 use uris::Uri;
 
 impl From<SQLiteError> for Error {
@@ -26,10 +24,11 @@ CREATE TABLE IF NOT EXISTS TASK (
     ID INTEGER NOT NULL UNIQUE,
     TITLE TEXT NOT NULL,
     CREATED INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') as INT)),
-    NEXT INTEGER,
+    NEXT INTEGER DEFAULT NULL,
     FOREIGN KEY (NEXT) REFERENCES TASK(ID) ON DELETE SET NULL,
     PRIMARY KEY('ID' AUTOINCREMENT)
 ) STRICT;
+INSERT INTO TASK(ID, TITLE, CREATED) VALUES(0, 'ROOT', 0) ON CONFLICT(ID) DO NOTHING;
 CREATE TABLE IF NOT EXISTS TASK_CONTENT (
     TASK_ID INTEGER NOT NULL,
     BODY INTEGER NOT NULL,
@@ -45,7 +44,7 @@ CREATE TABLE IF NOT EXISTS 'TASK_STATUS' (
     TASK_ID INTEGER NOT NULL,
     FOREIGN KEY(TASK_ID) REFERENCES TASK(ID) ON DELETE CASCADE,
     PRIMARY KEY(UPDATED,TASK_ID)
-);
+) STRICT;
 CREATE TABLE IF NOT EXISTS RELATIONSHIP (
     LEFT INTEGER NOT NULL,
     TAG INTEGER NOT NULL,
@@ -54,22 +53,23 @@ CREATE TABLE IF NOT EXISTS RELATIONSHIP (
     PRIMARY KEY(LEFT, TAG, RIGHT),
     FOREIGN KEY(TAG) REFERENCES TAG(NAME) ON DELETE CASCADE,
     FOREIGN KEY(RIGHT) REFERENCES TASK(ID) ON DELETE CASCADE
-);
+) STRICT;
 
-CREATE VIEW IF NOT EXISTS priority_task(id, title, created, next) AS
+CREATE VIEW IF NOT EXISTS priority_task(id, title, created, next, ordering) AS
 WITH RECURSIVE
-priority_task(id, title, created, next) AS (
-    SELECT id, title, created, next
+priority_task(id, title, created, next, ordering) AS (
+    SELECT id, title, created, next, 0
     FROM TASK
     WHERE ID = 0
     UNION
-    SELECT task.id, task.title, task.created, task.NEXT
+    SELECT task.id, task.title, task.created, task.NEXT, priority_task.ordering + 1
     FROM TASK, priority_task
     WHERE task.id = priority_task.next
     LIMIT 20
 )
 SELECT * FROM priority_task
-WHERE priority_task.ID > 0;
+WHERE priority_task.ID > 0
+ORDER BY priority_task.ordering;
 
 CREATE VIEW IF NOT EXISTS top_tasks(id, title, status, next) AS
   SELECT priority_task.id, priority_task.title, task_status.status, priority_task.next
@@ -101,24 +101,13 @@ impl Db {
         Ok(())
     }
 
-    pub(super) fn create_task(&mut self, title: String, parent: Option<TaskId>) -> Result<u64> {
+    pub(super) fn create_task(&mut self, title: String) -> Result<TaskId> {
         let tx = self.conn.transaction()?;
         tx.execute("INSERT INTO TASK(TITLE) VALUES(?)", (title,))?;
         let row_id = tx.last_insert_rowid();
         let task_id = tx.query_row("SELECT ID FROM TASK WHERE ROWID = ?", (row_id,), |row| {
             row.get(0)
         })?;
-        if let Some(parent) = parent {
-            let old_parent_child: Option<TaskId> =
-                tx.query_row("SELECT NEXT FROM TASK WHERE ID = ?", (parent,), |row| {
-                    row.get(0)
-                }).ok();
-            tx.execute("UPDATE TASK SET NEXT = ? WHERE ID = ?", (task_id, parent))?;
-            tx.execute(
-                "UPDATE TASK SET NEXT = ? WHERE ID = ?",
-                (old_parent_child, task_id),
-            )?;
-        }
         update_status(&tx, task_id, TaskStatus::Todo)?;
         tx.commit()?;
         Ok(task_id)
@@ -195,20 +184,36 @@ impl Db {
             .query_row("SELECT ID FROM TASK WHERE NEXT = ?", (task_id,), |row| {
                 row.get(0)
             })
-            .ok();
+            .optional()?;
         if let Some(prev) = prev {
-            let next: Option<TaskId> = self
-                .conn
-                .query_row("SELECT NEXT FROM TASK WHERE ID = ?", (task_id,), |row| {
-                    row.get(0)
-                })
-                .ok();
-            self.conn
-                .execute("UPDATE TASK SET NEXT = ? WHERE ID = ?", (next, prev))?;
+            self.conn.execute(
+                "UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?",
+                (task_id, prev),
+            )?;
         }
         Ok(())
     }
+    pub(super) fn prioritize(&mut self, task_id: TaskId) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let parent: Option<TaskId> = tx
+            .query_row("SELECT ID FROM TASK WHERE NEXT = ?", (task_id,), |row| {
+                row.get(0)
+            })
+            .optional()?;
+        // Remove the task from continuum
+        if let Some(parent) = parent {
+            tx.execute(
+                "UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?",
+                (task_id, parent),
+            )?;
+        }
+        tx.execute("UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = 0) WHERE ID = ?", (task_id,))?;
+        tx.execute("UPDATE TASK SET NEXT = ? WHERE ID = 0", (task_id,))?;
+        tx.commit()?;
+        Ok(())
+    }
 
+    /// `get_top_n_tasks` retrieves the top tasks per the linked-list priority semantics of tasks.
     pub(super) fn get_top_n_tasks(&self, n: u16) -> Result<Vec<Task>> {
         let mut out = Vec::with_capacity(n.into());
         let mut stmt = self.conn.prepare(
@@ -217,6 +222,7 @@ impl Db {
                       JOIN TASK_STATUS ON TASK_STATUS.TASK_ID = priority_task.ID
                       GROUP BY TASK_STATUS.TASK_ID
                       HAVING MAX(TASK_STATUS.UPDATED)
+                      ORDER BY PRIORITY_TASK.ORDERING
                       LIMIT ?;",
         )?;
         let mut rows = stmt.query((n,))?;
