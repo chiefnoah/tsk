@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS 'TASK_STATUS' (
     UPDATED INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') as INT)),
     TASK_ID INTEGER NOT NULL,
     FOREIGN KEY(TASK_ID) REFERENCES TASK(ID) ON DELETE CASCADE,
-    PRIMARY KEY(UPDATED,TASK_ID)
+    PRIMARY KEY(UPDATED,TASK_ID,STATUS) ON CONFLICT IGNORE
 ) STRICT;
 CREATE TABLE IF NOT EXISTS RELATIONSHIP (
     LEFT INTEGER NOT NULL,
@@ -179,18 +179,16 @@ impl Db {
     }
 
     pub(super) fn deprioritize(&self, task_id: TaskId) -> Result<()> {
-        let prev: Option<TaskId> = self
+        let parent: TaskId = self
             .conn
             .query_row("SELECT ID FROM TASK WHERE NEXT = ?", (task_id,), |row| {
                 row.get(0)
-            })
-            .optional()?;
-        if let Some(prev) = prev {
-            self.conn.execute(
-                "UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?",
-                (task_id, prev),
-            )?;
-        }
+            })?;
+        self.conn.execute(
+            "UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?",
+            (task_id, parent),
+        )?;
+        self.conn.execute("UPDATE TASK SET NEXT = NULL WHERE ID = ?", (task_id,))?;
         Ok(())
     }
     pub(super) fn prioritize(&mut self, task_id: TaskId) -> Result<()> {

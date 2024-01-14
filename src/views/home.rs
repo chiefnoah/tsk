@@ -112,7 +112,7 @@ where
                                 let second = &tasks[1];
                                 db.prioritize(second.id)?;
                                 command_editor
-                                    .set_placeholder_text(format!("Prioritized {}", second.id));
+                                    .set_placeholder_text(format!("Prioritized TSK-{}", second.id));
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
                             }
                         }
