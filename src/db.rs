@@ -2,7 +2,7 @@
 use crate::{
     config::get_database_file,
     error::{Error, Result},
-    types::{Task, TaskContent, TaskId, TaskStatus},
+    types::{QueryArgs, Task, TaskContent, TaskId, TaskStatus},
 };
 use chrono::DateTime;
 use log::debug;
@@ -20,13 +20,20 @@ CREATE TABLE IF NOT EXISTS TAG (
     NAME TEXT NOT NULL UNIQUE,
     PRIMARY KEY(NAME)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS TASKTAG (
+    TAG TEXT NOT NULL,
+    TASK_ID INTEGER NOT NULL,
+    FOREIGN KEY (TAG) REFERENCES TAG(NAME) ON DELETE CASCADE,
+    FOREIGN KEY (TASK_ID) REFERENCES TASK(ID) ON DELETE CASCADE,
+    PRIMARY KEY (TAG, TASK_ID)
+) STRICT;
 CREATE TABLE IF NOT EXISTS TASK (
     ID INTEGER NOT NULL UNIQUE,
     TITLE TEXT NOT NULL,
     CREATED INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') as INT)),
     NEXT INTEGER DEFAULT NULL,
     FOREIGN KEY (NEXT) REFERENCES TASK(ID) ON DELETE SET NULL,
-    PRIMARY KEY('ID' AUTOINCREMENT)
+    PRIMARY KEY(ID AUTOINCREMENT)
 ) STRICT;
 INSERT INTO TASK(ID, TITLE, CREATED) VALUES(0, 'ROOT', 0) ON CONFLICT(ID) DO NOTHING;
 CREATE TABLE IF NOT EXISTS TASK_CONTENT (
@@ -38,12 +45,12 @@ CREATE TABLE IF NOT EXISTS TASK_CONTENT (
     FOREIGN KEY(BODY) REFERENCES task_body(rowid) ON DELETE CASCADE,
     PRIMARY KEY(UPDATED, TASK_ID)
 ) STRICT;
-CREATE TABLE IF NOT EXISTS 'TASK_STATUS' (
+CREATE TABLE IF NOT EXISTS TASK_STATUS (
     STATUS INTEGER NOT NULL DEFAULT 0,
     UPDATED INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') as INT)),
     TASK_ID INTEGER NOT NULL,
     FOREIGN KEY(TASK_ID) REFERENCES TASK(ID) ON DELETE CASCADE,
-    PRIMARY KEY(UPDATED,TASK_ID,STATUS) ON CONFLICT IGNORE
+    PRIMARY KEY(UPDATED,TASK_ID) ON CONFLICT REPLACE
 ) STRICT;
 CREATE TABLE IF NOT EXISTS RELATIONSHIP (
     LEFT INTEGER NOT NULL,
@@ -179,16 +186,17 @@ impl Db {
     }
 
     pub(super) fn deprioritize(&self, task_id: TaskId) -> Result<()> {
-        let parent: TaskId = self
-            .conn
-            .query_row("SELECT ID FROM TASK WHERE NEXT = ?", (task_id,), |row| {
-                row.get(0)
-            })?;
+        let parent: TaskId =
+            self.conn
+                .query_row("SELECT ID FROM TASK WHERE NEXT = ?", (task_id,), |row| {
+                    row.get(0)
+                })?;
         self.conn.execute(
             "UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?",
             (task_id, parent),
         )?;
-        self.conn.execute("UPDATE TASK SET NEXT = NULL WHERE ID = ?", (task_id,))?;
+        self.conn
+            .execute("UPDATE TASK SET NEXT = NULL WHERE ID = ?", (task_id,))?;
         Ok(())
     }
     pub(super) fn prioritize(&mut self, task_id: TaskId) -> Result<()> {
@@ -232,6 +240,21 @@ impl Db {
         }
         Ok(out)
     }
+
+    fn query(&self, query: Vec<QueryArgs>) -> Result<Vec<Task>> {
+        let sql_queries: Vec<String> = query
+            .iter()
+            .map(|query| match query {
+                QueryArgs::Tag(neg, tag) => {
+                    format!("SELECT")
+                }
+                QueryArgs::Status(neg, status) => todo!(),
+                QueryArgs::Text(t) => todo!(),
+                QueryArgs::Relation(rel, side) => todo!(),
+            })
+            .collect();
+        todo!();
+    }
 }
 pub(super) fn update_status(tx: &Transaction, task_id: u64, state: TaskStatus) -> Result<()> {
     tx.execute(
@@ -254,8 +277,14 @@ pub(super) fn set_next_of(tx: &Transaction, task_id: TaskId, parent_id: TaskId) 
         )?;
     }
     // Set the parents previous next to the the current tasks next so we don't lose it
-    tx.execute("UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?", (parent_id, task_id,))?;
+    tx.execute(
+        "UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?",
+        (parent_id, task_id),
+    )?;
     // Set the task as the next from the parent
-    tx.execute("UPDATE TASK SET NEXT = ? WHERE ID = ?", (task_id, parent_id))?;
+    tx.execute(
+        "UPDATE TASK SET NEXT = ? WHERE ID = ?",
+        (task_id, parent_id),
+    )?;
     Ok(())
 }

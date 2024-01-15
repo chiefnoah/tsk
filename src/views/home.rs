@@ -27,13 +27,11 @@ pub(crate) enum AppState {
     Exit,
 }
 
-pub(crate) fn render_home<B>(
+pub(crate) fn render_home<B: Backend>(
     term: &mut Terminal<B>,
     db: &mut Db,
     config: &Config,
 ) -> Result<AppState>
-where
-    B: Backend,
 {
     let mut tasks = db.get_top_n_tasks(config.num_top_tasks)?;
     let layout = Layout::default()

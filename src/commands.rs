@@ -1,11 +1,9 @@
 #![allow(dead_code)]
-use crate::types::{Tag, TaskId, TaskStatus};
+use crate::types::{Tag, TaskId, QueryArgs};
 
-use combine::error::{ParseError, UnexpectedParse};
+use combine::error::ParseError;
 use combine::parser::char::{alpha_num, char, digit, spaces, string};
-use combine::parser::combinator::recognize;
 use combine::parser::repeat::repeat_until;
-use combine::stream::Range;
 use combine::{any, eof, many, many1, satisfy, StreamOnce, skip_many1, RangeStream};
 use combine::{
     attempt, between, parser::choice::choice, stream::position, EasyParser, Parser, Stream,
@@ -162,13 +160,6 @@ where
         .skip(spaces())
         .with(tsk())
         .map(|s| Reprioritize { task_id: Some(s) })
-}
-
-/// `Query` represents a segment of a query when entering "query mode".
-enum QueryArgs {
-    Tag(bool, Tag),
-    Status(bool, TaskStatus),
-    Text(String),
 }
 
 #[derive(Debug)]

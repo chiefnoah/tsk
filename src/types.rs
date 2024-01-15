@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::{mem::replace, fmt::Display};
+use std::{fmt::Display, mem::replace};
 
 use crate::error::Error;
 use chrono::{DateTime, Utc};
@@ -84,4 +84,21 @@ impl Task {
     pub(crate) fn set_content(&mut self, content: TaskContent) -> Option<TaskContent> {
         replace(&mut self.content, Some(content))
     }
+}
+
+pub(crate) enum RelationshipSide {
+    Left(TaskId),
+    Right(TaskId),
+}
+
+/// `Query` represents a segment of a query when entering "query mode".
+pub(crate) enum QueryArgs {
+    /// Query tasks with a given tag
+    Tag(bool, Tag),
+    /// Query tasks of a certain status
+    Status(bool, TaskStatus),
+    /// Query tasks usint FTS
+    Text(String),
+    /// Query tasks with a certain relationship
+    Relation(String, RelationshipSide),
 }
