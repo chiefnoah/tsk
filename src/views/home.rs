@@ -31,8 +31,7 @@ pub(crate) fn render_home<B: Backend>(
     term: &mut Terminal<B>,
     db: &mut Db,
     config: &Config,
-) -> Result<AppState>
-{
+) -> Result<AppState> {
     let mut tasks = db.get_top_n_tasks(config.num_top_tasks)?;
     let layout = Layout::default()
         .constraints([Constraint::Min(1), Constraint::Length(3)])
@@ -135,7 +134,7 @@ pub(crate) fn render_home<B: Backend>(
                                 db.prioritize(*task_id)?;
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
                             }
-                        },
+                        }
                         HomeCommand::Rot(_) => {
                             if tasks.len() >= 3 {
                                 let third = tasks[2].id;
@@ -143,14 +142,22 @@ pub(crate) fn render_home<B: Backend>(
                                 db.set_next_of(first, third)?;
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
                             }
-                        },
+                        }
                         HomeCommand::NRot(_) => {
                             if tasks.len() >= 3 {
                                 let third = tasks[2].id;
                                 db.prioritize(third)?;
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
                             }
-                        },
+                        }
+                        HomeCommand::Make(m) => {
+                            if let Some(name) = m.args() {
+                                let _ = db.make_tag(name).map_err(|_| {
+                                    command_editor
+                                        .set_placeholder_text(format!("Unable to create tag {name}"));
+                                });
+                            }
+                        }
                     }
                 } else {
                     command_editor.set_placeholder_text("Error parsing command");

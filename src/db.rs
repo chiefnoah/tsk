@@ -241,6 +241,12 @@ impl Db {
         Ok(out)
     }
 
+    pub(crate) fn make_tag(&self, name: &String) -> Result<()> {
+        self.conn
+            .execute("INSERT INTO TAG(NAME) VALUES(?)", (name,))?;
+        Ok(())
+    }
+
     fn query(&self, query: Vec<QueryArgs>) -> Result<Vec<Task>> {
         let sql_queries: Vec<String> = query
             .iter()

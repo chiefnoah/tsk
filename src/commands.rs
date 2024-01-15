@@ -1,10 +1,10 @@
 #![allow(dead_code)]
-use crate::types::{Tag, TaskId, QueryArgs};
+use crate::types::TaskId;
 
 use combine::error::ParseError;
 use combine::parser::char::{alpha_num, char, digit, spaces, string};
 use combine::parser::repeat::repeat_until;
-use combine::{any, eof, many, many1, satisfy, StreamOnce, skip_many1, RangeStream};
+use combine::{any, eof, many, many1, satisfy};
 use combine::{
     attempt, between, parser::choice::choice, stream::position, EasyParser, Parser, Stream,
 };
@@ -87,6 +87,10 @@ simple_command! {
     Reprioritize,
     task_id -> TaskId
 }
+simple_command! {
+    Make,
+    name -> String
+}
 
 macro_rules! simple_parser(
     ($name:ident, $c:literal, $full:literal, $type:ty) => {
@@ -140,6 +144,18 @@ where
         .map(|s: String| s.parse::<TaskId>().unwrap())
 }
 
+fn make<Input>() -> impl Parser<Input, Output = Make>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    attempt(string("make"))
+        .or(char('m').map(|_| "make"))
+        .skip(spaces())
+        .with(many1(alpha_num()))
+        .map(|s: String| Make { name: Some(s) })
+}
+
 simple_parser!(edit, 'e', "edit", Edit);
 simple_parser!(drop, 'd', "drop", Drop);
 simple_parser!(complete, 'c', "complete", Complete);
@@ -175,13 +191,13 @@ pub(crate) enum HomeCommand {
     Reprioritize(Reprioritize),
     Rot(Rot),
     NRot(NRot),
+    Make(Make),
     /*
     New(New),
     Start(Start),
     //Undo
     Backlog(Backlog),
     Connect(Option<(TaskId, Tag, TaskId)>),
-    Make(Make),
     Query(Query),
     Link(Link),
     Reprioritize(Reprioritize),
@@ -225,9 +241,12 @@ where
         swap().map(HomeCommand::Swap),
         start().map(HomeCommand::Start),
         todo().map(HomeCommand::Todo),
+        make().map(HomeCommand::Make),
+        // r
         rot().map(HomeCommand::Rot),
         nrot().map(HomeCommand::NRot),
         reprioritize().map(HomeCommand::Reprioritize),
+        // quit
         quit().map(HomeCommand::Quit),
     ))
 }
