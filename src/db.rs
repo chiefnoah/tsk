@@ -193,20 +193,14 @@ impl Db {
     }
     pub(super) fn prioritize(&mut self, task_id: TaskId) -> Result<()> {
         let tx = self.conn.transaction()?;
-        let parent: Option<TaskId> = tx
-            .query_row("SELECT ID FROM TASK WHERE NEXT = ?", (task_id,), |row| {
-                row.get(0)
-            })
-            .optional()?;
-        // Remove the task from continuum
-        if let Some(parent) = parent {
-            tx.execute(
-                "UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?",
-                (task_id, parent),
-            )?;
-        }
-        tx.execute("UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = 0) WHERE ID = ?", (task_id,))?;
-        tx.execute("UPDATE TASK SET NEXT = ? WHERE ID = 0", (task_id,))?;
+        set_next_of(&tx, task_id, 0)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn set_next_of(&mut self, task_id: TaskId, parent_id: TaskId) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        set_next_of(&tx, task_id, parent_id)?;
         tx.commit()?;
         Ok(())
     }
@@ -244,5 +238,24 @@ pub(super) fn update_status(tx: &Transaction, task_id: u64, state: TaskStatus) -
         "INSERT INTO TASK_STATUS(TASK_ID, STATUS) VALUES(?, ?)",
         (task_id, state as u8),
     )?;
+    Ok(())
+}
+pub(super) fn set_next_of(tx: &Transaction, task_id: TaskId, parent_id: TaskId) -> Result<()> {
+    let parent: Option<TaskId> = tx
+        .query_row("SELECT ID FROM TASK WHERE NEXT = ?", (task_id,), |row| {
+            row.get(0)
+        })
+        .optional()?;
+    // Remove the task from continuum
+    if let Some(parent) = parent {
+        tx.execute(
+            "UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?",
+            (task_id, parent),
+        )?;
+    }
+    // Set the parents previous next to the the current tasks next so we don't lose it
+    tx.execute("UPDATE TASK SET NEXT = (SELECT NEXT FROM TASK WHERE ID = ?) WHERE ID = ?", (parent_id, task_id,))?;
+    // Set the task as the next from the parent
+    tx.execute("UPDATE TASK SET NEXT = ? WHERE ID = ?", (task_id, parent_id))?;
     Ok(())
 }

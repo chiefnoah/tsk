@@ -1,15 +1,14 @@
 #![allow(dead_code)]
 use crate::types::{Tag, TaskId, TaskStatus};
 
-use combine::error::ParseError;
+use combine::error::{ParseError, UnexpectedParse};
 use combine::parser::char::{alpha_num, char, digit, spaces, string};
+use combine::parser::combinator::recognize;
 use combine::parser::repeat::repeat_until;
-use combine::{any, eof, many, many1, parser, satisfy};
+use combine::stream::Range;
+use combine::{any, eof, many, many1, satisfy, StreamOnce, skip_many1, RangeStream};
 use combine::{
-    attempt, between,
-    parser::choice::{choice, optional},
-    stream::position,
-    EasyParser, Parser, StdParseResult, Stream,
+    attempt, between, parser::choice::choice, stream::position, EasyParser, Parser, Stream,
 };
 
 pub(crate) trait Command: Sized {
@@ -84,20 +83,24 @@ simple_command!(Start);
 simple_command!(Quit);
 simple_command!(Swap);
 simple_command!(Todo);
+simple_command!(Rot);
+simple_command!(NRot);
 simple_command! {
     Reprioritize,
     task_id -> TaskId
 }
 
 macro_rules! simple_parser(
-    ($name:ident, $c:literal, $rest:literal, $type:ty) => {
+    ($name:ident, $c:literal, $full:literal, $type:ty) => {
         fn $name<Input>() -> impl Parser<Input, Output = $type>
         where
             Input: Stream<Token = char>,
             Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
         {
-            char($c)
-                .and(optional(string($rest)).silent())
+            attempt(string($full))
+                .or(char($c).map(|_| $full))
+                .skip(spaces())
+                .and(eof())
                 .map(|_| <$type>::default())
         }
     };
@@ -108,6 +111,8 @@ macro_rules! simple_parser(
             Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
         {
             attempt(string($command))
+                .skip(spaces())
+                .and(eof())
                 .map(|_| <$type>::default())
         }
     };
@@ -118,8 +123,8 @@ where
     Input: Stream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
-    char('p')
-        .and(optional(string("ush")))
+    attempt(string("push"))
+        .or(char('p').map(|_| "push"))
         .skip(spaces())
         .with(alpha_num().and(repeat_until(any(), eof())))
         .map(|(f, rest): (char, String)| Push {
@@ -137,42 +142,27 @@ where
         .map(|s: String| s.parse::<TaskId>().unwrap())
 }
 
-simple_parser!(edit, 'e', "dit", Edit);
-simple_parser!(drop, 'd', "rop", Drop);
-simple_parser!(complete, 'c', "omplete", Complete);
+simple_parser!(edit, 'e', "edit", Edit);
+simple_parser!(drop, 'd', "drop", Drop);
+simple_parser!(complete, 'c', "complete", Complete);
 simple_parser!(quit, "quit", Quit);
 simple_parser!(swap, "swap", Swap);
-simple_parser!(start, 's', "tart", Start);
-simple_parser!(todo, 't', "odo", Todo);
+simple_parser!(start, 's', "start", Start);
+simple_parser!(todo, 't', "todo", Todo);
+simple_parser!(rot, "rot", Rot);
+simple_parser!(nrot, '-', "-rot", NRot);
 
 fn reprioritize<Input>() -> impl Parser<Input, Output = Reprioritize>
 where
     Input: Stream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
-    char('r')
-        .and(optional(string("ep")))
+    attempt(string("rep"))
+        .or(char('p').map(|_| "rep"))
         .skip(spaces())
         .with(tsk())
         .map(|s| Reprioritize { task_id: Some(s) })
 }
-/*
-simple_command!(New, title, String);
-simple_command!(Start);
-simple_command!(Complete);
-simple_command!(Backlog);
-simple_command!(Todo, task_id, TaskId);
-simple_command!(Make, tag, String);
-simple_command!(Query, query, Vec<QueryArgs>);
-simple_command!(Link, task_id, TaskId);
-simple_command!(Drop, task_id, TaskId);
-simple_command!(Rot);
-simple_command!(NRot);
-simple_command!(Swap);
-simple_command!(Reprioritize, relative_order, u8);
-simple_command!(Deprioritize);
-simple_command!(Quit);
-*/
 
 /// `Query` represents a segment of a query when entering "query mode".
 enum QueryArgs {
@@ -192,6 +182,8 @@ pub(crate) enum HomeCommand {
     Start(Start),
     Todo(Todo),
     Reprioritize(Reprioritize),
+    Rot(Rot),
+    NRot(NRot),
     /*
     New(New),
     Start(Start),
@@ -201,8 +193,6 @@ pub(crate) enum HomeCommand {
     Make(Make),
     Query(Query),
     Link(Link),
-    Rot(Rot),
-    NRot(NRot),
     Reprioritize(Reprioritize),
     Deprioritize(Deprioritize),
     Quit(Quit),
@@ -216,6 +206,11 @@ pub(crate) enum CommandParseError {
     UnknownCommand(String),
     InvalidArgument(Vec<String>),
     Unknown,
+}
+
+enum TaskOrRelative {
+    Task(TaskId),
+    Relative(u8),
 }
 
 fn str<Input>() -> impl Parser<Input, Output = String>
@@ -239,6 +234,8 @@ where
         swap().map(HomeCommand::Swap),
         start().map(HomeCommand::Start),
         todo().map(HomeCommand::Todo),
+        rot().map(HomeCommand::Rot),
+        nrot().map(HomeCommand::NRot),
         reprioritize().map(HomeCommand::Reprioritize),
         quit().map(HomeCommand::Quit),
     ))

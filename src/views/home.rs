@@ -138,6 +138,21 @@ where
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
                             }
                         },
+                        HomeCommand::Rot(_) => {
+                            if tasks.len() >= 3 {
+                                let third = tasks[2].id;
+                                let first = tasks.first().map(|t| t.id).unwrap();
+                                db.set_next_of(first, third)?;
+                                tasks = db.get_top_n_tasks(config.num_top_tasks)?;
+                            }
+                        },
+                        HomeCommand::NRot(_) => {
+                            if tasks.len() >= 3 {
+                                let third = tasks[2].id;
+                                db.prioritize(third)?;
+                                tasks = db.get_top_n_tasks(config.num_top_tasks)?;
+                            }
+                        },
                     }
                 } else {
                     command_editor.set_placeholder_text("Error parsing command");
