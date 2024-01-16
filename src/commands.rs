@@ -194,7 +194,6 @@ pub(crate) enum HomeCommand {
     Make(Make),
     /*
     New(New),
-    Start(Start),
     //Undo
     Backlog(Backlog),
     Connect(Option<(TaskId, Tag, TaskId)>),

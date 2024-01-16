@@ -39,6 +39,11 @@ pub(crate) fn render_home<B: Backend>(
     let mut command_editor = TextArea::default();
     command_editor.set_cursor_line_style(Style::default());
     command_editor.set_placeholder_text("Enter a command...");
+    command_editor.set_placeholder_style(
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+    );
     command_editor.set_style(Style::default().fg(Color::White));
     let mut count = 0;
     loop {
@@ -153,20 +158,36 @@ pub(crate) fn render_home<B: Backend>(
                         HomeCommand::Make(m) => {
                             if let Some(name) = m.args() {
                                 let _ = db.make_tag(name).map_err(|_| {
-                                    command_editor
-                                        .set_placeholder_text(format!("Unable to create tag {name}"));
+                                    command_editor.set_placeholder_style(
+                                        Style::default()
+                                            .fg(Color::Red)
+                                            .add_modifier(Modifier::ITALIC),
+                                    );
+                                    command_editor.set_placeholder_text(format!(
+                                        "Unable to create tag {name}"
+                                    ));
                                 });
                             }
                         }
                     }
                 } else {
+                    command_editor.set_placeholder_style(
+                        Style::default()
+                            .fg(Color::Red)
+                            .add_modifier(Modifier::ITALIC),
+                    );
                     command_editor.set_placeholder_text("Error parsing command");
                 }
                 command_editor.delete_line_by_head();
             }
             input => {
                 if command_editor.input(input) {
-                    command_editor.set_placeholder_text(format!("Count: {count}"));
+                    command_editor.set_placeholder_style(
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    );
+                    command_editor.set_placeholder_text("Enter a command...");
                     count += 1;
                 }
             }
