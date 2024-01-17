@@ -2,7 +2,7 @@
 use crate::types::TaskId;
 
 use combine::error::ParseError;
-use combine::parser::char::{alpha_num, char, digit, spaces, string};
+use combine::parser::char::{alpha_num, char, digit, spaces, string, space};
 use combine::parser::repeat::repeat_until;
 use combine::{any, eof, many, many1, satisfy};
 use combine::{
@@ -127,7 +127,7 @@ where
 {
     attempt(string("push"))
         .or(char('p').map(|_| "push"))
-        .skip(spaces())
+        .skip(spc())
         .with(alpha_num().and(repeat_until(any(), eof())))
         .map(|(f, rest): (char, String)| Push {
             title: Some(format!("{f}{rest}")),
@@ -142,6 +142,15 @@ where
     attempt(string("tsk-"))
         .with(many1(digit()))
         .map(|s: String| s.parse::<TaskId>().unwrap())
+}
+
+
+fn spc<Input>() -> impl Parser<Input, Output = String>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    many1(space())
 }
 
 fn make<Input>() -> impl Parser<Input, Output = Make>
