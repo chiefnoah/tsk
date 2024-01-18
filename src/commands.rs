@@ -250,7 +250,7 @@ where
         start().map(HomeCommand::Start),
         todo().map(HomeCommand::Todo),
         make().map(HomeCommand::Make),
-        // r
+        // r-prefixed commands
         rot().map(HomeCommand::Rot),
         nrot().map(HomeCommand::NRot),
         reprioritize().map(HomeCommand::Reprioritize),

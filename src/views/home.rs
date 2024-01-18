@@ -44,6 +44,12 @@ pub(crate) fn render_home<B: Backend>(
             .fg(Color::DarkGray)
             .add_modifier(Modifier::ITALIC),
     );
+    command_editor.set_block(
+        Block::new()
+            .title("0/120")
+            .set_style(Style::default().fg(Color::DarkGray))
+            .title_alignment(Alignment::Right),
+    );
     command_editor.set_style(Style::default().fg(Color::White));
     let mut count = 0;
     loop {
@@ -62,13 +68,28 @@ pub(crate) fn render_home<B: Backend>(
             frame.render_widget(list, chunks[0]);
             frame.render_widget(command_editor.widget(), chunks[1]);
         })?;
-        match crossterm::event::read()?.into() {
+        let input = crossterm::event::read()?.into();
+        match input {
             Input { key: Key::Esc, .. }
             | Input {
                 key: Key::Char('q'),
                 ctrl: true,
                 ..
             } => break,
+            Input {
+                key: Key::Backspace,
+                ..
+            } => {
+                if command_editor.input(input) {
+                    count -= 1;
+                    command_editor.set_block(
+                        Block::new()
+                            .title(format!("{count}/120"))
+                            .set_style(Style::default().fg(Color::DarkGray))
+                            .title_alignment(Alignment::Right),
+                    );
+                }
+            }
             Input {
                 key: Key::Char('m'),
                 ctrl: true,
@@ -178,7 +199,14 @@ pub(crate) fn render_home<B: Backend>(
                     );
                     command_editor.set_placeholder_text("Error parsing command");
                 }
+                count = 0;
                 command_editor.delete_line_by_head();
+                command_editor.set_block(
+                    Block::new()
+                        .title(format!("{count}/120"))
+                        .set_style(Style::default().fg(Color::DarkGray))
+                        .title_alignment(Alignment::Right),
+                );
             }
             input => {
                 if command_editor.input(input) {
@@ -189,6 +217,12 @@ pub(crate) fn render_home<B: Backend>(
                     );
                     command_editor.set_placeholder_text("Enter a command...");
                     count += 1;
+                    command_editor.set_block(
+                        Block::new()
+                            .title(format!("{count}/120"))
+                            .set_style(Style::default().fg(Color::DarkGray))
+                            .title_alignment(Alignment::Right),
+                    );
                 }
             }
         }
