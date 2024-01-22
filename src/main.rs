@@ -4,6 +4,7 @@ mod db;
 mod error;
 mod types;
 mod views;
+mod command_widget;
 use crate::error::Result;
 use crate::views::home::{render_home, AppState};
 use crate::{config::Config, db::Db};
