@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 use crate::{
-    commands::{self, parse_home_command, Command, HomeCommand, Push},
+    commands::{self, parse_home_command, Command, HomeCommand, Push, TaskIdentifier},
     config::Config,
     db::Db,
     error::{Error, Result},
@@ -88,10 +88,10 @@ pub(crate) fn render_home<B: Backend>(
                         }
                         HomeCommand::Edit(_) => unimplemented!("Edit command isn't implemented."),
                         HomeCommand::Drop(c) => {
-                            let task_id = if let Some(task_id) = c.args() {
-                                Some(*task_id)
-                            } else {
-                                tasks.first().map(|t| t.id)
+                            let identifier = c.args().unwrap_or(&TaskIdentifier::Stack(0)).clone();
+                            let task_id = match identifier {
+                                TaskIdentifier::Task(t) => Some(t),
+                                TaskIdentifier::Stack(s) => tasks.get(s as usize).map(|t| t.id),
                             };
                             if let Some(task_id) = task_id {
                                 db.deprioritize(task_id)?;
@@ -99,11 +99,7 @@ pub(crate) fn render_home<B: Backend>(
                             }
                         }
                         HomeCommand::Complete(c) => {
-                            let task_id = if let Some(task_id) = c.args() {
-                                Some(*task_id)
-                            } else {
-                                tasks.first().map(|t| t.id)
-                            };
+                            let task_id = tasks.first().map(|t| t.id);
                             if let Some(task_id) = task_id {
                                 db.update_status(task_id, TaskStatus::Complete)?;
                                 db.deprioritize(task_id)?;
@@ -135,8 +131,13 @@ pub(crate) fn render_home<B: Backend>(
                             }
                         }
                         HomeCommand::Reprioritize(r) => {
-                            if let Some(task_id) = r.args() {
-                                db.prioritize(*task_id)?;
+                            let identifier = r.args().unwrap_or(&TaskIdentifier::Stack(0)).clone();
+                            let task_id = match identifier {
+                                TaskIdentifier::Task(t) => Some(t),
+                                TaskIdentifier::Stack(s) => tasks.get(s as usize).map(|t| t.id),
+                            };
+                            if let Some(task_id) = task_id {
+                                db.prioritize(task_id)?;
                                 tasks = db.get_top_n_tasks(config.num_top_tasks)?;
                             }
                         }

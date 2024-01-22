@@ -9,7 +9,7 @@ use combine::{
     attempt, between, parser::choice::choice, stream::position, EasyParser, Parser, Stream,
 };
 
-pub(crate) trait Command: Sized {
+pub(crate) trait Command {
     type Arg;
     fn args(&self) -> Option<&Self::Arg>;
     fn valid<F>(&self, check: Option<F>) -> bool
@@ -18,10 +18,15 @@ pub(crate) trait Command: Sized {
     fn wait() -> bool {
         true
     }
+
+    fn parse_argument<Input>(&self) -> impl Parser<Input, Output = Self::Arg>
+    where
+        Input: Stream<Token = char>,
+        Input::Error: ParseError<Input::Token, Input::Range, Input::Position>;
 }
 
 macro_rules! simple_command {
-    {$name:ident, $arg:ident -> $argty:ty} => {
+    {$name:ident, $arg:ident -> $argty:ty, $parser:expr} => {
         #[derive(Debug)]
         pub(crate) struct $name {
             $arg: Option<$argty>,
@@ -52,30 +57,38 @@ macro_rules! simple_command {
                     self.$arg.is_some()
                 }
             }
+
+            fn parse_argument<Input>(&self) -> impl Parser<Input, Output = $argty>
+                where
+                    Input: Stream<Token = char>,
+                    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+            {
+                spaces().with($parser)
+            }
         }
     };
     ($name:ident) => {
-        simple_command!($name, none -> ());
+        simple_command!($name, none -> (), eof());
     };
 }
 
 simple_command! {
     Push,
-    title -> String
+    title -> String,
+    repeat_until(any(), eof()).map(|c| c)
 }
 simple_command! {
     Edit,
-    task_id -> TaskId
+    task_id -> TaskIdentifier,
+    task_identifier()
 }
 simple_command! {
     Drop,
-    task_id -> TaskId
+    task_id -> TaskIdentifier,
+    task_identifier()
 }
 
-simple_command! {
-    Complete,
-    task_id -> TaskId
-}
+simple_command!(Complete);
 simple_command!(Start);
 
 simple_command!(Quit);
@@ -85,11 +98,13 @@ simple_command!(Rot);
 simple_command!(NRot);
 simple_command! {
     Reprioritize,
-    task_id -> TaskId
+    task_id -> TaskIdentifier,
+    task_identifier()
 }
 simple_command! {
     Make,
-    name -> String
+    name -> String,
+    repeat_until(any(), eof()).map(|c| c)
 }
 
 macro_rules! simple_parser(
@@ -175,7 +190,9 @@ where
         .or(char('p').map(|_| "rep"))
         .skip(spaces())
         .with(tsk())
-        .map(|s| Reprioritize { task_id: Some(s) })
+        .map(|s| Reprioritize {
+            task_id: Some(TaskIdentifier::Task(s)),
+        })
 }
 
 #[derive(Debug)]
@@ -194,7 +211,6 @@ pub(crate) enum HomeCommand {
     Make(Make),
     /*
     New(New),
-    //Undo
     Backlog(Backlog),
     Connect(Option<(TaskId, Tag, TaskId)>),
     Query(Query),
@@ -214,9 +230,22 @@ pub(crate) enum CommandParseError {
     Unknown,
 }
 
-enum TaskOrRelative {
+#[derive(Debug, Clone)]
+pub(crate) enum TaskIdentifier {
     Task(TaskId),
-    Relative(u8),
+    Stack(u8),
+}
+
+fn task_identifier<Input>() -> impl Parser<Input, Output = TaskIdentifier>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    // unwrap is safe in parse becuase we are guaranteed to only have digits
+    choice((
+        attempt(many1(digit()).map(|c: String| TaskIdentifier::Stack(c.parse::<u8>().unwrap()))),
+        tsk().map(TaskIdentifier::Task),
+    ))
 }
 
 fn str<Input>() -> impl Parser<Input, Output = String>
@@ -257,7 +286,6 @@ pub(crate) fn parse_home_command(input: &str) -> Option<HomeCommand> {
         .map(|c| c.0);
     out.ok()
 }
-
 #[cfg(test)]
 mod test {
     use super::*;
