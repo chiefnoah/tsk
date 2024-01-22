@@ -2,7 +2,7 @@
 use crate::types::TaskId;
 
 use combine::error::ParseError;
-use combine::parser::char::{alpha_num, char, digit, spaces, string, space};
+use combine::parser::char::{alpha_num, char, digit, space, spaces, string};
 use combine::parser::repeat::repeat_until;
 use combine::{any, eof, many, many1, satisfy};
 use combine::{
@@ -31,6 +31,14 @@ macro_rules! simple_command {
             fn default() -> Self {
                 Self {
                     $arg: Default::default(),
+                }
+            }
+        }
+
+        impl $name {
+            pub(crate) fn new(arg: $argty) -> Self {
+                Self {
+                    $arg: Some(arg),
                 }
             }
         }
@@ -92,7 +100,9 @@ simple_command! {
     name -> String
 }
 
+/// `simple_parser` handles parsing of an argless command
 macro_rules! simple_parser(
+    // This macro branch supports single-character shorthand
     ($name:ident, $c:literal, $full:literal, $type:ty) => {
         fn $name<Input>() -> impl Parser<Input, Output = $type>
         where
@@ -106,6 +116,7 @@ macro_rules! simple_parser(
                 .map(|_| <$type>::default())
         }
     };
+    // No shorthand
     ($name:ident, $command:literal, $type:ty) => {
         fn $name<Input>() -> impl Parser<Input, Output = $type>
         where
@@ -143,7 +154,6 @@ where
         .with(many1(digit()))
         .map(|s: String| s.parse::<TaskId>().unwrap())
 }
-
 
 fn spc<Input>() -> impl Parser<Input, Output = String>
 where
