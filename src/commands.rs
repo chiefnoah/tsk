@@ -4,7 +4,8 @@ use crate::types::TaskId;
 use combine::error::ParseError;
 use combine::parser::char::{alpha_num, char, digit, spaces, string};
 use combine::parser::repeat::repeat_until;
-use combine::{any, eof, many, many1, satisfy};
+use combine::stream::position::{IndexPositioner, SourcePosition};
+use combine::{any, eof, many, many1, satisfy, RangeStream};
 use combine::{
     attempt, between, parser::choice::choice, stream::position, EasyParser, Parser, Stream,
 };
@@ -21,7 +22,7 @@ pub(crate) trait Command {
 
     fn parse_argument<Input>(&self) -> impl Parser<Input, Output = Self::Arg>
     where
-        Input: Stream<Token = char>,
+        Input: RangeStream<Token = char>,
         Input::Error: ParseError<Input::Token, Input::Range, Input::Position>;
 }
 
@@ -60,7 +61,7 @@ macro_rules! simple_command {
 
             fn parse_argument<Input>(&self) -> impl Parser<Input, Output = $argty>
                 where
-                    Input: Stream<Token = char>,
+                    Input: RangeStream<Token = char>,
                     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
             {
                 spaces().with($parser)
@@ -75,7 +76,7 @@ macro_rules! simple_command {
 simple_command! {
     Push,
     title -> String,
-    repeat_until(any(), eof()).map(|c| c)
+    repeat_until(any(), eof())
 }
 simple_command! {
     Edit,
@@ -104,14 +105,14 @@ simple_command! {
 simple_command! {
     Make,
     name -> String,
-    repeat_until(any(), eof()).map(|c| c)
+    repeat_until(any(), eof())
 }
 
 macro_rules! simple_parser(
     ($name:ident, $c:literal, $full:literal, $type:ty) => {
         fn $name<Input>() -> impl Parser<Input, Output = $type>
         where
-            Input: Stream<Token = char>,
+            Input: RangeStream<Token = char>,
             Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
         {
             attempt(string($full))
@@ -124,7 +125,7 @@ macro_rules! simple_parser(
     ($name:ident, $command:literal, $type:ty) => {
         fn $name<Input>() -> impl Parser<Input, Output = $type>
         where
-            Input: Stream<Token = char>,
+            Input: RangeStream<Token = char>,
             Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
         {
             attempt(string($command))
@@ -137,7 +138,7 @@ macro_rules! simple_parser(
 
 fn push<Input>() -> impl Parser<Input, Output = Push>
 where
-    Input: Stream<Token = char>,
+    Input: RangeStream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     attempt(string("push"))
@@ -151,7 +152,7 @@ where
 
 fn tsk<Input>() -> impl Parser<Input, Output = TaskId>
 where
-    Input: Stream<Token = char>,
+    Input: RangeStream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     attempt(string("tsk-"))
@@ -161,7 +162,7 @@ where
 
 fn make<Input>() -> impl Parser<Input, Output = Make>
 where
-    Input: Stream<Token = char>,
+    Input: RangeStream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     attempt(string("make"))
@@ -183,7 +184,7 @@ simple_parser!(nrot, '-', "-rot", NRot);
 
 fn reprioritize<Input>() -> impl Parser<Input, Output = Reprioritize>
 where
-    Input: Stream<Token = char>,
+    Input: RangeStream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     attempt(string("rep"))
@@ -238,7 +239,7 @@ pub(crate) enum TaskIdentifier {
 
 fn task_identifier<Input>() -> impl Parser<Input, Output = TaskIdentifier>
 where
-    Input: Stream<Token = char>,
+    Input: RangeStream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     // unwrap is safe in parse becuase we are guaranteed to only have digits
@@ -250,7 +251,7 @@ where
 
 fn str<Input>() -> impl Parser<Input, Output = String>
 where
-    Input: Stream<Token = char>,
+    Input: RangeStream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     between(char('"'), char('"'), many(satisfy(|c| c != '"')))
@@ -258,7 +259,7 @@ where
 
 fn command<Input>() -> impl Parser<Input, Output = HomeCommand>
 where
-    Input: Stream<Token = char>,
+    Input: RangeStream<Token = char>,
     Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
 {
     choice((
@@ -279,13 +280,17 @@ where
     ))
 }
 
-pub(crate) fn parse_home_command(input: &str) -> Option<HomeCommand> {
-    let lower = input.to_ascii_lowercase();
-    let out = command()
-        .easy_parse(position::Stream::new(lower.as_str()))
-        .map(|c| c.0);
-    out.ok()
+pub(crate) fn parse_home_command(
+    input: &str,
+) -> Option<(HomeCommand, position::Stream<&str, IndexPositioner>)> {
+    command()
+        .easy_parse(position::Stream::with_positioner(
+            input,
+            IndexPositioner::new(),
+        ))
+        .ok()
 }
+
 #[cfg(test)]
 mod test {
     use super::*;

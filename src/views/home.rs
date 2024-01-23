@@ -77,7 +77,7 @@ pub(crate) fn render_home<B: Backend>(
             Input {
                 key: Key::Enter, ..
             } => {
-                if let Some(c) = parse_home_command(command_editor.lines()[0].as_str()) {
+                if let Some((c, _rest)) = parse_home_command(command_editor.lines()[0].as_str()) {
                     match c {
                         HomeCommand::Push(p) => {
                             if let Some(a) = p.args() {
