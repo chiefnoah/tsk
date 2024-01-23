@@ -11,7 +11,7 @@ pub(crate) struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { num_top_tasks: 10 }
+        Self { num_top_tasks: 20 }
     }
 }
 
