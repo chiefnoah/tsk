@@ -2,7 +2,8 @@
 use crate::commands::HomeCommand;
 use ratatui::{
     prelude::{Buffer, Rect},
-    widgets::StatefulWidget,
+    style::Style,
+    widgets::{Block, StatefulWidget},
 };
 
 const BUFFER_SIZE: usize = 180;
@@ -22,7 +23,21 @@ pub enum CommandMode {
     Home(ParsingMode<HomeCommand>),
 }
 
-pub struct CommandWidget;
+pub struct CommandWidget<'a> {
+    block: Option<Block<'a>>,
+    style: Style,
+    highlight_style: Style,
+}
+
+impl<'a> Default for CommandWidget<'a> {
+    fn default() -> Self {
+        Self {
+            block: Default::default(),
+            style: Default::default(),
+            highlight_style: Default::default(),
+        }
+    }
+}
 
 struct CommandState {
     text: String,
@@ -38,7 +53,7 @@ impl Default for CommandState {
     }
 }
 
-impl StatefulWidget for CommandWidget {
+impl<'a> StatefulWidget for CommandWidget<'a> {
     type State = CommandMode;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {

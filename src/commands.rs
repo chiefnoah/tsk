@@ -175,7 +175,7 @@ where
 simple_parser!(edit, 'e', "edit", Edit);
 simple_parser!(drop, 'd', "drop", Drop);
 simple_parser!(complete, 'c', "complete", Complete);
-simple_parser!(quit, "quit", Quit);
+simple_parser!(quit, 'q', "quit", Quit);
 simple_parser!(swap, "swap", Swap);
 simple_parser!(start, 's', "start", Start);
 simple_parser!(todo, 't', "todo", Todo);
