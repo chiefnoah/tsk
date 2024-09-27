@@ -1,0 +1,14 @@
+[package]
+name = "tsk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.18", features = ["derive", "env"] }
+clap_complete = "4.5.29"
+clap_mangen = "0.2.23"
+edit = "0.1.5"
+iocraft = "0.2.3"
+nix = "0.29.0"
+smol = "2.0.2"
+xattr = "1.3.1"
