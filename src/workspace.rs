@@ -3,12 +3,9 @@ use nix::fcntl::{Flock, FlockArg};
 
 use crate::errors::{Error, Result};
 use std::fs::File;
-use std::io::{BufReader, Seek};
+use std::io::{Read, Seek};
 use std::path::PathBuf;
-use std::{
-    fs::OpenOptions,
-    io::{BufRead, Write},
-};
+use std::{fs::OpenOptions, io::Write};
 
 pub struct Id(u32);
 
@@ -43,7 +40,7 @@ impl Workspace {
         if !tsk_dir.exists() {
             return Err(Error::Uninitialized);
         } else {
-            Ok(Self { path })
+            Ok(Self { path: tsk_dir })
         }
     }
 
@@ -51,12 +48,12 @@ impl Workspace {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
+            .create(false)
             .open(self.path.join("next"))?;
         let mut lock =
             Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| Error::Lock(errno))?;
         let mut buf = String::new();
-        BufReader::new(&*lock).read_line(&mut buf)?;
+        lock.read_to_string(&mut buf)?;
         let id = buf.trim().parse::<u32>()?;
         // reset the files contents
         lock.set_len(0)?;
@@ -74,7 +71,7 @@ impl Workspace {
             .read(true)
             .write(true)
             .create(true)
-            .open(self.path.join(format!("tsk-{}.tsk", id.0)))?;
+            .open(self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)))?;
         let mut file =
             Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| Error::Lock(errno))?;
         file.write_all(format!("{title}\n\n{body}").as_bytes())?;
