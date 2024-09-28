@@ -1,5 +1,8 @@
+mod errors;
+mod workspace;
 use std::path::PathBuf;
 use std::{env::current_dir, io::Read};
+use workspace::Workspace;
 
 //use smol;
 //use iocraft::prelude::*;
@@ -12,9 +15,9 @@ fn default_dir() -> PathBuf {
 
 #[derive(Parser)]
 // TODO: add long_about
-#[command(version, about, long_about = None)]
+#[command(version, about)]
 struct Cli {
-    #[arg(short = 'C', env = "TSK_DIR", value_name = "DIR")]
+    #[arg(short = 'C', env = "TSK_ROOT", value_name = "DIR")]
     dir: Option<PathBuf>,
     // TODO: other global options
     #[command(subcommand)]
@@ -23,6 +26,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    Init,
     /// Creates a new task, automatically assigning it a unique identifider and persisting
     Push {
         /// Whether to open $EDITOR to edit the content of the task. The first line if the
@@ -56,29 +60,33 @@ struct Title {
 
 fn main() {
     let cli = Cli::parse();
-    if let Commands::Push { edit, body, title } = cli.command {
-        let title = if let Some(title) = title.title {
-            eprintln!("TITLE: {}", title);
-            title
-        } else if let Some(title) = title.title_simple {
-            let joined = title.join(" ");
-            eprintln!("TITLE simple: {}", joined);
-            joined
-        } else {
-            "".to_string()
-        };
-        let mut body = body.unwrap_or_default();
-        if body == "-" {
-            // add newline so you can type directly in the shell
-            eprintln!("");
-            body.clear();
-            std::io::stdin()
-                .read_to_string(&mut body)
-                .expect("Failed to read stdin");
+    match cli.command {
+        Commands::Init => Workspace::init(cli.dir.unwrap_or(default_dir())).expect("Init failed"),
+        Commands::Push { edit, body, title } => {
+            let title = if let Some(title) = title.title {
+                title
+            } else if let Some(title) = title.title_simple {
+                let joined = title.join(" ");
+                joined
+            } else {
+                "".to_string()
+            };
+            let mut body = body.unwrap_or_default();
+            if body == "-" {
+                // add newline so you can type directly in the shell
+                eprintln!("");
+                body.clear();
+                std::io::stdin()
+                    .read_to_string(&mut body)
+                    .expect("Failed to read stdin");
+            }
+            if edit {
+                body = open_editor(format!("{title}\n\n{body}")).expect("Failed to edit file");
+            }
+            Workspace::from_path(cli.dir.unwrap_or(default_dir()))
+                .expect("Unable to find .tsk dir")
+                .new_task(title, body)
+                .expect("Failed to create task");
         }
-        if edit {
-            body = open_editor(format!("{title}\n\n{body}")).expect("Failed to edit file");
-        }
-        eprintln!("BODY: {body}");
     }
 }
