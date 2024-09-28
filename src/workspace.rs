@@ -2,6 +2,7 @@
 use nix::fcntl::{Flock, FlockArg};
 
 use crate::errors::{Error, Result};
+use std::fs::File;
 use std::io::{BufReader, Seek};
 use std::path::PathBuf;
 use std::{
