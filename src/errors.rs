@@ -14,4 +14,8 @@ pub enum Error {
     Lock(nix::errno::Errno),
     #[error("Unable to parse id: {0}")]
     ParseId(#[from] std::num::ParseIntError),
+    #[error("General parsing error: {0}")]
+    Parse(String),
+    #[error("An unexpected error occurred: {0}")]
+    Oops(Box<dyn std::error::Error>),
 }
