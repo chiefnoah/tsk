@@ -2,6 +2,7 @@ mod errors;
 mod workspace;
 mod stack;
 mod util;
+mod buffer;
 use std::path::PathBuf;
 use std::{env::current_dir, io::Read};
 use workspace::Workspace;

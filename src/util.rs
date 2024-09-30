@@ -6,7 +6,7 @@ use std::{
 
 use nix::fcntl::{Flock, FlockArg};
 
-pub fn flopen(path: &PathBuf, mode: FlockArg) -> Result<Flock<File>> {
+pub fn flopen(path: PathBuf, mode: FlockArg) -> Result<Flock<File>> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)

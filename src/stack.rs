@@ -3,16 +3,12 @@
 
 use crate::errors::{Error, Result};
 use crate::util;
-use std::io::{self, BufRead};
-use std::num::ParseIntError;
-use std::{fs::File, io::Read, path::PathBuf};
+use std::io::{self, BufRead, Read};
+use std::{fs::File, path::PathBuf};
 
 use nix::fcntl::{Flock, FlockArg};
 
-use crate::workspace::Id;
-
-const INDEXFILE: &str = "index";
-const TITLECACHEFILE: &str = "cache";
+use crate::workspace::{Id, Workspace};
 
 struct StackItem {
     id: Id,
@@ -28,7 +24,7 @@ fn eof() -> Error {
 }
 
 impl StackItem {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
+    fn from_reader(workspace_path: &PathBuf, reader: &mut impl BufRead) -> Result<Self> {
         let mut buf = String::new();
         reader.read_line(&mut buf)?;
         if buf.is_empty() {
@@ -38,6 +34,7 @@ impl StackItem {
             )));
         }
         let (id, next) = Self::parse(&buf)?;
+        let title = util::flopen(workspace_path.join("tasks").join(id), mode)
         todo!();
     }
 
@@ -63,10 +60,7 @@ pub struct TaskStack {
 }
 
 impl TaskStack {
-    fn from_tskdir(path: &PathBuf) -> Self {
-        let index = util::flopen(&path.join(INDEXFILE), FlockArg::LockExclusive);
-        let cache = util::flopen(&path.join(TITLECACHEFILE), FlockArg::LockShared);
-
+    fn from_tskdir(path: &PathBuf) -> Result<Self> {
         todo!()
     }
 }

@@ -2,6 +2,7 @@
 use nix::fcntl::{Flock, FlockArg};
 
 use crate::errors::{Error, Result};
+use crate::stack::TaskStack;
 use crate::util;
 use std::fs::File;
 use std::io::{Read, Seek};
@@ -9,6 +10,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs::OpenOptions, io::Write};
 
+const INDEXFILE: &str = "index";
+const TITLECACHEFILE: &str = "cache";
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
 pub struct Id(u32);
 
@@ -58,7 +61,7 @@ impl Workspace {
     }
 
     pub fn next_id(&self) -> Result<Id> {
-        let mut file = util::flopen(&self.path.join("next"), FlockArg::LockExclusive)?;
+        let mut file = util::flopen(self.path.join("next"), FlockArg::LockExclusive)?;
         let mut buf = String::new();
         file.read_to_string(&mut buf)?;
         let id = buf.trim().parse::<u32>()?;
@@ -75,7 +78,7 @@ impl Workspace {
         // TODO: we could improperly increment the id if the task is not written to disk/errors
         let id = self.next_id()?;
         let mut file = util::flopen(
-            &self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
+            self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
             FlockArg::LockExclusive,
         )?;
         file.write_all(format!("{title}\n\n{body}").as_bytes())?;
@@ -85,6 +88,19 @@ impl Workspace {
             body,
             file,
         })
+    }
+
+    fn read_stack(&self) -> Result<TaskStack> {
+        let mut index = String::new();
+        let mut cache = String::new();
+        let mut index_file = util::flopen(self.path.join(INDEXFILE), FlockArg::LockExclusive)?;
+        let mut cache_file = util::flopen(self.path.join(TITLECACHEFILE), FlockArg::LockShared)?;
+        index_file.read_to_string(&mut index)?;
+        for line in index.lines() {
+            
+        }
+
+        todo!();
     }
 }
 
