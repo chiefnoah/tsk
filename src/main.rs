@@ -1,8 +1,7 @@
 mod errors;
-mod workspace;
 mod stack;
 mod util;
-mod buffer;
+mod workspace;
 use std::path::PathBuf;
 use std::{env::current_dir, io::Read};
 use workspace::Workspace;
@@ -47,6 +46,15 @@ enum Commands {
         #[command(flatten)]
         title: Title,
     },
+    List {
+        /// Whether to list all tasks in the task stack. If specified, -c / count is ignored.
+        #[arg(short = 'a', default_value_t = false)]
+        all: bool,
+        #[arg(short = 'c', default_value_t = 10)]
+        count: usize,
+    },
+
+    Swap,
 }
 
 #[derive(Args)]
@@ -64,32 +72,66 @@ struct Title {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Init => Workspace::init(cli.dir.unwrap_or(default_dir())).expect("Init failed"),
+        Commands::Init => command_init(cli.dir.unwrap_or(default_dir())),
         Commands::Push { edit, body, title } => {
-            let title = if let Some(title) = title.title {
-                title
-            } else if let Some(title) = title.title_simple {
-                let joined = title.join(" ");
-                joined
-            } else {
-                "".to_string()
-            };
-            let mut body = body.unwrap_or_default();
-            if body == "-" {
-                // add newline so you can type directly in the shell
-                eprintln!("");
-                body.clear();
-                std::io::stdin()
-                    .read_to_string(&mut body)
-                    .expect("Failed to read stdin");
-            }
-            if edit {
-                body = open_editor(format!("{title}\n\n{body}")).expect("Failed to edit file");
-            }
-            Workspace::from_path(cli.dir.unwrap_or(default_dir()))
-                .expect("Unable to find .tsk dir")
-                .new_task(title, body)
-                .expect("Failed to create task");
+            command_push(cli.dir.unwrap_or(default_dir()), edit, body, title)
         }
+        Commands::List { all, count } => command_list(cli.dir.unwrap_or(default_dir()), all, count),
+        Commands::Swap => command_swap(cli.dir.unwrap_or(default_dir()))
     }
+}
+
+fn command_init(dir: PathBuf) {
+    Workspace::init(dir).expect("Init failed")
+}
+
+fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) {
+    let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
+    let title = if let Some(title) = title.title {
+        title
+    } else if let Some(title) = title.title_simple {
+        let joined = title.join(" ");
+        joined
+    } else {
+        "".to_string()
+    };
+    let mut body = body.unwrap_or_default();
+    if body == "-" {
+        // add newline so you can type directly in the shell
+        eprintln!("");
+        body.clear();
+        std::io::stdin()
+            .read_to_string(&mut body)
+            .expect("Failed to read stdin");
+    }
+    if edit {
+        body = open_editor(format!("{title}\n\n{body}")).expect("Failed to edit file");
+    }
+    let task = workspace
+        .new_task(title, body)
+        .expect("Failed to create task");
+    workspace
+        .push_task(task)
+        .expect("Failed to push task to stack");
+}
+
+fn command_list(dir: PathBuf, all: bool, count: usize) {
+    let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
+    let stack = if all {
+        workspace.read_stack(None).expect("Failed to read index")
+    } else {
+        workspace
+            .read_stack(Some(count))
+            .expect("Failed to read index")
+    };
+    if stack.empty() {
+        println!("*No tasks*");
+    } else {
+        println!("{}", stack);
+    }
+}
+
+fn command_swap(dir: PathBuf) {
+    let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
+    workspace.swap_top().expect("swap to work");
 }

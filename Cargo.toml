@@ -12,5 +12,6 @@ iocraft = "0.2.3"
 nix = { version = "0.29.0", features = ["fs"] }
 smallstr = { version = "0.3.0", features = ["std"] }
 smol = "2.0.2"
+tabwriter = "1.4.0"
 thiserror = "1.0.64"
 xattr = "1.3.1"

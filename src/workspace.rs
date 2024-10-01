@@ -4,6 +4,7 @@ use nix::fcntl::{Flock, FlockArg};
 use crate::errors::{Error, Result};
 use crate::stack::TaskStack;
 use crate::util;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{Read, Seek};
 use std::path::PathBuf;
@@ -19,9 +20,22 @@ impl FromStr for Id {
     type Err = Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        s.strip_prefix("tsk-")
-            .ok_or(Self::Err::Parse("expected tsk- prefix ".to_string()))?;
+        let s = s
+            .strip_prefix("tsk-")
+            .ok_or(Self::Err::Parse(format!("expected tsk- prefix. Got {s}")))?;
         Ok(Self(s.parse()?))
+    }
+}
+
+impl Display for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tsk-{}", self.0)
+    }
+}
+
+impl Id {
+    pub fn to_string(&self) -> String {
+        format!("tsk-{}.tsk", self.0)
     }
 }
 
@@ -90,25 +104,30 @@ impl Workspace {
         })
     }
 
-    fn read_stack(&self) -> Result<TaskStack> {
-        let mut index = String::new();
-        let mut cache = String::new();
-        let mut index_file = util::flopen(self.path.join(INDEXFILE), FlockArg::LockExclusive)?;
-        let mut cache_file = util::flopen(self.path.join(TITLECACHEFILE), FlockArg::LockShared)?;
-        index_file.read_to_string(&mut index)?;
-        for line in index.lines() {
-            
-        }
+    pub fn read_stack(&self, count: Option<usize>) -> Result<TaskStack> {
+        TaskStack::from_tskdir(&self.path, count)
+    }
 
-        todo!();
+    pub fn push_task(&self, task: Task) -> Result<()> {
+        let mut stack = TaskStack::from_tskdir(&self.path, None)?;
+        stack.push(task.try_into()?);
+        stack.save()?;
+        Ok(())
+    }
+
+    pub fn swap_top(&self) -> Result<()> {
+        let mut stack = TaskStack::from_tskdir(&self.path, None)?;
+        stack.swap();
+        stack.save()?;
+        Ok(())
     }
 }
 
 pub struct Task {
-    id: Id,
-    title: String,
-    body: String,
-    file: Flock<File>,
+    pub id: Id,
+    pub title: String,
+    pub body: String,
+    pub file: Flock<File>,
 }
 
 #[cfg(test)]

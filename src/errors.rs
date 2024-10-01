@@ -16,6 +16,7 @@ pub enum Error {
     ParseId(#[from] std::num::ParseIntError),
     #[error("General parsing error: {0}")]
     Parse(String),
+    #[allow(dead_code)]
     #[error("An unexpected error occurred: {0}")]
     Oops(Box<dyn std::error::Error>),
 }
