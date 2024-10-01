@@ -104,6 +104,14 @@ impl Workspace {
         })
     }
 
+    pub fn task(&self, id: Id) -> Result<Task> {
+        let mut file = util::flopen(
+            self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
+            FlockArg::LockExclusive,
+        )?;
+        
+    }
+
     pub fn read_stack(&self, count: Option<usize>) -> Result<TaskStack> {
         TaskStack::from_tskdir(&self.path, count)
     }

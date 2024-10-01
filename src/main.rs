@@ -4,6 +4,7 @@ mod util;
 mod workspace;
 use std::path::PathBuf;
 use std::{env::current_dir, io::Read};
+use clap_complete::Shell;
 use workspace::Workspace;
 
 //use smol;
@@ -55,6 +56,16 @@ enum Commands {
     },
 
     Swap,
+
+    Edit {
+        #[arg(short = 't')]
+        task_id: u32
+    },
+
+    Completion {
+        #[arg(short = 's')]
+        shell: Shell
+    }
 }
 
 #[derive(Args)]
@@ -134,4 +145,9 @@ fn command_list(dir: PathBuf, all: bool, count: usize) {
 fn command_swap(dir: PathBuf) {
     let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
     workspace.swap_top().expect("swap to work");
+}
+
+fn command_edit(dir: PathBuf) {
+    let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
+    let task = workspace.
 }
