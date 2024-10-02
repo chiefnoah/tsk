@@ -18,9 +18,9 @@ const TASKSFOLDER: &str = "tasks";
 const INDEXFILE: &str = "index";
 
 pub(crate) struct StackItem {
-    id: Id,
-    title: String,
-    modify_time: SystemTime,
+    pub id: Id,
+    pub title: String,
+    pub modify_time: SystemTime,
 }
 
 impl Display for StackItem {

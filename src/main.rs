@@ -60,14 +60,13 @@ enum Commands {
 
     Edit {
         #[arg(short = 't')]
-        task_id: u32,
+        task_id: Option<u32>,
     },
 
     Completion {
         #[arg(short = 's')]
         shell: Shell,
     },
-
     /*
     Drop {
         #[arg(short = 't')]
@@ -161,11 +160,17 @@ fn command_swap(dir: PathBuf) {
     workspace.swap_top().expect("swap to work");
 }
 
-fn command_edit(dir: PathBuf, id: u32) {
+fn command_edit(dir: PathBuf, id: Option<u32>) {
     let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
-    let mut task = workspace.task(id.into()).expect("To read task from disk");
-    let new_content =
-        open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim())).expect("Failed to edit file");
+    let mut task = if let Some(id) = id {
+        workspace.task(id.into()).expect("To read task from disk")
+    } else {
+        let mut stack = workspace.read_stack(Some(1)).expect("to read stack");
+        let stack_item = stack.pop().expect("No tasks on stack.");
+        workspace.task(stack_item.id).expect("couldn't read task")
+    };
+    let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))
+        .expect("Failed to edit file");
     if let Some((title, body)) = new_content.split_once("\n") {
         task.title = title.to_string();
         task.body = body.to_string();
