@@ -6,7 +6,7 @@ use crate::stack::TaskStack;
 use crate::util;
 use std::fmt::Display;
 use std::fs::File;
-use std::io::{Read, Seek};
+use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs::OpenOptions, io::Write};
@@ -30,6 +30,12 @@ impl FromStr for Id {
 impl Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "tsk-{}", self.0)
+    }
+}
+
+impl From<u32> for Id {
+    fn from(value: u32) -> Self {
+        Id(value)
     }
 }
 
@@ -82,7 +88,7 @@ impl Workspace {
         // reset the files contents
         file.set_len(0)?;
         // TODO: figure out if this is necessary
-        file.seek(std::io::SeekFrom::Start(0))?;
+        file.seek(SeekFrom::Start(0))?;
         // store the *next* if
         file.write_all(format!("{}\n", id + 1).as_bytes())?;
         Ok(Id(id))
@@ -105,11 +111,22 @@ impl Workspace {
     }
 
     pub fn task(&self, id: Id) -> Result<Task> {
-        let mut file = util::flopen(
+        let file = util::flopen(
             self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
             FlockArg::LockExclusive,
         )?;
-        
+        let mut title = String::new();
+        let mut body = String::new();
+        let mut reader = BufReader::new(&*file);
+        reader.read_line(&mut title)?;
+        reader.read_to_string(&mut body)?;
+        drop(reader);
+        Ok(Task {
+            id,
+            title,
+            body,
+            file,
+        })
     }
 
     pub fn read_stack(&self, count: Option<usize>) -> Result<TaskStack> {
@@ -138,7 +155,14 @@ pub struct Task {
     pub file: Flock<File>,
 }
 
-#[cfg(test)]
-mod test {
-    fn test_next_id() {}
+impl Task {
+    /// Consumes a task and saves it to disk.
+    pub fn save(mut self) -> Result<()> {
+        self.file.set_len(0)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(self.title.trim().as_bytes())?;
+        self.file.write_all(b"\n\n")?;
+        self.file.write_all(self.body.trim().as_bytes())?;
+        Ok(())
+    }
 }

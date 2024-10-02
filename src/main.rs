@@ -2,14 +2,15 @@ mod errors;
 mod stack;
 mod util;
 mod workspace;
+use clap_complete::{generate, Shell};
+use std::io;
 use std::path::PathBuf;
 use std::{env::current_dir, io::Read};
-use clap_complete::Shell;
 use workspace::Workspace;
 
 //use smol;
 //use iocraft::prelude::*;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use edit::edit as open_editor;
 
 fn default_dir() -> PathBuf {
@@ -59,13 +60,20 @@ enum Commands {
 
     Edit {
         #[arg(short = 't')]
-        task_id: u32
+        task_id: u32,
     },
 
     Completion {
         #[arg(short = 's')]
-        shell: Shell
+        shell: Shell,
+    },
+
+    /*
+    Drop {
+        #[arg(short = 't')]
+        task_id: Option<u32>,
     }
+    */
 }
 
 #[derive(Args)]
@@ -88,7 +96,9 @@ fn main() {
             command_push(cli.dir.unwrap_or(default_dir()), edit, body, title)
         }
         Commands::List { all, count } => command_list(cli.dir.unwrap_or(default_dir()), all, count),
-        Commands::Swap => command_swap(cli.dir.unwrap_or(default_dir()))
+        Commands::Swap => command_swap(cli.dir.unwrap_or(default_dir())),
+        Commands::Edit { task_id } => command_edit(cli.dir.unwrap_or(default_dir()), task_id),
+        Commands::Completion { shell } => command_completion(shell),
     }
 }
 
@@ -98,7 +108,7 @@ fn command_init(dir: PathBuf) {
 
 fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) {
     let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
-    let title = if let Some(title) = title.title {
+    let mut title = if let Some(title) = title.title {
         title
     } else if let Some(title) = title.title_simple {
         let joined = title.join(" ");
@@ -116,7 +126,11 @@ fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) {
             .expect("Failed to read stdin");
     }
     if edit {
-        body = open_editor(format!("{title}\n\n{body}")).expect("Failed to edit file");
+        let new_content = open_editor(format!("{title}\n\n{body}")).expect("Failed to edit file");
+        if let Some(content) = new_content.split_once("\n") {
+            title = content.0.to_string();
+            body = content.1.to_string();
+        }
     }
     let task = workspace
         .new_task(title, body)
@@ -147,7 +161,18 @@ fn command_swap(dir: PathBuf) {
     workspace.swap_top().expect("swap to work");
 }
 
-fn command_edit(dir: PathBuf) {
+fn command_edit(dir: PathBuf, id: u32) {
     let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
-    let task = workspace.
+    let mut task = workspace.task(id.into()).expect("To read task from disk");
+    let new_content =
+        open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim())).expect("Failed to edit file");
+    if let Some((title, body)) = new_content.split_once("\n") {
+        task.title = title.to_string();
+        task.body = body.to_string();
+        task.save().expect("Failed to save task");
+    }
+}
+
+fn command_completion(shell: Shell) {
+    generate(shell, &mut Cli::command(), "tsk", &mut io::stdout())
 }
