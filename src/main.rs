@@ -171,7 +171,7 @@ fn main() {
         Ok(_) => exit(0),
         Err(e) => {
             eprintln!("{e}");
-            exit(1);
+            exit(2);
         }
     }
 }
