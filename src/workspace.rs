@@ -15,7 +15,7 @@ const INDEXFILE: &str = "index";
 const TITLECACHEFILE: &str = "cache";
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Id(u32);
+pub struct Id(pub u32);
 
 impl FromStr for Id {
     type Err = Error;
@@ -154,7 +154,7 @@ impl Workspace {
         let third = stack.pop();
 
         if top.is_none() || second.is_none() || third.is_none() {
-            return Ok(())
+            return Ok(());
         }
 
         stack.push(second.unwrap());
@@ -173,7 +173,7 @@ impl Workspace {
         let third = stack.pop();
 
         if top.is_none() || second.is_none() || third.is_none() {
-            return Ok(())
+            return Ok(());
         }
 
         stack.push(top.unwrap());
@@ -201,6 +201,18 @@ impl Workspace {
     pub fn search(&self) -> Result<Option<Id>> {
         let stack = self.read_stack()?;
         Ok(fzf::select(stack)?.map(|si| si.id))
+    }
+
+    pub fn reprioritize(&self, id: Id) -> Result<()> {
+        let mut stack = self.read_stack()?;
+        let index = &stack.iter().map(|i| i.id).position(|i| i == id);
+        if let Some(index) = index {
+            let prioritized_task = stack.remove(*index);
+            // unwrap here is safe because we just searched for the index and know it exists
+            stack.push(prioritized_task.unwrap());
+            stack.save()?;
+        }
+        Ok(())
     }
 }
 

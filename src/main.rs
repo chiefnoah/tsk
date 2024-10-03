@@ -83,6 +83,9 @@ enum Commands {
         /// bodies in the search criteria.
         #[arg(short = 'a', default_value_t = false)]
         search_archived: bool,
+
+        #[arg(short = 't', default_value_t = true)]
+        full_id: bool,
     },
 
     /// Drops the task on the top of the stack and archives it.
@@ -90,6 +93,12 @@ enum Commands {
 
     Rot,
     Tor,
+
+    Reprioritize {
+        /// The [TSK-]ID to prioritize. If it exists, it is moved to the top of the stack.
+        #[command(flatten)]
+        task_id: TaskId,
+    },
 }
 
 #[derive(Args)]
@@ -105,13 +114,17 @@ struct Title {
 }
 
 #[derive(Args)]
-#[group(required = false, multiple = false)]
+#[group(required = true, multiple = false)]
 struct TaskId {
     #[arg(short = 't', value_name = "ID")]
     id: Option<u32>,
 
     #[arg(short = 'T', value_name = "TSK-ID", value_parser = value_parser!(String))]
     tsk_id: Option<Id>,
+
+    /// If no option is specified
+    #[arg(short = 'r', value_name = "RELATIVE")]
+    relative_id: Option<u32>
 }
 
 fn main() {
@@ -125,9 +138,10 @@ fn main() {
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop => command_drop(dir),
-        Commands::Find { .. } => command_search(dir),
+        Commands::Find { full_id, .. } => command_search(dir, full_id),
         Commands::Rot => Workspace::from_path(dir).unwrap().rot().unwrap(),
         Commands::Tor => Workspace::from_path(dir).unwrap().tor().unwrap(),
+        Commands::Reprioritize { task_id } => command_reprioritize(dir, task_id),
     }
 }
 
@@ -229,16 +243,25 @@ fn command_drop(dir: PathBuf) {
     }
 }
 
-fn command_search(dir: PathBuf) {
+fn command_search(dir: PathBuf, full_id: bool) {
     let id = Workspace::from_path(dir).unwrap().search().unwrap();
     if let Some(id) = id {
-        eprint!("Dropping ");
-        println!("{id}");
+        if full_id {
+            println!("{id}");
+        } else {
+            // print as integer
+            println!("{}", id.0);
+        }
     } else {
         eprintln!("No task to drop.")
     }
 }
 
-fn command_rot(dir: PathBuf) {
-    Workspace::from_path(dir).unwrap().rot().unwrap();
+fn command_reprioritize(dir: PathBuf, task_id: TaskId) {
+    // unwrap is safe here because clap will ensure we have at least one of these
+    let tsk_id: Id = task_id.id.map(Id::from).or(task_id.tsk_id).unwrap();
+    Workspace::from_path(dir)
+        .unwrap()
+        .reprioritize(tsk_id)
+        .unwrap()
 }

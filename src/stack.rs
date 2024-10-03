@@ -4,6 +4,7 @@
 
 use crate::errors::{Error, Result};
 use crate::util;
+use std::collections::vec_deque::Iter;
 use std::collections::VecDeque;
 use std::fmt::Display;
 use std::io::{self, BufRead, BufReader, Seek, Write};
@@ -166,7 +167,16 @@ impl TaskStack {
     pub fn empty(&self) -> bool {
         self.all.is_empty()
     }
+
+    pub fn remove(&mut self, index: usize) -> Option<StackItem> {
+        self.all.remove(index)
+    }
+
+    pub fn iter(&self) -> Iter<StackItem> {
+        self.all.iter()
+    }
 }
+
 
 impl IntoIterator for TaskStack {
     type Item = StackItem;
