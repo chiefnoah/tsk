@@ -27,7 +27,6 @@ pub fn find_parent_with_dir(
     let mut d = dir.join(&searching_for);
     while d.pop() {
         let check = d.join(&searching_for);
-        eprintln!("Searching {check:?}");
         if check.exists() {
             if fs::metadata(&check)?.dev() != fs::metadata(&dir)?.dev() {
                 // we hit a filesystem boundary
