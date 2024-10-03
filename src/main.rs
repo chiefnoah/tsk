@@ -209,7 +209,7 @@ fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) ->
 }
 
 fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {
-    let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
+    let workspace = Workspace::from_path(dir)?;
     let stack = if all {
         workspace.read_stack()?
     } else {
@@ -268,7 +268,7 @@ fn command_drop(dir: PathBuf) -> Result<()> {
 }
 
 fn command_find(dir: PathBuf, full_id: bool) -> Result<()> {
-    let id = Workspace::from_path(dir).unwrap().search(None).unwrap();
+    let id = Workspace::from_path(dir)?.search(None)?;
     if let Some(id) = id {
         if full_id {
             println!("{id}");
@@ -284,8 +284,5 @@ fn command_find(dir: PathBuf, full_id: bool) -> Result<()> {
 }
 
 fn command_reprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
-    // unwrap is safe here because clap will ensure we have at least one of these
-    Workspace::from_path(dir)
-        .unwrap()
-        .reprioritize(task_id.into())
+    Workspace::from_path(dir)?.reprioritize(task_id.into())
 }
