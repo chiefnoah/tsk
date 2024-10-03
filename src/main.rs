@@ -4,10 +4,12 @@ mod stack;
 mod util;
 mod workspace;
 use clap_complete::{generate, Shell};
+use errors::Result;
 use std::io;
 use std::path::PathBuf;
+use std::process::exit;
 use std::{env::current_dir, io::Read};
-use workspace::{Id, Workspace};
+use workspace::{Id, TaskIdentifier, Workspace};
 
 //use smol;
 //use iocraft::prelude::*;
@@ -114,23 +116,45 @@ struct Title {
 }
 
 #[derive(Args)]
-#[group(required = true, multiple = false)]
+#[group(required = false, multiple = false)]
 struct TaskId {
+    /// The ID of the task to select as a plain integer.
     #[arg(short = 't', value_name = "ID")]
     id: Option<u32>,
 
+    /// The ID of the task to select with the 'tsk-' prefix.
     #[arg(short = 'T', value_name = "TSK-ID", value_parser = value_parser!(String))]
     tsk_id: Option<Id>,
 
-    /// If no option is specified
-    #[arg(short = 'r', value_name = "RELATIVE")]
-    relative_id: Option<u32>
+    /// Selects a task relative to the top of the stack.
+    /// If no option is specified, the task selected will be the top of the stack.
+    #[arg(short = 'r', value_name = "RELATIVE", default_value_t = 0)]
+    relative_id: u32,
+
+    /// Use fuzzy finding to search for and select a task.
+    /// Does not support searching task bodies or archived tasks.
+    #[arg(short = 'f', value_name = "FIND", default_value_t = false)]
+    find: bool,
+}
+
+impl From<TaskId> for TaskIdentifier {
+    fn from(value: TaskId) -> Self {
+        if let Some(id) = value.id.map(Id::from).or(value.tsk_id) {
+            TaskIdentifier::Id(id)
+        } else {
+            if value.find {
+                TaskIdentifier::Find
+            } else {
+                TaskIdentifier::Relative(value.relative_id)
+            }
+        }
+    }
 }
 
 fn main() {
     let cli = Cli::parse();
     let dir = cli.dir.unwrap_or(default_dir());
-    match cli.command {
+    let result = match cli.command {
         Commands::Init => command_init(dir),
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
         Commands::List { all, count } => command_list(dir, all, count),
@@ -138,19 +162,26 @@ fn main() {
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop => command_drop(dir),
-        Commands::Find { full_id, .. } => command_search(dir, full_id),
-        Commands::Rot => Workspace::from_path(dir).unwrap().rot().unwrap(),
-        Commands::Tor => Workspace::from_path(dir).unwrap().tor().unwrap(),
+        Commands::Find { full_id, .. } => command_find(dir, full_id),
+        Commands::Rot => Workspace::from_path(dir).unwrap().rot(),
+        Commands::Tor => Workspace::from_path(dir).unwrap().tor(),
         Commands::Reprioritize { task_id } => command_reprioritize(dir, task_id),
+    };
+    match result {
+        Ok(_) => exit(0),
+        Err(e) => {
+            eprintln!("{e}");
+            exit(1);
+        }
     }
 }
 
-fn command_init(dir: PathBuf) {
-    Workspace::init(dir).expect("Init failed")
+fn command_init(dir: PathBuf) -> Result<()> {
+    Workspace::init(dir)
 }
 
-fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) {
-    let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
+fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
     let mut title = if let Some(title) = title.title {
         title
     } else if let Some(title) = title.title_simple {
@@ -164,34 +195,29 @@ fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) {
         // add newline so you can type directly in the shell
         eprintln!("");
         body.clear();
-        std::io::stdin()
-            .read_to_string(&mut body)
-            .expect("Failed to read stdin");
+        std::io::stdin().read_to_string(&mut body)?;
     }
     if edit {
-        let new_content = open_editor(format!("{title}\n\n{body}")).expect("Failed to edit file");
+        let new_content = open_editor(format!("{title}\n\n{body}"))?;
         if let Some(content) = new_content.split_once("\n") {
             title = content.0.to_string();
             body = content.1.to_string();
         }
     }
-    let task = workspace
-        .new_task(title, body)
-        .expect("Failed to create task");
-    workspace
-        .push_task(task)
-        .expect("Failed to push task to stack");
+    let task = workspace.new_task(title, body)?;
+    workspace.push_task(task)
 }
 
-fn command_list(dir: PathBuf, all: bool, count: usize) {
+fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {
     let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
     let stack = if all {
-        workspace.read_stack().expect("Failed to read index")
+        workspace.read_stack()?
     } else {
-        workspace.read_stack().expect("Failed to read index")
+        workspace.read_stack()?
     };
     if stack.empty() {
         println!("*No tasks*");
+        exit(0);
     } else {
         if !all {
             for stack_item in stack.into_iter().take(count) {
@@ -203,48 +229,46 @@ fn command_list(dir: PathBuf, all: bool, count: usize) {
             }
         }
     }
+    Ok(())
 }
 
-fn command_swap(dir: PathBuf) {
-    let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
-    workspace.swap_top().expect("swap to work");
+fn command_swap(dir: PathBuf) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
+    workspace.swap_top()?;
+    Ok(())
 }
 
-fn command_edit(dir: PathBuf, id: TaskId) {
-    let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
-    let tsk_id: Option<Id> = id.id.map(Id::from).or(id.tsk_id);
-    let mut task = if let Some(id) = tsk_id {
-        workspace.task(id.into()).expect("To read task from disk")
-    } else {
-        let mut stack = workspace.read_stack().expect("to read stack");
-        let stack_item = stack.pop().expect("No tasks on stack.");
-        workspace.task(stack_item.id).expect("couldn't read task")
-    };
-    let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))
-        .expect("Failed to edit file");
+fn command_edit(dir: PathBuf, id: TaskId) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
+    let id: TaskIdentifier = id.into();
+    let mut task = workspace.task(id)?;
+    let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))?;
     if let Some((title, body)) = new_content.split_once("\n") {
         task.title = title.to_string();
         task.body = body.to_string();
-        task.save().expect("Failed to save task");
+        task.save()?;
     }
+    Ok(())
 }
 
-fn command_completion(shell: Shell) {
-    generate(shell, &mut Cli::command(), "tsk", &mut io::stdout())
+fn command_completion(shell: Shell) -> Result<()> {
+    generate(shell, &mut Cli::command(), "tsk", &mut io::stdout());
+    Ok(())
 }
 
-fn command_drop(dir: PathBuf) {
-    if let Some(id) = Workspace::from_path(dir)
-        .expect("Unable to find .tsk dir")
-        .drop()
-        .expect("Unable to drop task.")
-    {
-        println!("Dropped {id}")
+fn command_drop(dir: PathBuf) -> Result<()> {
+    if let Some(id) = Workspace::from_path(dir)?.drop()? {
+        eprint!("Dropped ");
+        println!("{id}");
+    } else {
+        eprintln!("No task to drop.");
+        exit(1);
     }
+    Ok(())
 }
 
-fn command_search(dir: PathBuf, full_id: bool) {
-    let id = Workspace::from_path(dir).unwrap().search().unwrap();
+fn command_find(dir: PathBuf, full_id: bool) -> Result<()> {
+    let id = Workspace::from_path(dir).unwrap().search(None).unwrap();
     if let Some(id) = id {
         if full_id {
             println!("{id}");
@@ -253,15 +277,15 @@ fn command_search(dir: PathBuf, full_id: bool) {
             println!("{}", id.0);
         }
     } else {
-        eprintln!("No task to drop.")
+        eprintln!("No task to drop.");
+        exit(1);
     }
+    Ok(())
 }
 
-fn command_reprioritize(dir: PathBuf, task_id: TaskId) {
+fn command_reprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
     // unwrap is safe here because clap will ensure we have at least one of these
-    let tsk_id: Id = task_id.id.map(Id::from).or(task_id.tsk_id).unwrap();
     Workspace::from_path(dir)
         .unwrap()
-        .reprioritize(tsk_id)
-        .unwrap()
+        .reprioritize(task_id.into())
 }

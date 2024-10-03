@@ -175,8 +175,11 @@ impl TaskStack {
     pub fn iter(&self) -> Iter<StackItem> {
         self.all.iter()
     }
-}
 
+    pub fn get(&self, index: usize) -> Option<&StackItem> {
+        self.all.get(index)
+    }
+}
 
 impl IntoIterator for TaskStack {
     type Item = StackItem;

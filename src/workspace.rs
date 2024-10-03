@@ -46,6 +46,18 @@ impl Id {
     }
 }
 
+pub enum TaskIdentifier {
+    Id(Id),
+    Relative(u32),
+    Find,
+}
+
+impl From<Id> for TaskIdentifier {
+    fn from(value: Id) -> Self {
+        TaskIdentifier::Id(value)
+    }
+}
+
 pub struct Workspace {
     /// The path to the workspace root, excluding the .tsk directory. This should *contain* the
     /// .tsk directory.
@@ -75,6 +87,18 @@ impl Workspace {
     pub fn from_path(path: PathBuf) -> Result<Self> {
         let tsk_dir = util::find_parent_with_dir(path, ".tsk")?.ok_or(Error::Uninitialized)?;
         Ok(Self { path: tsk_dir })
+    }
+
+    fn resolve(&self, identifier: TaskIdentifier) -> Result<Id> {
+        match identifier {
+            TaskIdentifier::Id(id) => Ok(id),
+            TaskIdentifier::Relative(r) => {
+                let stack = self.read_stack()?;
+                let stack_item = stack.get(r as usize).ok_or(Error::NoTasks)?;
+                Ok(stack_item.id)
+            }
+            TaskIdentifier::Find => self.search(None)?.ok_or(Error::NotSelected),
+        }
     }
 
     pub fn next_id(&self) -> Result<Id> {
@@ -110,7 +134,9 @@ impl Workspace {
         })
     }
 
-    pub fn task(&self, id: Id) -> Result<Task> {
+    pub fn task(&self, identifier: TaskIdentifier) -> Result<Task> {
+        let id = self.resolve(identifier)?;
+
         let file = util::flopen(
             self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
             FlockArg::LockExclusive,
@@ -198,12 +224,17 @@ impl Workspace {
         }
     }
 
-    pub fn search(&self) -> Result<Option<Id>> {
-        let stack = self.read_stack()?;
+    pub fn search(&self, stack: Option<TaskStack>) -> Result<Option<Id>> {
+        let stack = if let Some(stack) = stack {
+            stack
+        } else {
+            self.read_stack()?
+        };
         Ok(fzf::select(stack)?.map(|si| si.id))
     }
 
-    pub fn reprioritize(&self, id: Id) -> Result<()> {
+    pub fn reprioritize(&self, identifier: TaskIdentifier) -> Result<()> {
+        let id = self.resolve(identifier)?;
         let mut stack = self.read_stack()?;
         let index = &stack.iter().map(|i| i.id).position(|i| i == id);
         if let Some(index) = index {
