@@ -147,6 +147,42 @@ impl Workspace {
         Ok(())
     }
 
+    pub fn rot(&self) -> Result<()> {
+        let mut stack = TaskStack::from_tskdir(&self.path)?;
+        let top = stack.pop();
+        let second = stack.pop();
+        let third = stack.pop();
+
+        if top.is_none() || second.is_none() || third.is_none() {
+            return Ok(())
+        }
+
+        stack.push(second.unwrap());
+        stack.push(top.unwrap());
+        stack.push(third.unwrap());
+        stack.save()?;
+        Ok(())
+    }
+
+    /// The inverse of tor. Pushes the top item behind the second item, shifting #2 and #3 to #1
+    /// and #2 respectively.
+    pub fn tor(&self) -> Result<()> {
+        let mut stack = TaskStack::from_tskdir(&self.path)?;
+        let top = stack.pop();
+        let second = stack.pop();
+        let third = stack.pop();
+
+        if top.is_none() || second.is_none() || third.is_none() {
+            return Ok(())
+        }
+
+        stack.push(top.unwrap());
+        stack.push(third.unwrap());
+        stack.push(second.unwrap());
+        stack.save()?;
+        Ok(())
+    }
+
     pub fn drop(&self) -> Result<Option<Id>> {
         let mut stack = self.read_stack()?;
         if let Some(stack_item) = stack.pop() {

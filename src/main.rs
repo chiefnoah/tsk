@@ -87,6 +87,9 @@ enum Commands {
 
     /// Drops the task on the top of the stack and archives it.
     Drop,
+
+    Rot,
+    Tor,
 }
 
 #[derive(Args)]
@@ -113,20 +116,18 @@ struct TaskId {
 
 fn main() {
     let cli = Cli::parse();
+    let dir = cli.dir.unwrap_or(default_dir());
     match cli.command {
-        Commands::Init => command_init(cli.dir.unwrap_or(default_dir())),
-        Commands::Push { edit, body, title } => {
-            command_push(cli.dir.unwrap_or(default_dir()), edit, body, title)
-        }
-        Commands::List { all, count } => command_list(cli.dir.unwrap_or(default_dir()), all, count),
-        Commands::Swap => command_swap(cli.dir.unwrap_or(default_dir())),
-        Commands::Edit { task_id } => command_edit(cli.dir.unwrap_or(default_dir()), task_id),
+        Commands::Init => command_init(dir),
+        Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
+        Commands::List { all, count } => command_list(dir, all, count),
+        Commands::Swap => command_swap(dir),
+        Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
-        Commands::Drop => command_drop(cli.dir.unwrap_or(default_dir())),
-        Commands::Find {
-            search_body,
-            search_archived,
-        } => command_search(cli.dir.unwrap_or(default_dir())),
+        Commands::Drop => command_drop(dir),
+        Commands::Find { .. } => command_search(dir),
+        Commands::Rot => Workspace::from_path(dir).unwrap().rot().unwrap(),
+        Commands::Tor => Workspace::from_path(dir).unwrap().tor().unwrap(),
     }
 }
 
@@ -222,8 +223,9 @@ fn command_drop(dir: PathBuf) {
     if let Some(id) = Workspace::from_path(dir)
         .expect("Unable to find .tsk dir")
         .drop()
-        .expect("Unable to drop task.") {
-            println!("Dropped {id}")
+        .expect("Unable to drop task.")
+    {
+        println!("Dropped {id}")
     }
 }
 
@@ -235,4 +237,8 @@ fn command_search(dir: PathBuf) {
     } else {
         eprintln!("No task to drop.")
     }
+}
+
+fn command_rot(dir: PathBuf) {
+    Workspace::from_path(dir).unwrap().rot().unwrap();
 }
