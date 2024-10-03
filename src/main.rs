@@ -90,7 +90,7 @@ enum Commands {
 }
 
 #[derive(Args)]
-#[group(required = false, multiple = false)]
+#[group(required = true, multiple = false)]
 struct Title {
     /// The title of the task. This is useful for when you also wish to specify the body of the
     /// task as an argument (ie. with -b).
@@ -102,7 +102,7 @@ struct Title {
 }
 
 #[derive(Args)]
-#[group(required = true, multiple = false)]
+#[group(required = false, multiple = false)]
 struct TaskId {
     #[arg(short = 't', value_name = "ID")]
     id: Option<u32>,
