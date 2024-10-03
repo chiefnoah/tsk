@@ -1,3 +1,5 @@
+use std::{convert::Infallible, string::FromUtf8Error};
+
 use thiserror::Error as ThisError;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -16,7 +18,15 @@ pub enum Error {
     ParseId(#[from] std::num::ParseIntError),
     #[error("General parsing error: {0}")]
     Parse(String),
+    #[error("Error parsing bytes as utf-8: {0}")]
+    FromUtf8(#[from] FromUtf8Error),
     #[allow(dead_code)]
     #[error("An unexpected error occurred: {0}")]
     Oops(Box<dyn std::error::Error>),
+}
+
+impl From<Infallible> for Error {
+    fn from(_: Infallible) -> Self {
+        unreachable!();
+    }
 }

@@ -3,9 +3,9 @@ use nix::fcntl::{Flock, FlockArg};
 
 use crate::errors::{Error, Result};
 use crate::stack::TaskStack;
-use crate::util;
+use crate::{fzf, util};
 use std::fmt::Display;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -14,6 +14,7 @@ use std::{fs::OpenOptions, io::Write};
 const INDEXFILE: &str = "index";
 const TITLECACHEFILE: &str = "cache";
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Id(u32);
 
 impl FromStr for Id {
@@ -40,7 +41,7 @@ impl From<u32> for Id {
 }
 
 impl Id {
-    pub fn to_string(&self) -> String {
+    pub fn to_filename(&self) -> String {
         format!("tsk-{}.tsk", self.0)
     }
 }
@@ -60,6 +61,8 @@ impl Workspace {
         std::fs::create_dir(&tsk_dir)?;
         // Create the tasks directory
         std::fs::create_dir(&tsk_dir.join("tasks"))?;
+        // Create the archive directory
+        std::fs::create_dir(&tsk_dir.join("archive"))?;
         let mut next = OpenOptions::new()
             .read(true)
             .write(true)
@@ -70,14 +73,8 @@ impl Workspace {
     }
 
     pub fn from_path(path: PathBuf) -> Result<Self> {
-        // TODO: recursively walk up the path until we find a .tsk dir or error if we can't find
-        // one / cross a filesystem boundary
-        let tsk_dir = path.join(".tsk");
-        if !tsk_dir.exists() {
-            return Err(Error::Uninitialized);
-        } else {
-            Ok(Self { path: tsk_dir })
-        }
+        let tsk_dir = util::find_parent_with_dir(path, ".tsk")?.ok_or(Error::Uninitialized)?;
+        Ok(Self { path: tsk_dir })
     }
 
     pub fn next_id(&self) -> Result<Id> {
@@ -87,7 +84,6 @@ impl Workspace {
         let id = buf.trim().parse::<u32>()?;
         // reset the files contents
         file.set_len(0)?;
-        // TODO: figure out if this is necessary
         file.seek(SeekFrom::Start(0))?;
         // store the *next* if
         file.write_all(format!("{}\n", id + 1).as_bytes())?;
@@ -95,13 +91,17 @@ impl Workspace {
     }
 
     pub fn new_task(&self, title: String, body: String) -> Result<Task> {
-        // TODO: we could improperly increment the id if the task is not written to disk/errors
+        // WARN: we could improperly increment the id if the task is not written to disk/errors.
+        // But who cares
         let id = self.next_id()?;
-        let mut file = util::flopen(
-            self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
-            FlockArg::LockExclusive,
-        )?;
+        let task_path = self.path.join("tasks").join(format!("tsk-{}.tsk", id.0));
+        let mut file = util::flopen(task_path.clone(), FlockArg::LockExclusive)?;
         file.write_all(format!("{title}\n\n{body}").as_bytes())?;
+        // create a hardlink to the archive dir
+        fs::hard_link(
+            task_path,
+            self.path.join("archive").join(format!("tsk-{}.tsk", id.0)),
+        )?;
         Ok(Task {
             id,
             title,
@@ -129,22 +129,42 @@ impl Workspace {
         })
     }
 
-    pub fn read_stack(&self, count: Option<usize>) -> Result<TaskStack> {
-        TaskStack::from_tskdir(&self.path, count)
+    pub fn read_stack(&self) -> Result<TaskStack> {
+        TaskStack::from_tskdir(&self.path)
     }
 
     pub fn push_task(&self, task: Task) -> Result<()> {
-        let mut stack = TaskStack::from_tskdir(&self.path, None)?;
+        let mut stack = TaskStack::from_tskdir(&self.path)?;
         stack.push(task.try_into()?);
         stack.save()?;
         Ok(())
     }
 
     pub fn swap_top(&self) -> Result<()> {
-        let mut stack = TaskStack::from_tskdir(&self.path, None)?;
+        let mut stack = TaskStack::from_tskdir(&self.path)?;
         stack.swap();
         stack.save()?;
         Ok(())
+    }
+
+    pub fn drop(&self) -> Result<Option<Id>> {
+        let mut stack = self.read_stack()?;
+        if let Some(stack_item) = stack.pop() {
+            let task_path = self
+                .path
+                .join("tasks")
+                .join(format!("{}.tsk", stack_item.id));
+            fs::remove_file(task_path)?;
+            stack.save()?;
+            Ok(Some(stack_item.id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn search(&self) -> Result<Option<Id>> {
+        let stack = self.read_stack()?;
+        Ok(fzf::select(stack)?.map(|si| si.id))
     }
 }
 

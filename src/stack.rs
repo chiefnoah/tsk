@@ -7,6 +7,7 @@ use crate::util;
 use std::collections::VecDeque;
 use std::fmt::Display;
 use std::io::{self, BufRead, BufReader, Seek, Write};
+use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, path::PathBuf};
 
@@ -17,7 +18,7 @@ use crate::workspace::{Id, Task};
 const TASKSFOLDER: &str = "tasks";
 const INDEXFILE: &str = "index";
 
-pub(crate) struct StackItem {
+pub struct StackItem {
     pub id: Id,
     pub title: String,
     pub modify_time: SystemTime,
@@ -58,18 +59,18 @@ fn eof() -> Error {
     ))
 }
 
-impl StackItem {
-    /// Parses a [`StackItem`] from a string. The expected format is a tab-delimited line with the
-    /// files: task id	title
-    fn from_line(workspace_path: &PathBuf, line: String) -> Result<Self> {
-        let mut parts = line.split("\t");
+impl FromStr for StackItem {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let mut parts = s.trim().split("\t");
         let id: Id = parts
             .next()
             .ok_or(Error::Parse(format!(
                 "Incomplete index line. Missing tsk ID"
             )))?
             .parse()?;
-        let mut title: String = parts
+        let title: String = parts
             .next()
             .ok_or(Error::Parse(format!(
                 "Incomplete index line. Missing title."
@@ -81,30 +82,38 @@ impl StackItem {
         // get a usable system time from the UNIX epoch, defaulting to the UNIX_EPOCH if there's
         // any failures. This means that if there's errors, we will always read the title and
         // modify_time from the task file.
-        let mut modify_time = UNIX_EPOCH
+        let modify_time = UNIX_EPOCH
             .checked_add(Duration::from_secs(index_epoch))
             .unwrap_or(UNIX_EPOCH);
-        let modify_epoch = modify_time
-            .duration_since(UNIX_EPOCH)
-            .expect("We're before the dawn of time!?")
-            .as_secs();
-        let task = util::flopen(
-            workspace_path.join(TASKSFOLDER).join(id.to_string()),
-            FlockArg::LockExclusive,
-        )?;
-        let task_modify_time = task.metadata()?.modified()?;
-        // if the task file has been modified since we last looked at it, re-read the title and
-        // metadata
-        if modify_epoch > index_epoch {
-            title.clear();
-            BufReader::new(&*task).read_line(&mut title)?;
-            modify_time = task_modify_time;
-        }
         Ok(Self {
             id,
             title,
             modify_time,
         })
+    }
+}
+
+impl StackItem {
+    /// Parses a [`StackItem`] from a string. The expected format is a tab-delimited line with the
+    /// files: task id	title
+    fn from_line(workspace_path: &PathBuf, line: String) -> Result<Self> {
+        let mut stack_item: StackItem = line.parse()?;
+
+        let task = util::flopen(
+            workspace_path
+                .join(TASKSFOLDER)
+                .join(stack_item.id.to_filename()),
+            FlockArg::LockExclusive,
+        )?;
+        let task_modify_time = task.metadata()?.modified()?;
+        // if the task file has been modified since we last looked at it, re-read the title and
+        // metadata
+        if (task_modify_time - Duration::from_secs(1)) > stack_item.modify_time {
+            stack_item.title.clear();
+            BufReader::new(&*task).read_line(&mut stack_item.title)?;
+            stack_item.modify_time = task_modify_time;
+        }
+        Ok(stack_item)
     }
 }
 
@@ -114,32 +123,15 @@ pub struct TaskStack {
     file: Flock<File>,
 }
 
-impl Display for TaskStack {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for task in self.all.iter() {
-            write!(f, "{task}\n")?;
-        }
-        Ok(())
-    }
-}
-
 impl TaskStack {
-    pub fn from_tskdir(workspace_path: &PathBuf, count: Option<usize>) -> Result<Self> {
+    pub fn from_tskdir(workspace_path: &PathBuf) -> Result<Self> {
         let file = util::flopen(workspace_path.join(INDEXFILE), FlockArg::LockExclusive)?;
         let index = BufReader::new(&*file).lines();
         let mut all = VecDeque::new();
-        if let Some(count) = count {
-            for line in index.take(count) {
-                let line = line?;
-                let stack_item = StackItem::from_line(workspace_path, line)?;
-                all.push_back(stack_item);
-            }
-        } else {
-            for line in index {
-                let stack_item = StackItem::from_line(workspace_path, line?)?;
-                all.push_back(stack_item);
-            }
-        };
+        for line in index {
+            let stack_item = StackItem::from_line(workspace_path, line?)?;
+            all.push_back(stack_item);
+        }
         Ok(Self { all, file })
     }
 
@@ -173,5 +165,15 @@ impl TaskStack {
 
     pub fn empty(&self) -> bool {
         self.all.is_empty()
+    }
+}
+
+impl IntoIterator for TaskStack {
+    type Item = StackItem;
+
+    type IntoIter = std::collections::vec_deque::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.all.into_iter()
     }
 }

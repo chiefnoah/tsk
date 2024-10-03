@@ -1,4 +1,5 @@
 mod errors;
+mod fzf;
 mod stack;
 mod util;
 mod workspace;
@@ -6,11 +7,11 @@ use clap_complete::{generate, Shell};
 use std::io;
 use std::path::PathBuf;
 use std::{env::current_dir, io::Read};
-use workspace::Workspace;
+use workspace::{Id, Workspace};
 
 //use smol;
 //use iocraft::prelude::*;
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{value_parser, Args, CommandFactory, Parser, Subcommand};
 use edit::edit as open_editor;
 
 fn default_dir() -> PathBuf {
@@ -30,6 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initializes a .tsk workspace in the current effective directory, which defaults to PWD.
     Init,
     /// Creates a new task, automatically assigning it a unique identifider and persisting
     Push {
@@ -56,27 +58,39 @@ enum Commands {
         count: usize,
     },
 
+    /// Swaps the top two tasks on the stack. If there are less than 2 tasks on the stack, there is
+    /// no effect.
     Swap,
 
+    /// Open up an editor to modify the task with the given ID.
     Edit {
-        #[arg(short = 't')]
-        task_id: Option<u32>,
+        #[command(flatten)]
+        task_id: TaskId,
     },
 
+    /// Generates completion for a given shell.
     Completion {
         #[arg(short = 's')]
         shell: Shell,
     },
-    /*
-    Drop {
-        #[arg(short = 't')]
-        task_id: Option<u32>,
-    }
-    */
+
+    /// Use fuzzy finding with `fzf` to search for a task
+    Find {
+        /// Include the contents of tasks in the search criteria.
+        #[arg(short = 'b', default_value_t = false)]
+        search_body: bool,
+        /// Include archived tasks in the search criteria. Combine with `-b` to include archived
+        /// bodies in the search criteria.
+        #[arg(short = 'a', default_value_t = false)]
+        search_archived: bool,
+    },
+
+    /// Drops the task on the top of the stack and archives it.
+    Drop,
 }
 
 #[derive(Args)]
-#[group(required = true, multiple = false)]
+#[group(required = false, multiple = false)]
 struct Title {
     /// The title of the task. This is useful for when you also wish to specify the body of the
     /// task as an argument (ie. with -b).
@@ -85,6 +99,16 @@ struct Title {
 
     #[arg(value_name = "TITLE")]
     title_simple: Option<Vec<String>>,
+}
+
+#[derive(Args)]
+#[group(required = true, multiple = false)]
+struct TaskId {
+    #[arg(short = 't', value_name = "ID")]
+    id: Option<u32>,
+
+    #[arg(short = 'T', value_name = "TSK-ID", value_parser = value_parser!(String))]
+    tsk_id: Option<Id>,
 }
 
 fn main() {
@@ -98,6 +122,11 @@ fn main() {
         Commands::Swap => command_swap(cli.dir.unwrap_or(default_dir())),
         Commands::Edit { task_id } => command_edit(cli.dir.unwrap_or(default_dir()), task_id),
         Commands::Completion { shell } => command_completion(shell),
+        Commands::Drop => command_drop(cli.dir.unwrap_or(default_dir())),
+        Commands::Find {
+            search_body,
+            search_archived,
+        } => command_search(cli.dir.unwrap_or(default_dir())),
     }
 }
 
@@ -142,16 +171,22 @@ fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) {
 fn command_list(dir: PathBuf, all: bool, count: usize) {
     let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
     let stack = if all {
-        workspace.read_stack(None).expect("Failed to read index")
+        workspace.read_stack().expect("Failed to read index")
     } else {
-        workspace
-            .read_stack(Some(count))
-            .expect("Failed to read index")
+        workspace.read_stack().expect("Failed to read index")
     };
     if stack.empty() {
         println!("*No tasks*");
     } else {
-        println!("{}", stack);
+        if !all {
+            for stack_item in stack.into_iter().take(count) {
+                println!("{stack_item}");
+            }
+        } else {
+            for stack_item in stack.into_iter() {
+                println!("{stack_item}");
+            }
+        }
     }
 }
 
@@ -160,12 +195,13 @@ fn command_swap(dir: PathBuf) {
     workspace.swap_top().expect("swap to work");
 }
 
-fn command_edit(dir: PathBuf, id: Option<u32>) {
+fn command_edit(dir: PathBuf, id: TaskId) {
     let workspace = Workspace::from_path(dir).expect("Unable to find .tsk dir");
-    let mut task = if let Some(id) = id {
+    let tsk_id: Option<Id> = id.id.map(Id::from).or(id.tsk_id);
+    let mut task = if let Some(id) = tsk_id {
         workspace.task(id.into()).expect("To read task from disk")
     } else {
-        let mut stack = workspace.read_stack(Some(1)).expect("to read stack");
+        let mut stack = workspace.read_stack().expect("to read stack");
         let stack_item = stack.pop().expect("No tasks on stack.");
         workspace.task(stack_item.id).expect("couldn't read task")
     };
@@ -180,4 +216,23 @@ fn command_edit(dir: PathBuf, id: Option<u32>) {
 
 fn command_completion(shell: Shell) {
     generate(shell, &mut Cli::command(), "tsk", &mut io::stdout())
+}
+
+fn command_drop(dir: PathBuf) {
+    if let Some(id) = Workspace::from_path(dir)
+        .expect("Unable to find .tsk dir")
+        .drop()
+        .expect("Unable to drop task.") {
+            println!("Dropped {id}")
+    }
+}
+
+fn command_search(dir: PathBuf) {
+    let id = Workspace::from_path(dir).unwrap().search().unwrap();
+    if let Some(id) = id {
+        eprint!("Dropping ");
+        println!("{id}");
+    } else {
+        eprintln!("No task to drop.")
+    }
 }
