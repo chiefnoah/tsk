@@ -20,7 +20,7 @@ where
     // unwrap: this can never fail
     let child_in = child.stdin.as_mut().unwrap();
     for item in input.into_iter() {
-        write!(child_in, "{}\n", item.to_string())?;
+        write!(child_in, "{item}\n")?;
     }
     let output = child.wait_with_output()?;
     if output.stdout.is_empty() {

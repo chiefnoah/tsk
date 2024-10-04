@@ -2,8 +2,9 @@
 use nix::fcntl::{Flock, FlockArg};
 
 use crate::errors::{Error, Result};
-use crate::stack::TaskStack;
+use crate::stack::{StackItem, TaskStack};
 use crate::{fzf, util};
+use std::collections::vec_deque;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
@@ -229,7 +230,7 @@ impl Workspace {
     pub fn search(
         &self,
         stack: Option<TaskStack>,
-        _search_body: bool,
+        search_body: bool,
         _include_archived: bool,
     ) -> Result<Option<Id>> {
         let stack = if let Some(stack) = stack {
@@ -237,7 +238,17 @@ impl Workspace {
         } else {
             self.read_stack()?
         };
-        Ok(fzf::select(stack)?.map(|si| si.id))
+        if search_body {
+            let loader = LazyTaskLoader {
+                files: stack.into_iter(),
+                workspace: self,
+            };
+            // search the entirety of a task
+            Ok(fzf::select(loader)?.map(|bt| bt.id))
+        } else {
+            // just search the stack
+            Ok(fzf::select(stack)?.map(|si| si.id))
+        }
     }
 
     pub fn reprioritize(&self, identifier: TaskIdentifier) -> Result<()> {
@@ -261,6 +272,13 @@ pub struct Task {
     pub file: Flock<File>,
 }
 
+/// A task container without a file handle
+pub struct BareTask {
+    pub id: Id,
+    pub title: String,
+    pub body: String,
+}
+
 impl Task {
     /// Consumes a task and saves it to disk.
     pub fn save(mut self) -> Result<()> {
@@ -270,5 +288,79 @@ impl Task {
         self.file.write_all(b"\n\n")?;
         self.file.write_all(self.body.trim().as_bytes())?;
         Ok(())
+    }
+
+    fn bare(self) -> BareTask {
+        BareTask {
+            id: self.id,
+            title: self.title,
+            body: self.body,
+        }
+    }
+}
+
+impl FromStr for BareTask {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let (tsk_id, task_content) = s.split_once('\t').ok_or(Error::Parse(format!(
+            "Missing TSK-ID or content or task parse."
+        )))?;
+        let (title, body) = task_content
+            .split_once('\t')
+            .ok_or(Error::Parse(format!("Missing body for task parse.")))?;
+        Ok(Self {
+            id: tsk_id.parse()?,
+            title: title.to_string(),
+            body: body.to_string(),
+        })
+    }
+}
+
+impl Display for BareTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}\t{}\t{}",
+            self.id,
+            self.title.trim(),
+            self.body.replace('\n', " ").replace('\r', "")
+        )
+    }
+}
+
+struct LazyTaskLoader<'a> {
+    files: vec_deque::IntoIter<StackItem>,
+    workspace: &'a Workspace,
+}
+
+impl<'a> Iterator for LazyTaskLoader<'a> {
+    type Item = BareTask;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let stack_item = self.files.next()?;
+        let task = self
+            .workspace
+            .task(TaskIdentifier::Id(stack_item.id))
+            .ok()?;
+        Some(task.bare())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_bare_task_display() {
+        let task = BareTask {
+            id: Id(123),
+            title: "Hello, world".to_string(),
+            body: "The body of the task.\nAnother line\r\nis here.".to_string(),
+        };
+        assert_eq!(
+            "tsk-123\tHello, world\tThe body of the task. Another line is here.",
+            task.to_string()
+        );
     }
 }

@@ -292,7 +292,7 @@ fn command_find(
             println!("{}", id.0);
         }
     } else {
-        eprintln!("No task to drop.");
+        eprintln!("No task selected.");
         exit(1);
     }
     Ok(())
