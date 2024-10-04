@@ -93,9 +93,14 @@ enum Commands {
     /// Drops the task on the top of the stack and archives it.
     Drop,
 
+    /// Moves the 3rd item on the stack to the front of the stack, shifting everything else down by
+    /// one. If there are less than 3 tasks on the stack, has no effect.
     Rot,
+    /// Moves the task on the top of the stack back behind the 2nd element, shifting the next two
+    /// task up.
     Tor,
 
+    /// Reprioritizes an arbitrary task to the top of the stack.
     Reprioritize {
         /// The [TSK-]ID to prioritize. If it exists, it is moved to the top of the stack.
         #[command(flatten)]
