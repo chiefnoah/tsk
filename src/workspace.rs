@@ -66,6 +66,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn init(path: PathBuf) -> Result<()> {
+        // TODO: detect if in a git repo and add .tsk/ to `.git/info/exclude`
         let tsk_dir = path.join(".tsk");
         if tsk_dir.exists() {
             return Err(Error::AlreadyInitialized);
@@ -97,7 +98,7 @@ impl Workspace {
                 let stack_item = stack.get(r as usize).ok_or(Error::NoTasks)?;
                 Ok(stack_item.id)
             }
-            TaskIdentifier::Find => self.search(None)?.ok_or(Error::NotSelected),
+            TaskIdentifier::Find => self.search(None, false, false)?.ok_or(Error::NotSelected),
         }
     }
 
@@ -224,7 +225,12 @@ impl Workspace {
         }
     }
 
-    pub fn search(&self, stack: Option<TaskStack>) -> Result<Option<Id>> {
+    pub fn search(
+        &self,
+        stack: Option<TaskStack>,
+        _search_body: bool,
+        _include_archived: bool,
+    ) -> Result<Option<Id>> {
         let stack = if let Some(stack) = stack {
             stack
         } else {

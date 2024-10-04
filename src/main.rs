@@ -162,7 +162,11 @@ fn main() {
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop => command_drop(dir),
-        Commands::Find { full_id, .. } => command_find(dir, full_id),
+        Commands::Find {
+            full_id,
+            search_body,
+            search_archived,
+        } => command_find(dir, full_id, search_body, search_archived),
         Commands::Rot => Workspace::from_path(dir).unwrap().rot(),
         Commands::Tor => Workspace::from_path(dir).unwrap().tor(),
         Commands::Reprioritize { task_id } => command_reprioritize(dir, task_id),
@@ -267,8 +271,13 @@ fn command_drop(dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn command_find(dir: PathBuf, full_id: bool) -> Result<()> {
-    let id = Workspace::from_path(dir)?.search(None)?;
+fn command_find(
+    dir: PathBuf,
+    full_id: bool,
+    search_body: bool,
+    search_archived: bool,
+) -> Result<()> {
+    let id = Workspace::from_path(dir)?.search(None, search_body, search_archived)?;
     if let Some(id) = id {
         if full_id {
             println!("{id}");
