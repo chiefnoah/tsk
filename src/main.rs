@@ -52,6 +52,7 @@ enum Commands {
         #[command(flatten)]
         title: Title,
     },
+    /// Print the task stack. This will include just TSK-IDs and the title.
     List {
         /// Whether to list all tasks in the task stack. If specified, -c / count is ignored.
         #[arg(short = 'a', default_value_t = false)]
