@@ -103,9 +103,16 @@ enum Commands {
     /// task up.
     Tor,
 
-    /// Reprioritizes an arbitrary task to the top of the stack.
-    Reprioritize {
+    /// Prioritizes an arbitrary task to the top of the stack.
+    Prioritize {
         /// The [TSK-]ID to prioritize. If it exists, it is moved to the top of the stack.
+        #[command(flatten)]
+        task_id: TaskId,
+    },
+
+    /// Deprioritizes a task to the bottom of the stack.
+    Deprioritize {
+        /// The [TSK-]ID to deprioritize. If it exists, it is moved to the bottom of the stack.
         #[command(flatten)]
         task_id: TaskId,
     },
@@ -189,7 +196,7 @@ impl From<TaskId> for TaskIdentifier {
 fn main() {
     let cli = Cli::parse();
     let dir = cli.dir.unwrap_or(default_dir());
-    let result = match cli.command {
+    let var_name = match cli.command {
         Commands::Init => command_init(dir),
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
         Commands::List { all, count } => command_list(dir, all, count),
@@ -201,8 +208,11 @@ fn main() {
         Commands::Find { args, full_id } => command_find(dir, full_id, args),
         Commands::Rot => Workspace::from_path(dir).unwrap().rot(),
         Commands::Tor => Workspace::from_path(dir).unwrap().tor(),
-        Commands::Reprioritize { task_id } => command_reprioritize(dir, task_id),
+        Commands::Prioritize { task_id } => command_prioritize(dir, task_id),
+        Commands::Deprioritize { task_id } => command_deprioritize(dir, task_id),
+
     };
+    let result = var_name;
     match result {
         Ok(_) => exit(0),
         Err(e) => {
@@ -319,8 +329,12 @@ fn command_find(dir: PathBuf, full_id: bool, find_args: FindArgs) -> Result<()> 
     Ok(())
 }
 
-fn command_reprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
-    Workspace::from_path(dir)?.reprioritize(task_id.into())
+fn command_prioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    Workspace::from_path(dir)?.prioritize(task_id.into())
+}
+
+fn command_deprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    Workspace::from_path(dir)?.deprioritize(task_id.into())
 }
 
 fn command_show(dir: PathBuf, task_id: TaskId) -> Result<()> {

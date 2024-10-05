@@ -256,7 +256,7 @@ impl Workspace {
         }
     }
 
-    pub fn reprioritize(&self, identifier: TaskIdentifier) -> Result<()> {
+    pub fn prioritize(&self, identifier: TaskIdentifier) -> Result<()> {
         let id = self.resolve(identifier)?;
         let mut stack = self.read_stack()?;
         let index = &stack.iter().map(|i| i.id).position(|i| i == id);
@@ -264,6 +264,19 @@ impl Workspace {
             let prioritized_task = stack.remove(*index);
             // unwrap here is safe because we just searched for the index and know it exists
             stack.push(prioritized_task.unwrap());
+            stack.save()?;
+        }
+        Ok(())
+    }
+
+    pub fn deprioritize(&self, identifier: TaskIdentifier) -> Result<()> {
+        let id = self.resolve(identifier)?;
+        let mut stack = self.read_stack()?;
+        let index = &stack.iter().map(|i| i.id).position(|i| i == id);
+        if let Some(index) = index {
+            let deprioritized_task = stack.remove(*index);
+            // unwrap here is safe because we just searched for the index and know it exists
+            stack.push_back(deprioritized_task.unwrap());
             stack.save()?;
         }
         Ok(())

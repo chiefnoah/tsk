@@ -151,6 +151,10 @@ impl TaskStack {
         self.all.push_front(item);
     }
 
+    pub fn push_back(&mut self, item: StackItem) {
+        self.all.push_back(item);
+    }
+
     pub fn pop(&mut self) -> Option<StackItem> {
         self.all.pop_front()
     }
