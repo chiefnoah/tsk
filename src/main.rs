@@ -141,6 +141,7 @@ struct TaskId {
 #[derive(Args)]
 #[group(required = false, multiple = true)]
 struct Find {
+    /// Use fuzzy finding to select a task.
     #[arg(short = 'f', value_name = "FIND", default_value_t = false)]
     find: bool,
     #[command(flatten)]
