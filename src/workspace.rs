@@ -50,7 +50,7 @@ impl Id {
 pub enum TaskIdentifier {
     Id(Id),
     Relative(u32),
-    Find,
+    Find { search_body: bool, archived: bool },
 }
 
 impl From<Id> for TaskIdentifier {
@@ -99,7 +99,12 @@ impl Workspace {
                 let stack_item = stack.get(r as usize).ok_or(Error::NoTasks)?;
                 Ok(stack_item.id)
             }
-            TaskIdentifier::Find => self.search(None, false, false)?.ok_or(Error::NotSelected),
+            TaskIdentifier::Find {
+                search_body,
+                archived,
+            } => self
+                .search(None, search_body, archived)?
+                .ok_or(Error::NotSelected),
         }
     }
 

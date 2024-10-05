@@ -79,15 +79,10 @@ enum Commands {
 
     /// Use fuzzy finding with `fzf` to search for a task
     Find {
-        /// Include the contents of tasks in the search criteria.
-        #[arg(short = 'b', default_value_t = false)]
-        search_body: bool,
-        /// Include archived tasks in the search criteria. Combine with `-b` to include archived
-        /// bodies in the search criteria.
-        #[arg(short = 'a', default_value_t = false)]
-        search_archived: bool,
-
-        #[arg(short = 't', default_value_t = true)]
+        #[command(flatten)]
+        args: FindArgs,
+        /// Whether to print the full TSK-ID (instead of just an integer)
+        #[arg(short = 'F', default_value_t = true)]
         full_id: bool,
     },
 
@@ -137,10 +132,33 @@ struct TaskId {
     #[arg(short = 'r', value_name = "RELATIVE", default_value_t = 0)]
     relative_id: u32,
 
-    /// Use fuzzy finding to search for and select a task.
-    /// Does not support searching task bodies or archived tasks.
+    #[command(flatten)]
+    find: Find,
+}
+
+/// Use fuzzy finding to search for and select a task.
+/// Does not support searching task bodies or archived tasks.
+#[derive(Args)]
+#[group(required = false, multiple = true)]
+struct Find {
     #[arg(short = 'f', value_name = "FIND", default_value_t = false)]
     find: bool,
+    #[command(flatten)]
+    args: FindArgs,
+}
+
+#[derive(Args)]
+#[group(required = false, multiple = false)]
+struct FindArgs {
+    /// Include the contents of tasks in the search criteria.
+    #[arg(short = 'b', default_value_t = false)]
+    search_body: bool,
+    /* TODO: implement this
+    /// Include archived tasks in the search criteria. Combine with `-b` to include archived
+    /// bodies in the search criteria.
+    #[arg(short = 'a', default_value_t = false)]
+    search_archived: bool,
+    */
 }
 
 impl From<TaskId> for TaskIdentifier {
@@ -148,8 +166,11 @@ impl From<TaskId> for TaskIdentifier {
         if let Some(id) = value.id.map(Id::from).or(value.tsk_id) {
             TaskIdentifier::Id(id)
         } else {
-            if value.find {
-                TaskIdentifier::Find
+            if value.find.find {
+                TaskIdentifier::Find {
+                    search_body: value.find.args.search_body,
+                    archived: false,
+                }
             } else {
                 TaskIdentifier::Relative(value.relative_id)
             }
@@ -168,11 +189,7 @@ fn main() {
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop => command_drop(dir),
-        Commands::Find {
-            full_id,
-            search_body,
-            search_archived,
-        } => command_find(dir, full_id, search_body, search_archived),
+        Commands::Find { args, full_id } => command_find(dir, full_id, args),
         Commands::Rot => Workspace::from_path(dir).unwrap().rot(),
         Commands::Tor => Workspace::from_path(dir).unwrap().tor(),
         Commands::Reprioritize { task_id } => command_reprioritize(dir, task_id),
@@ -277,13 +294,8 @@ fn command_drop(dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn command_find(
-    dir: PathBuf,
-    full_id: bool,
-    search_body: bool,
-    search_archived: bool,
-) -> Result<()> {
-    let id = Workspace::from_path(dir)?.search(None, search_body, search_archived)?;
+fn command_find(dir: PathBuf, full_id: bool, find_args: FindArgs) -> Result<()> {
+    let id = Workspace::from_path(dir)?.search(None, find_args.search_body, false)?;
     if let Some(id) = id {
         if full_id {
             println!("{id}");
