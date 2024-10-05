@@ -86,6 +86,7 @@ enum Commands {
         full_id: bool,
     },
 
+    /// Prints the contents of a task.
     Show {
         /// The [TSK-]ID of the task to display
         #[command(flatten)]
