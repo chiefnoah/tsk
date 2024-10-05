@@ -157,8 +157,8 @@ impl Workspace {
         drop(reader);
         Ok(Task {
             id,
-            title,
-            body,
+            title: title.trim().to_string(),
+            body: body.trim().to_string(),
             file,
         })
     }
@@ -277,11 +277,10 @@ pub struct Task {
     pub file: Flock<File>,
 }
 
-/// A task container without a file handle
-pub struct BareTask {
-    pub id: Id,
-    pub title: String,
-    pub body: String,
+impl Display for Task {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\n\n{}", self.title, &self.body)
+    }
 }
 
 impl Task {
@@ -295,8 +294,8 @@ impl Task {
         Ok(())
     }
 
-    fn bare(self) -> BareTask {
-        BareTask {
+    fn bare(self) -> SearchTask {
+        SearchTask {
             id: self.id,
             title: self.title,
             body: self.body,
@@ -304,7 +303,14 @@ impl Task {
     }
 }
 
-impl FromStr for BareTask {
+/// A task container without a file handle
+pub struct SearchTask {
+    pub id: Id,
+    pub title: String,
+    pub body: String,
+}
+
+impl FromStr for SearchTask {
     type Err = Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
@@ -322,7 +328,7 @@ impl FromStr for BareTask {
     }
 }
 
-impl Display for BareTask {
+impl Display for SearchTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -340,7 +346,7 @@ struct LazyTaskLoader<'a> {
 }
 
 impl<'a> Iterator for LazyTaskLoader<'a> {
-    type Item = BareTask;
+    type Item = SearchTask;
 
     fn next(&mut self) -> Option<Self::Item> {
         let stack_item = self.files.next()?;
@@ -358,7 +364,7 @@ mod test {
 
     #[test]
     fn test_bare_task_display() {
-        let task = BareTask {
+        let task = SearchTask {
             id: Id(123),
             title: "Hello, world".to_string(),
             body: "The body of the task.\nAnother line\r\nis here.".to_string(),
@@ -367,5 +373,16 @@ mod test {
             "tsk-123\tHello, world\tThe body of the task. Another line is here.",
             task.to_string()
         );
+    }
+
+    #[test]
+    fn test_task_display() {
+        let task = Task {
+            id: Id(123),
+            title: "Hello, world".to_string(),
+            body: "The body of the task.".to_string(),
+            file: util::flopen("/dev/null".into(), FlockArg::LockShared).unwrap(),
+        };
+        assert_eq!("Hello, world\n\nThe body of the task.", task.to_string());
     }
 }

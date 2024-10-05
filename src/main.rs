@@ -86,6 +86,12 @@ enum Commands {
         full_id: bool,
     },
 
+    Show {
+        /// The [TSK-]ID of the task to display
+        #[command(flatten)]
+        task_id: TaskId,
+    },
+
     /// Drops the task on the top of the stack and archives it.
     Drop,
 
@@ -187,6 +193,7 @@ fn main() {
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
         Commands::List { all, count } => command_list(dir, all, count),
         Commands::Swap => command_swap(dir),
+        Commands::Show { task_id } => command_show(dir, task_id),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop => command_drop(dir),
@@ -221,7 +228,7 @@ fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) ->
     let mut body = body.unwrap_or_default();
     if body == "-" {
         // add newline so you can type directly in the shell
-        eprintln!("");
+        //eprintln!("");
         body.clear();
         std::io::stdin().read_to_string(&mut body)?;
     }
@@ -313,4 +320,10 @@ fn command_find(dir: PathBuf, full_id: bool, find_args: FindArgs) -> Result<()> 
 
 fn command_reprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
     Workspace::from_path(dir)?.reprioritize(task_id.into())
+}
+
+fn command_show(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    let task = Workspace::from_path(dir)?.task(task_id.into())?;
+    println!("{task}");
+    Ok(())
 }
