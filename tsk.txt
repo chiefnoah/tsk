@@ -6,3 +6,15 @@ A simple command line task manager with exporting and syncing capabilities
 
 The motivation for tsk is simple: make managing tasks as easy as possible with a focus
 on small, ephemeral tasks.
+
+Roadmap
+-------
+
+- IMAP4/SMTP-based synchronization
+- Text format with rich-text
+- Export + sync with external task managers
+  - GitLab
+  - GitHub
+  - JIRA
+  - Obsidian
+  - More?
