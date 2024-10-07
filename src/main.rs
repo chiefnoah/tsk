@@ -24,6 +24,7 @@ fn default_dir() -> PathBuf {
 // TODO: add long_about
 #[command(version, about)]
 struct Cli {
+    /// Override the tsk root directory.
     #[arg(short = 'C', env = "TSK_ROOT", value_name = "DIR")]
     dir: Option<PathBuf>,
     // TODO: other global options
