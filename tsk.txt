@@ -10,6 +10,8 @@ on small, ephemeral tasks.
 Roadmap
 -------
 
+- Extended Attribute-based Metadata
+- Task Linking
 - IMAP4/SMTP-based synchronization
 - Text format with rich-text
 - Export + sync with external task managers
@@ -18,3 +20,19 @@ Roadmap
   - JIRA
   - Obsidian
   - More?
+- Neovim Plugin?
+  - nvim-telescope plugin?
+
+Format
+------
+
+The tsk text format can be thought of as a derivative of Markdown and scdoc, but not
+quite either. Markdown is a great baseline for rich-text while scdoc restricts itself to
+rich text formatting that can be displayed effectively in a terminal. As tsk's primary
+goal is to be a fast, terminal-centric task manager, this property is a *must.*
+
+Additionally, it should be similar enough to Markdown such that it is easy to export to
+other applications, as outlined above in the roadmap.
+
+A core feature of the format is *linking*. That is, references to tasks within a given
+workspace utilizing wiki-link style links: `[[]]`.
