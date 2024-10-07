@@ -217,19 +217,18 @@ impl Workspace {
         Ok(())
     }
 
-    pub fn drop(&self) -> Result<Option<Id>> {
+    pub fn drop(&self, identifier: TaskIdentifier) -> Result<Option<Id>> {
+        let id = self.resolve(identifier)?;
         let mut stack = self.read_stack()?;
-        if let Some(stack_item) = stack.pop() {
-            let task_path = self
-                .path
-                .join("tasks")
-                .join(format!("{}.tsk", stack_item.id));
-            fs::remove_file(task_path)?;
+        let index = &stack.iter().map(|i| i.id).position(|i| i == id);
+        let task = if let Some(index) = index {
+            let prioritized_task = stack.remove(*index);
             stack.save()?;
-            Ok(Some(stack_item.id))
+            prioritized_task.map(|t| t.id)
         } else {
-            Ok(None)
-        }
+            None
+        };
+        Ok(task)
     }
 
     pub fn search(

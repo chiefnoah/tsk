@@ -94,7 +94,11 @@ enum Commands {
     },
 
     /// Drops the task on the top of the stack and archives it.
-    Drop,
+    Drop {
+        /// The [TSK-]ID of the task to drop.
+        #[command(flatten)]
+        task_id: TaskId,
+    },
 
     /// Moves the 3rd item on the stack to the front of the stack, shifting everything else down by
     /// one. If there are less than 3 tasks on the stack, has no effect.
@@ -204,13 +208,12 @@ fn main() {
         Commands::Show { task_id } => command_show(dir, task_id),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
-        Commands::Drop => command_drop(dir),
+        Commands::Drop { task_id } => command_drop(dir, task_id),
         Commands::Find { args, full_id } => command_find(dir, full_id, args),
         Commands::Rot => Workspace::from_path(dir).unwrap().rot(),
         Commands::Tor => Workspace::from_path(dir).unwrap().tor(),
         Commands::Prioritize { task_id } => command_prioritize(dir, task_id),
         Commands::Deprioritize { task_id } => command_deprioritize(dir, task_id),
-
     };
     let result = var_name;
     match result {
@@ -302,8 +305,8 @@ fn command_completion(shell: Shell) -> Result<()> {
     Ok(())
 }
 
-fn command_drop(dir: PathBuf) -> Result<()> {
-    if let Some(id) = Workspace::from_path(dir)?.drop()? {
+fn command_drop(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    if let Some(id) = Workspace::from_path(dir)?.drop(task_id.into())? {
         eprint!("Dropped ");
         println!("{id}");
     } else {
