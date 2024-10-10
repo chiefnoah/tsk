@@ -6,8 +6,9 @@ use crate::stack::{StackItem, TaskStack};
 use crate::{fzf, util};
 use std::collections::vec_deque;
 use std::fmt::Display;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
+use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs::OpenOptions, io::Write};
@@ -130,7 +131,7 @@ impl Workspace {
         let mut file = util::flopen(task_path.clone(), FlockArg::LockExclusive)?;
         file.write_all(format!("{title}\n\n{body}").as_bytes())?;
         // create a hardlink to the task dir to mark it as "open"
-        fs::hard_link(
+        symlink(
             task_path,
             self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
         )?;
