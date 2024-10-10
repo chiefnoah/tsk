@@ -1,2 +1,5 @@
 fix timestamp storage and parsing
 
+It looks like timestamps aren't being stored or parsed from the index anymore.
+I'm not quite sure how this broke, but it's like an issue in `StackItem`'s
+FromStr and Display implementations.
