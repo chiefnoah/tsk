@@ -60,7 +60,7 @@ New tasks are created with the `tsk push` command. A title is always required,
 but can be modified later. A unique identifier is selected automatically and a
 file with the title and any body contents supplied are stored in the
 .tsk/archive folder. A symlink is then created in the .tsk/tasks folder marking
-the task is "open." The task is then added to the top of the "stack" by having
+the task as "open." The task is then added to the top of the "stack" by having
 its tsk-ID and title added to the .tsk/index file.
 
 The contents of the stack may be printed using the `tsk list` command.
