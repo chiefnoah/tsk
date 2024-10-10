@@ -28,7 +28,7 @@ and in the shell's PATH.
 
     https://github.com/junegunn/fzf
 
-tsk workspaces must be created on filesystems that support hard linking.
+tsk workspaces must be created on filesystems that support symlinking.
 
 Task-level metadata requires Linux's xattr(7) API and a filesystem that supports
 it. Patches that implement this for other operating systems are welcome.
@@ -59,7 +59,7 @@ a workspace.
 New tasks are created with the `tsk push` command. A title is always required,
 but can be modified later. A unique identifier is selected automatically and a
 file with the title and any body contents supplied are stored in the
-.tsk/archive folder. A hardlink is then created in the .tsk/tasks folder marking
+.tsk/archive folder. A symlink is then created in the .tsk/tasks folder marking
 the task is "open." The task is then added to the top of the "stack" by having
 its tsk-ID and title added to the .tsk/index file.
 
