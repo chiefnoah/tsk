@@ -128,7 +128,7 @@ Roadmap
 - Configurable workspace-scoped prefix tags (tsk- vs example-)
 - Extended Attribute-based Metadata
 - Task Linking
-- IMAP4/SMTP-based synchronization
+- IMAP4/SMTP-based synchronization and sharing
 - Text format with rich-text terminal display
 - Export + sync with external task managers
   - GitLab
@@ -171,7 +171,7 @@ tend to be created when they are most important. This facilitates small,
 frequent creation of tasks that help both document problems and manage
 fast-paced work environments.
 
-tsk is not intended to be checked into git, however there is not reason that it
+tsk is not intended to be checked into git, however there is not a reason that it
 cannot be. This repository's development is managed using tsk itself.
 
 Git does *not* track extended filesystem attributes. If you wish to avoid constantly
