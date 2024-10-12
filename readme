@@ -173,3 +173,8 @@ fast-paced work environments.
 
 tsk is not intended to be checked into git, however there is not reason that it
 cannot be. This repository's development is managed using tsk itself.
+
+Git does *not* track extended filesystem attributes. If you wish to avoid constantly
+re-indexing, use something like metastore:
+
+    https://github.com/przemoc/metastore
