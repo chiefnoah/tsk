@@ -1,13 +1,17 @@
 #![allow(dead_code)]
 use nix::fcntl::{Flock, FlockArg};
+use xattr::FileExt;
 
+use crate::attrs::Attrs;
 use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
 use crate::{fzf, util};
-use std::collections::vec_deque;
+use std::collections::{vec_deque, BTreeMap};
+use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
+use std::ops::Deref;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -15,6 +19,7 @@ use std::{fs::OpenOptions, io::Write};
 
 const INDEXFILE: &str = "index";
 const TITLECACHEFILE: &str = "cache";
+const XATTRPREFIX: &str = "user.tsk.";
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Id(pub u32);
@@ -109,6 +114,7 @@ impl Workspace {
         }
     }
 
+    /// Increments the `next` counter and returns the previous value.
     pub fn next_id(&self) -> Result<Id> {
         let mut file = util::flopen(self.path.join("next"), FlockArg::LockExclusive)?;
         let mut buf = String::new();
@@ -140,6 +146,7 @@ impl Workspace {
             title,
             body,
             file,
+            attributes: Default::default(),
         })
     }
 
@@ -156,12 +163,29 @@ impl Workspace {
         reader.read_line(&mut title)?;
         reader.read_to_string(&mut body)?;
         drop(reader);
+        let mut read_attributes = BTreeMap::new();
+        if let Ok(attrs) = file.list_xattr() {
+            for attr in attrs {
+                if let Some((key, value)) = Self::read_xattr(&file, attr) {
+                    read_attributes.insert(key, value);
+                }
+            }
+        }
         Ok(Task {
             id,
+            file,
             title: title.trim().to_string(),
             body: body.trim().to_string(),
-            file,
+            attributes: Attrs::from_written(read_attributes),
         })
+    }
+
+    /// Reads an xattr from a file, stripping the prefix for
+    fn read_xattr<D: Deref<Target = File>>(file: &D, key: OsString) -> Option<(String, String)> {
+        // this *shouldn't* allocate, but it does O(n) scan the str for UTF-8 correctness
+        let parsedkey = key.as_os_str().to_str()?.strip_prefix(XATTRPREFIX)?;
+        let valuebytes = file.get_xattr(&key).ok().flatten()?;
+        Some((parsedkey.to_string(), String::from_utf8(valuebytes).ok()?))
     }
 
     pub fn read_stack(&self) -> Result<TaskStack> {
@@ -288,6 +312,7 @@ pub struct Task {
     pub title: String,
     pub body: String,
     pub file: Flock<File>,
+    pub attributes: Attrs,
 }
 
 impl Display for Task {
@@ -395,6 +420,7 @@ mod test {
             title: "Hello, world".to_string(),
             body: "The body of the task.".to_string(),
             file: util::flopen("/dev/null".into(), FlockArg::LockShared).unwrap(),
+            attributes: Default::default(),
         };
         assert_eq!("Hello, world\n\nThe body of the task.", task.to_string());
     }

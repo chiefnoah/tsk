@@ -1,3 +1,4 @@
+mod attrs;
 mod errors;
 mod fzf;
 mod stack;
@@ -89,6 +90,9 @@ enum Commands {
 
     /// Prints the contents of a task.
     Show {
+        /// Shows raw file attributes for the file
+        #[arg(short = 'x', default_value_t = false)]
+        show_attrs: bool,
         /// The [TSK-]ID of the task to display
         #[command(flatten)]
         task_id: TaskId,
@@ -206,7 +210,10 @@ fn main() {
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
         Commands::List { all, count } => command_list(dir, all, count),
         Commands::Swap => command_swap(dir),
-        Commands::Show { task_id } => command_show(dir, task_id),
+        Commands::Show {
+            task_id,
+            show_attrs,
+        } => command_show(dir, task_id, show_attrs),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop { task_id } => command_drop(dir, task_id),
@@ -341,8 +348,16 @@ fn command_deprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
     Workspace::from_path(dir)?.deprioritize(task_id.into())
 }
 
-fn command_show(dir: PathBuf, task_id: TaskId) -> Result<()> {
+fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
     let task = Workspace::from_path(dir)?.task(task_id.into())?;
+    // YAML front-matter style. YAML is gross, but it's what everyone uses!
+    if show_attrs {
+        println!("---");
+        for (attr, value) in task.attributes.iter() {
+            println!("{attr}: \"{value}\"");
+        }
+        println!("---");
+    }
     println!("{task}");
     Ok(())
 }

@@ -1,6 +1,7 @@
+tsk-14	parse internal links from body
+tsk-6	automatically add backlinks
 tsk-9	fix timestamp storage and parsing
 tsk-8	IMAP4-based sync
 tsk-10	foreign workspaces
 tsk-7	allow for creating tasks that don't go to top of stack
-tsk-4	Add basic metadata
-tsk-6	automatically add backlinks
+tsk-13	user-defined labels
