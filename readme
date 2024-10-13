@@ -33,10 +33,13 @@ tsk workspaces must be created on filesystems that support symlinking.
 Task-level metadata requires Linux's xattr(7) API and a filesystem that supports
 it. Patches that implement this for other operating systems are welcome.
 
+tsk expects to run on POSIX-like systems. Microsoft Windows and other
+non-UNIX-ey operating systems will never be directly supported.
+
 Building
 --------
 
-```shell
+```sh
 cargo install --path .
 ```
 
@@ -154,6 +157,17 @@ this property is a *must.*
 
 Additionally, it should be similar enough to Markdown such that it is easy to
 export to other applications, as outlined above in the roadmap.
+
+Meanwhile, both Markdown and scdoc have some limitations and make choices that,
+while appropriate for their domain, are not appropriate for tsk. Some notable
+differences from both:
+
+- There is only one way to do any type of formatting
+- Hard line breaks are real, not imaginary
+- Most formatting does not cross line boundaries (literal blocks are an
+  exception)
+- Parseable with a context-free grammar
+- Inline formatting control characters must be surrounded by white-space
 
 A core feature of the format is *linking*. That is, references to other tasks
 utilizing wiki-link style links: `[[]]`. The content within the link is mapped

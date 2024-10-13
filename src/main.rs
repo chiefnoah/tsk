@@ -4,6 +4,7 @@ mod fzf;
 mod stack;
 mod util;
 mod workspace;
+mod task;
 use clap_complete::{generate, Shell};
 use errors::Result;
 use std::io;
