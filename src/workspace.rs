@@ -216,6 +216,7 @@ impl Workspace {
             return Ok(());
         }
 
+        // unwrap is ok here because we checked above
         stack.push(second.unwrap());
         stack.push(top.unwrap());
         stack.push(third.unwrap());
