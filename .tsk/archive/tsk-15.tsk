@@ -1,0 +1,11 @@
+Add link identification to tasks
+
+[This crate](https://docs.rs/linkify/latest/linkify/) should be helpful for
+that, though I've only done a cursory search.
+
+The intent here is to provide a command that allows you to list and open a link
+from a provided task and optionall use a system-handler to open the link.
+
+Something along the lines of `tsk hyperlinks -t 12 -s`, which will scan TSK-12 for
+hyperlinks (or email addresses?) and pipe them to `fzf` for selection and
+opening (-s flag) or simply print the link if no option is specified.

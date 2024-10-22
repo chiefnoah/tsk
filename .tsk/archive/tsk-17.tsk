@@ -1,0 +1,5 @@
+Add reopen command
+
+Reopen will allow selecting an *archived* task (note: this needs to be
+restricted to archived tasks) and recreating the symlink in tasks/ to mark it as
+open.
