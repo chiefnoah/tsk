@@ -4,7 +4,7 @@ use url::Url;
 use crate::{errors::Error, workspace::Id};
 use colored::Colorize;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 enum ParserOpcode {
     // Started by ` =`, terminated by `=
     Highlight(usize),
@@ -46,76 +46,76 @@ pub(crate) struct ParsedTask {
     links: Vec<Url>,
 }
 
+#[derive(Default)]
+struct ParseState {
+    highlight: Option<usize>,
+    link: Option<usize>,
+    internal: Option<usize>,
+    italics: Option<usize>,
+    bold: Option<usize>,
+    underline: Option<usize>,
+    strikethrough: Option<usize>,
+    block: bool,
+    inline: Option<usize>,
+    quote: Option<(usize, u8)>,
+}
+
 pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
-    let mut out = String::with_capacity(s.len());
-    let mut ops: Vec<ParserOpcode> = Vec::new();
+    let mut state = ParseState::default();
+    let mut out = s.to_string();
     let mut stream = s.char_indices().peekable();
     let outgoing_internal_links = Vec::new();
-    let mut links = Vec::new();
+    let links = Vec::new();
+    let mut last = '\0';
     loop {
-        use ParserOpcode::*;
         match stream.next() {
             // there will always be an op code in the stack
-            Some((pos, c)) => match dbg!((ops.last(), c)) {
-                // Highlight terminal
-                (Some(Highlight(start)), '=') => {
-                    out.push_str(&s[start + 1..=pos - 1].reversed().to_string());
-                    // reduce
-                    ops.pop();
-                }
-                // Highlight start
-                (op, '=') => {
-                    ops.push(Highlight(pos));
-                }
-                (Some(Linktext(start)), ']') => match stream.peek() {
-                    Some((_, '(')) => {
-                        out.push_str(&s[start + 1..=pos - 1].bright_blue().underline().to_string());
-                        ops.pop();
-                        ops.push(LinkJoin)
+            Some((pos, c)) => {
+                match (last, c, &state) {
+                    (
+                        ' ',
+                        '=',
+                        ParseState {
+                            highlight: Some(hl),
+                            ..
+                        },
+                    )
+                    | (
+                        '=',
+                        ' ',
+                        ParseState {
+                            highlight: Some(hl),
+                            ..
+                        },
+                    )
+                    | (
+                        '=',
+                        '\n',
+                        ParseState {
+                            highlight: Some(hl),
+                            ..
+                        },
+                    ) => {
+                        out.replace_range(
+                            *hl..pos,
+                            &out.get(*hl + 1..pos - 1)?.reversed().to_string(),
+                        );
                     }
-                    // Terminal for internal link
-                    Some((_, ']')) => {
-                        out.push_str(&s[start + 1..=pos - 1].green().bold().to_string());
-                        ops.pop();
+                    (
+                        ' ',
+                        '=',
+                        ParseState {
+                            highlight: None, ..
+                        },
+                    ) => {
+                        state.highlight = Some(pos);
                     }
+
                     _ => (),
-                },
-                (Some(Link(start)), ')') => {
-                    if let Ok(uri) = Url::parse(&s[start + 1..=pos - 1]) {
-                        links.push(uri);
-                    }
                 }
-                (op, '[') => {
-                    if let Some(op) = op {
-                        ops.push(op);
-                    }
-                    ops.push(Linktext(pos));
-                }
-                (Some(LinkJoin), '(') => {
-                    ops.push(Link(pos));
-                }
-                (None | Some(_), c) => out.push(c),
-            },
-            None => match ops.pop() {
-                Some(
-                    Plain(start) | Highlight(start) | Linktext(start) | Link(start)
-                    | InternalLink(start) | Italics(start) | Bold(start) | Underline(start)
-                    | Strikethrough(start),
-                ) => {
-                    // We have an
-                    return None;
-                }
-                None => {
-                    break;
-                }
-                Some(LinkJoin) => unreachable!(),
-                Some(UnorderedList(_, _)) => todo!(),
-                Some(OrderedList(_, _)) => todo!(),
-                Some(BlockStart(_)) => todo!(),
-                Some(BlockEnd(_)) => todo!(),
-                Some(InlineBlock(_)) => todo!(),
-                Some(Blockquote(_)) => todo!(),
-            },
+                last = c;
+            }
+            None => break,
         }
     }
     Some(ParsedTask {
@@ -130,9 +130,9 @@ mod test {
     use super::*;
     #[test]
     fn test_highlight() {
-        let input = "hello =world=";
+        let input = "hello =world=\n";
         let output = parse(input).expect("parse to work");
-        assert_eq!("hello \u{1b}[7mworld\u{1b}[0m", output.content);
+        assert_eq!("hello \u{1b}[7mworld\u{1b}[0m\n", output.content);
     }
 
     #[test]
