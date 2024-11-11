@@ -132,7 +132,6 @@ Roadmap
 - Extended Attribute-based Metadata
 - Task Linking
 - IMAP4/SMTP-based synchronization and sharing
-- Text format with rich-text terminal display
 - Export + sync with external task managers
   - GitLab
   - GitHub
@@ -164,16 +163,23 @@ differences from both:
 
 - There is only one way to do any type of formatting
 - Hard line breaks are real, not imaginary
-- Most formatting does not cross line boundaries (literal blocks are an
-  exception)
-- Parseable with a context-free grammar
-- Inline formatting control characters must be surrounded by white-space
+- Inline formatting control characters must be surrounded by space, newline, or
+  common punctuation
 
 A core feature of the format is *linking*. That is, references to other tasks
 utilizing wiki-link style links: `[[]]`. The content within the link is mapped
 to the local workspace if the `tsk-` prefix is used, or a mapped non-local
 workspace if another prefix is used. These mappings are specified using a text
 file within the .tsk folder.
+
+A quick overview of the format:
+
+!Bolded! text is surrounded by exclamation marks (!)
+*Italicized* text is surrouneded by single asterists (*)
+_Underlined_ text is surrounded by underscores (_)
+~Strikenthrough~ text is surrounded by tildes (~)
+
+Links like in Markdown, along with the wiki-style links documented above.
 
 Misc
 ----
