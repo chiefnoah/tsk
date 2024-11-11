@@ -1,2 +1,8 @@
 parse internal links from body
 
+This is some !test bold text!.
+here's some =highlighted text=
+
+and finally some *italics!*
+
+here's [a link](https://ngp.computer).

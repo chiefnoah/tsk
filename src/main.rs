@@ -2,12 +2,12 @@ mod attrs;
 mod errors;
 mod fzf;
 mod stack;
+mod task;
 mod util;
 mod workspace;
-mod task;
 use clap_complete::{generate, Shell};
 use errors::Result;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::{env::current_dir, io::Read};
@@ -359,6 +359,10 @@ fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
         }
         println!("---");
     }
-    println!("{task}");
+    if let Some(styled_task) = task::parse(&task.to_string()) {
+        writeln!(io::stdout(), "{}", styled_task.content)?;
+    } else {
+        println!("{task}");
+    }
     Ok(())
 }
