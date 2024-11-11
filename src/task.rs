@@ -89,7 +89,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                                 contents.purple(),
                                 super_num(links.len() + 1).purple()
                             );
-                            out.replace_range(il-1..out.len(), &linktext);
+                            out.replace_range(il - 1..out.len(), &linktext);
                             links.push(ParsedLink::Internal(id));
                         } else {
                             panic!("Internal link is not a valid id: {contents}");
