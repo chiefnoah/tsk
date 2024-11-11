@@ -119,7 +119,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             out.get(linktextpos + 1..linkpos - 1)?.blue(),
                             super_num(links.len() + 1).purple()
                         );
-                        let link = out.get(linkpos + 1..out.len() - 2)?;
+                        let link = out.get(linkpos + 1..end - 1)?;
                         if let Ok(url) = Url::parse(link) {
                             links.push(ParsedLink::External(url));
                             out.replace_range(linktextpos..end, &linktext);
@@ -140,10 +140,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                     }
                     ('!', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Bold(il))) => {
                         state.pop();
-                        out.replace_range(
-                            il..end,
-                            &out.get(il + 1..out.len() - 2)?.bold().to_string(),
-                        );
+                        out.replace_range(il..end, &out.get(il + 1..end - 1)?.bold().to_string());
                     }
                     (' ' | '\r' | '\n', '_', _) => {
                         state.push(Underline(end));
@@ -152,7 +149,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                         state.pop();
                         out.replace_range(
                             il..end,
-                            &out.get(il + 1..out.len() - 2)?.underline().to_string(),
+                            &out.get(il + 1..end - 1)?.underline().to_string(),
                         );
                     }
                     (' ' | '\r' | '\n', '~', _) => {
@@ -162,7 +159,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                         state.pop();
                         out.replace_range(
                             il..end,
-                            &out.get(il + 1..out.len() - 2)?.strikethrough().to_string(),
+                            &out.get(il + 1..end - 1)?.strikethrough().to_string(),
                         );
                     }
                     _ => (),
