@@ -63,7 +63,9 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
         let state_last = state.last().cloned();
         match stream.next() {
             // there will always be an op code in the stack
-            Some((pos, c)) => {
+            Some((_, c)) => {
+                out.push(c);
+                let end = out.len()-1;
                 if c == '\n' || c == '\r' {
                     state.clear();
                 }
@@ -71,36 +73,36 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                     ('=', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Highlight(hl))) => {
                         state.pop();
                         out.replace_range(
-                            hl..pos,
-                            &out.get(hl + 1..pos - 1)?.reversed().to_string(),
+                            hl..end,
+                            &out.get(hl + 1..out.len() - 2)?.reversed().to_string(),
                         );
                     }
                     (' ' | '\r' | '\n', '=', _) => {
-                        state.push(Highlight(pos));
+                        state.push(Highlight(end));
                     }
                     ('[', '[', _) => {
-                        state.push(InternalLink(pos));
+                        state.push(InternalLink(end));
                     }
                     (']', ']', Some(InternalLink(il))) => {
                         state.pop();
-                        let contents = out.get(il + 1..pos - 1)?;
+                        let contents = out.get(il + 1..out.len() - 2)?;
                         if let Ok(id) = Id::from_str(&contents) {
                             let linktext = format!(
                                 "{}{}",
                                 contents.purple(),
                                 super_num(links.len() + 1).purple()
                             );
-                            out.replace_range(il..pos, &linktext);
+                            out.replace_range(il..out.len()-1, &linktext);
                             links.push(ParsedLink::Internal(id));
                         } else {
                             panic!("Internal link is not a valid id: {contents}");
                         }
                     }
                     (' ' | '\r' | '\n', '[', _) => {
-                        state.push(Linktext(pos));
+                        state.push(Linktext(end));
                     }
                     (']', '(', Some(Linktext(_))) => {
-                        state.push(Link(pos));
+                        state.push(Link(end));
                     }
                     (')', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Link(_))) => {
                         let linkpos = if let Link(lp) = state.pop().unwrap() {
@@ -117,47 +119,53 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                         };
                         let linktext = format!(
                             "{}{}",
-                            out.get(linktextpos + 1..linkpos - 1)?.blue(),
+                            out.get(linktextpos + 1..linkpos-1)?.blue(),
                             super_num(links.len() + 1).purple()
                         );
-                        let link = out.get(linkpos + 1..pos - 1)?;
+                        let link = out.get(linkpos + 1..out.len() - 2)?;
                         if let Ok(url) = Url::parse(link) {
                             links.push(ParsedLink::External(url));
-                            out.replace_range(linktextpos..pos - 1, &linktext);
+                            out.replace_range(linktextpos..end, &linktext);
                         }
                     }
                     (' ' | '\r' | '\n', '*', _) => {
-                        state.push(Italics(pos));
+                        state.push(Italics(end));
                     }
                     ('*', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Italics(il))) => {
                         state.pop();
-                        out.replace_range(il..pos, &out.get(il + 1..pos - 1)?.italic().to_string());
+                        out.replace_range(
+                            il..end,
+                            &out.get(il + 1..out.len() - 2)?.italic().to_string(),
+                        );
                     }
                     (' ' | '\r' | '\n', '!', _) => {
-                        state.push(Bold(pos));
+                        state.push(Bold(end));
                     }
                     ('!', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Bold(il))) => {
                         state.pop();
-                        out.replace_range(il..pos, &out.get(il + 1..pos - 1)?.bold().to_string());
+                        out.replace_range(
+                            il..end,
+                            &out.get(il + 1..out.len() - 2)?.bold().to_string(),
+                        );
                     }
                     (' ' | '\r' | '\n', '_', _) => {
-                        state.push(Underline(pos));
+                        state.push(Underline(end));
                     }
                     ('_', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Underline(il))) => {
                         state.pop();
                         out.replace_range(
-                            il..pos,
-                            &out.get(il + 1..pos - 1)?.underline().to_string(),
+                            il..end,
+                            &out.get(il + 1..out.len() - 2)?.underline().to_string(),
                         );
                     }
                     (' ' | '\r' | '\n', '~', _) => {
-                        state.push(Strikethrough(pos));
+                        state.push(Strikethrough(end));
                     }
                     ('~', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Strikethrough(il))) => {
                         state.pop();
                         out.replace_range(
-                            il..pos,
-                            &out.get(il + 1..pos - 1)?.strikethrough().to_string(),
+                            il..end,
+                            &out.get(il + 1..out.len() - 2)?.strikethrough().to_string(),
                         );
                     }
                     _ => (),
@@ -327,7 +335,7 @@ mod test {
 
     #[test]
     fn test_multiple_styles() {
-        let input = "hello *world* ~world~ !world!\n";
+        let input = "hello *italic* ~strikethrough~ !bold!\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(
             "hello \u{1b}[3mworld\u{1b}[0m \u{1b}[9mworld\u{1b}[0m \u{1b}[1mworld\u{1b}[0m\n",
