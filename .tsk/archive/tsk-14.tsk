@@ -6,3 +6,5 @@ here's some =highlighted text=
 and finally some *italics!*
 
 here's [a link](https://ngp.computer).
+
+and an internal link: [[tsk-11]]

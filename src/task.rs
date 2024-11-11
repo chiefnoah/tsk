@@ -65,10 +65,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
             // there will always be an op code in the stack
             Some((_, c)) => {
                 out.push(c);
-                let end = out.len()-1;
-                if c == '\n' || c == '\r' {
-                    state.clear();
-                }
+                let end = out.len() - 1;
                 match (last, c, state_last) {
                     ('=', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Highlight(hl))) => {
                         state.pop();
@@ -92,7 +89,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                                 contents.purple(),
                                 super_num(links.len() + 1).purple()
                             );
-                            out.replace_range(il..out.len()-1, &linktext);
+                            out.replace_range(il-1..out.len(), &linktext);
                             links.push(ParsedLink::Internal(id));
                         } else {
                             panic!("Internal link is not a valid id: {contents}");
@@ -119,7 +116,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                         };
                         let linktext = format!(
                             "{}{}",
-                            out.get(linktextpos + 1..linkpos-1)?.blue(),
+                            out.get(linktextpos + 1..linkpos - 1)?.blue(),
                             super_num(links.len() + 1).purple()
                         );
                         let link = out.get(linkpos + 1..out.len() - 2)?;
@@ -169,6 +166,9 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                         );
                     }
                     _ => (),
+                }
+                if c == '\n' || c == '\r' {
+                    state.clear();
                 }
                 last = c;
             }
@@ -231,7 +231,7 @@ mod test {
             output.links.as_slice()
         );
         assert_eq!(
-            "hello \u{1b}[34mworld\u{1b}[0m\u{1b}[35m¹\u{1b}[0m)\n",
+            "hello \u{1b}[34mworld\u{1b}[0m\u{1b}[35m¹\u{1b}[0m\n",
             output.content
         );
     }
@@ -264,7 +264,7 @@ mod test {
         let output = parse(input).expect("parse to work");
         assert_eq!(&[ParsedLink::Internal(Id(123))], output.links.as_slice());
         assert_eq!(
-            "hello [\u{1b}[35mtsk-123\u{1b}[0m\u{1b}[35m¹\u{1b}[0m]\n",
+            "hello \u{1b}[35mtsk-123\u{1b}[0m\u{1b}[35m¹\u{1b}[0m\n",
             output.content
         );
     }
@@ -338,7 +338,7 @@ mod test {
         let input = "hello *italic* ~strikethrough~ !bold!\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(
-            "hello \u{1b}[3mworld\u{1b}[0m \u{1b}[9mworld\u{1b}[0m \u{1b}[1mworld\u{1b}[0m\n",
+            "hello \u{1b}[3mitalic\u{1b}[0m \u{1b}[9mstrikethrough\u{1b}[0m \u{1b}[1mbold\u{1b}[0m\n",
             output.content
         );
     }
