@@ -388,7 +388,7 @@ fn command_deprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
 fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
     let task = Workspace::from_path(dir)?.task(task_id.into())?;
     // YAML front-matter style. YAML is gross, but it's what everyone uses!
-    if show_attrs {
+    if show_attrs && !task.attributes.is_empty() {
         println!("---");
         for (attr, value) in task.attributes.iter() {
             println!("{attr}: \"{value}\"");

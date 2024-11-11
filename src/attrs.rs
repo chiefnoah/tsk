@@ -47,6 +47,10 @@ impl Attrs {
         }
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.updated.is_empty() && self.written.is_empty()
+    }
+
     pub(crate) fn iter(
         &self,
     ) -> Chain<BTreeMapIter<'_, String, String>, BTreeMapIter<'_, String, String>> {
