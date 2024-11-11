@@ -11,6 +11,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::{env::current_dir, io::Read};
+use task::ParsedLink;
 use workspace::{Id, TaskIdentifier, Workspace};
 
 //use smol;
@@ -89,7 +90,8 @@ enum Commands {
         full_id: bool,
     },
 
-    /// Prints the contents of a task.
+    /// Prints the contents of a task, parsing the body as rich text and formatting it using ANSI
+    /// escape sequences.
     Show {
         /// Shows raw file attributes for the file
         #[arg(short = 'x', default_value_t = false)]
@@ -97,6 +99,23 @@ enum Commands {
         /// The [TSK-]ID of the task to display
         #[command(flatten)]
         task_id: TaskId,
+    },
+
+    /// Follow a link that is parsed from a task body. It may be an internal or external link (ie.
+    /// a url or a wiki-style link using double square brackets). When using the `tsk show`
+    /// command, links that are successfully parsed get a numeric superscript that may be used to
+    /// address the link. That number should be supplied to the -l/link_index where it will be
+    /// subsequently followed opened or shown.
+    Follow {
+        /// The task whose body will be searched for links.
+        #[command(flatten)]
+        task_id: TaskId,
+        /// The index of the link to open. Must be supplied.
+        #[arg(short = 'l')]
+        link_index: usize,
+        /// When opening an internal link, whether to show or edit the addressed task.
+        #[arg(short = 'e', default_value_t = false)]
+        edit: bool,
     },
 
     /// Drops the task on the top of the stack and archives it.
@@ -215,6 +234,11 @@ fn main() {
             task_id,
             show_attrs,
         } => command_show(dir, task_id, show_attrs),
+        Commands::Follow {
+            task_id,
+            link_index,
+            edit,
+        } => command_follow(dir, task_id, link_index, edit),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop { task_id } => command_drop(dir, task_id),
@@ -231,6 +255,18 @@ fn main() {
             eprintln!("{e}");
             exit(2);
         }
+    }
+}
+
+fn taskid_from_tsk_id(tsk_id: Id) -> TaskId {
+    TaskId {
+        tsk_id: Some(tsk_id),
+        id: None,
+        relative_id: 0,
+        find: Find {
+            find: false,
+            args: FindArgs { search_body: false },
+        },
     }
 }
 
@@ -365,4 +401,32 @@ fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
         println!("{task}");
     }
     Ok(())
+}
+
+fn command_follow(dir: PathBuf, task_id: TaskId, link_index: usize, edit: bool) -> Result<()> {
+    let task = Workspace::from_path(dir.clone())?.task(task_id.into())?;
+    if let Some(parsed_task) = task::parse(&task.to_string()) {
+        if link_index == 0 || link_index > parsed_task.links.len() {
+            eprintln!("Link index out of bounds.");
+            exit(1);
+        }
+        let link = &parsed_task.links[link_index - 1];
+        match link {
+            ParsedLink::External(url) => {
+                open::that_detached(url.as_str())?;
+                Ok(())
+            }
+            ParsedLink::Internal(id) => {
+                let taskid = taskid_from_tsk_id(*id);
+                if edit {
+                    command_edit(dir, taskid)
+                } else {
+                    command_show(dir, taskid, false)
+                }
+            }
+        }
+    } else {
+        eprintln!("Unable to parse any links from body.");
+        exit(1);
+    }
 }
