@@ -67,16 +67,6 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                 out.push(c);
                 let end = out.len() - 1;
                 match (last, c, state_last) {
-                    ('=', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Highlight(hl))) => {
-                        state.pop();
-                        out.replace_range(
-                            hl..end,
-                            &out.get(hl + 1..out.len() - 2)?.reversed().to_string(),
-                        );
-                    }
-                    (' ' | '\r' | '\n', '=', _) => {
-                        state.push(Highlight(end));
-                    }
                     ('[', '[', _) => {
                         state.push(InternalLink(end));
                     }
@@ -125,6 +115,16 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             out.replace_range(linktextpos..end, &linktext);
                         }
                     }
+                    ('=', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Highlight(hl))) => {
+                        state.pop();
+                        out.replace_range(
+                            hl..end,
+                            &out.get(hl + 1..out.len() - 2)?.reversed().to_string(),
+                        );
+                    }
+                    (' ' | '\r' | '\n', '=', _) => {
+                        state.push(Highlight(end));
+                    }
                     (' ' | '\r' | '\n', '*', _) => {
                         state.push(Italics(end));
                     }
@@ -161,6 +161,16 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             il..end,
                             &out.get(il + 1..end - 1)?.strikethrough().to_string(),
                         );
+                    }
+                    ('`', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(InlineBlock(hl))) => {
+                        state.pop();
+                        out.replace_range(
+                            hl..end,
+                            &out.get(hl + 1..out.len() - 2)?.green().to_string(),
+                        );
+                    }
+                    (' ' | '\r' | '\n', '`', _) => {
+                        state.push(InlineBlock(end));
                     }
                     _ => (),
                 }
@@ -326,6 +336,20 @@ mod test {
     #[test]
     fn test_strikethrough_bad() {
         let input = "hello ~world\n";
+        let output = parse(input).expect("parse to work");
+        assert_eq!(input, output.content);
+    }
+
+    #[test]
+    fn test_inlineblock() {
+        let input = "hello `world`\n";
+        let output = parse(input).expect("parse to work");
+        assert_eq!("hello \u{1b}[32mworld\u{1b}[0m\n", output.content);
+    }
+
+    #[test]
+    fn test_inlineblock_bad() {
+        let input = "hello `world\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(input, output.content);
     }
