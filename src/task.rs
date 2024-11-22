@@ -14,6 +14,7 @@ enum ParserState {
     Linktext(usize),
     // Started by `](`, terminated by `) `, must immedately follow a Linktext
     Link(usize),
+    RawLink(usize),
     // Started by ` [[`, terminated by `]] `
     InternalLink(usize),
     // Started by ` *`, terminated by `* `
@@ -114,6 +115,19 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             links.push(ParsedLink::External(url));
                             out.replace_range(linktextpos..end, &linktext);
                         }
+                    }
+                    ('>', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(RawLink(hl))) => {
+                        state.pop();
+                        let link = out.get(hl + 1..out.len() - 2)?;
+                        if let Ok(url) = Url::parse(link) {
+                            let linktext =
+                                format!("{}{}", link.blue(), super_num(links.len() + 1).purple());
+                            links.push(ParsedLink::External(url));
+                            out.replace_range(hl..end, &linktext);
+                        }
+                    }
+                    (' ' | '\r' | '\n', '<', _) => {
+                        state.push(RawLink(end));
                     }
                     ('=', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Highlight(hl))) => {
                         state.pop();
