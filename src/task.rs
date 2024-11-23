@@ -180,7 +180,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                         state.pop();
                         out.replace_range(
                             hl..end,
-                            &out.get(hl + 1..out.len() - 2)?.green().to_string(),
+                            &out.get(hl + 1..out.len() - 1)?.green().to_string(),
                         );
                     }
                     (' ' | '\r' | '\n', '`', _) => {
