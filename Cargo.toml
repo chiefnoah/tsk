@@ -13,7 +13,6 @@ thiserror = "1"
 url = "2"
 xattr = "1"
 colored = "2"
-smallstr = "0"
 open = "5"
 
 [build-dependencies]
