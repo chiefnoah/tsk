@@ -96,6 +96,9 @@ enum Commands {
         /// Shows raw file attributes for the file
         #[arg(short = 'x', default_value_t = false)]
         show_attrs: bool,
+
+        #[arg(short = 'R', default_value_t = false)]
+        raw: bool,
         /// The [TSK-]ID of the task to display
         #[command(flatten)]
         task_id: TaskId,
@@ -232,8 +235,9 @@ fn main() {
         Commands::Swap => command_swap(dir),
         Commands::Show {
             task_id,
+            raw,
             show_attrs,
-        } => command_show(dir, task_id, show_attrs),
+        } => command_show(dir, task_id, show_attrs, raw),
         Commands::Follow {
             task_id,
             link_index,
@@ -385,7 +389,7 @@ fn command_deprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
     Workspace::from_path(dir)?.deprioritize(task_id.into())
 }
 
-fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
+fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool, raw: bool) -> Result<()> {
     let task = Workspace::from_path(dir)?.task(task_id.into())?;
     // YAML front-matter style. YAML is gross, but it's what everyone uses!
     if show_attrs && !task.attributes.is_empty() {
@@ -395,10 +399,13 @@ fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
         }
         println!("---");
     }
-    if let Some(styled_task) = task::parse(&task.to_string()) {
-        writeln!(io::stdout(), "{}", styled_task.content)?;
-    } else {
-        println!("{task}");
+    match task::parse(&task.to_string()) {
+        Some(styled_task) if !raw => {
+            writeln!(io::stdout(), "{}", styled_task.content)?;
+        }
+        _ => {
+            println!("{task}");
+        }
     }
     Ok(())
 }
@@ -421,7 +428,7 @@ fn command_follow(dir: PathBuf, task_id: TaskId, link_index: usize, edit: bool) 
                 if edit {
                     command_edit(dir, taskid)
                 } else {
-                    command_show(dir, taskid, false)
+                    command_show(dir, taskid, false, false)
                 }
             }
         }

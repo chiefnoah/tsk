@@ -9,22 +9,22 @@ use colored::Colorize;
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 enum ParserState {
     // Started by ` =`, terminated by `=
-    Highlight(usize),
+    Highlight(usize, usize),
     // Started by ` [`, terminated by `](`
-    Linktext(usize),
+    Linktext(usize, usize),
     // Started by `](`, terminated by `) `, must immedately follow a Linktext
-    Link(usize),
-    RawLink(usize),
+    Link(usize, usize),
+    RawLink(usize, usize),
     // Started by ` [[`, terminated by `]] `
-    InternalLink(usize),
+    InternalLink(usize, usize),
     // Started by ` *`, terminated by `* `
-    Italics(usize),
+    Italics(usize, usize),
     // Started by ` !`, termianted by `!`
-    Bold(usize),
+    Bold(usize, usize),
     // Started by ` _`, terminated by `_ `
-    Underline(usize),
+    Underline(usize, usize),
     // Started by ` -`, terminated by `- `
-    Strikethrough(usize),
+    Strikethrough(usize, usize),
 
     // TODO: implement these.
     // Started by `_ `, terminated by `_`
@@ -37,7 +37,7 @@ enum ParserState {
     // `\n` and followed by a `\n`
     BlockEnd(usize),
     // Started by ` ``, terminated by `` ` or `\n`
-    InlineBlock(usize),
+    InlineBlock(usize, usize),
     // Started by `^\w+>`, terminated by `\n`
     Blockquote(usize),
 }
@@ -64,16 +64,16 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
         let state_last = state.last().cloned();
         match stream.next() {
             // there will always be an op code in the stack
-            Some((_, c)) => {
+            Some((char_pos, c)) => {
                 out.push(c);
                 let end = out.len() - 1;
                 match (last, c, state_last) {
                     ('[', '[', _) => {
-                        state.push(InternalLink(end));
+                        state.push(InternalLink(end, char_pos));
                     }
-                    (']', ']', Some(InternalLink(il))) => {
+                    (']', ']', Some(InternalLink(il, s_pos))) => {
                         state.pop();
-                        let contents = out.get(il + 1..out.len() - 2)?;
+                        let contents = s.get(s_pos + 1..char_pos - 1)?;
                         if let Ok(id) = Id::from_str(&contents) {
                             let linktext = format!(
                                 "{}{}",
@@ -87,20 +87,22 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                         }
                     }
                     (' ' | '\r' | '\n', '[', _) => {
-                        state.push(Linktext(end));
+                        state.push(Linktext(end, char_pos));
                     }
-                    (']', '(', Some(Linktext(_))) => {
-                        state.push(Link(end));
+                    (']', '(', Some(Linktext(_, _))) => {
+                        state.push(Link(end, char_pos));
                     }
-                    (')', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Link(_))) => {
-                        let linkpos = if let Link(lp) = state.pop().unwrap() {
+                    (')', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Link(_, _))) => {
+                        // TODO: this needs to be updated to use `s` instead of `out` for position
+                        // parsing
+                        let linkpos = if let Link(lp, _) = state.pop().unwrap() {
                             lp
                         } else {
                             // remove the linktext state, it is always present.
                             state.pop();
                             continue;
                         };
-                        let linktextpos = if let Linktext(lt) = state.pop().unwrap() {
+                        let linktextpos = if let Linktext(lt, _) = state.pop().unwrap() {
                             lt
                         } else {
                             continue;
@@ -116,9 +118,11 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             out.replace_range(linktextpos..end, &linktext);
                         }
                     }
-                    ('>', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(RawLink(hl))) => {
+                    ('>', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(RawLink(hl, s_pos)))
+                        if s_pos != char_pos - 1 =>
+                    {
                         state.pop();
-                        let link = out.get(hl + 1..out.len() - 2)?;
+                        let link = s.get(s_pos + 1..char_pos - 1)?;
                         if let Ok(url) = Url::parse(link) {
                             let linktext =
                                 format!("{}{}", link.blue(), super_num(links.len() + 1).purple());
@@ -127,64 +131,78 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                         }
                     }
                     (' ' | '\r' | '\n', '<', _) => {
-                        state.push(RawLink(end));
+                        state.push(RawLink(end, char_pos));
                     }
-                    ('=', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Highlight(hl))) => {
+                    ('=', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Highlight(hl, s_pos)))
+                        if s_pos != char_pos - 1 =>
+                    {
                         state.pop();
                         out.replace_range(
                             hl..end,
-                            &out.get(hl + 1..out.len() - 2)?.reversed().to_string(),
+                            &s.get(s_pos + 1..char_pos - 1)?.reversed().to_string(),
                         );
                     }
                     (' ' | '\r' | '\n', '=', _) => {
-                        state.push(Highlight(end));
+                        state.push(Highlight(end, char_pos));
                     }
                     (' ' | '\r' | '\n', '*', _) => {
-                        state.push(Italics(end));
+                        state.push(Italics(end, char_pos));
                     }
-                    ('*', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Italics(il))) => {
+                    ('*', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Italics(il, s_pos)))
+                        if s_pos != char_pos - 1 =>
+                    {
                         state.pop();
                         out.replace_range(
                             il..end,
-                            &out.get(il + 1..out.len() - 2)?.italic().to_string(),
+                            &s.get(s_pos + 1..char_pos - 1)?.italic().to_string(),
                         );
                     }
                     (' ' | '\r' | '\n', '!', _) => {
-                        state.push(Bold(end));
+                        state.push(Bold(end, char_pos));
                     }
-                    ('!', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Bold(il))) => {
-                        state.pop();
-                        out.replace_range(il..end, &out.get(il + 1..end - 1)?.bold().to_string());
-                    }
-                    (' ' | '\r' | '\n', '_', _) => {
-                        state.push(Underline(end));
-                    }
-                    ('_', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Underline(il))) => {
+                    ('!', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Bold(il, s_pos)))
+                        if s_pos != char_pos - 1 =>
+                    {
                         state.pop();
                         out.replace_range(
                             il..end,
-                            &out.get(il + 1..end - 1)?.underline().to_string(),
+                            &s.get(s_pos + 1..char_pos - 1)?.bold().to_string(),
+                        );
+                    }
+                    (' ' | '\r' | '\n', '_', _) => {
+                        state.push(Underline(end, char_pos));
+                    }
+                    ('_', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Underline(il, s_pos)))
+                        if s_pos != char_pos - 1 =>
+                    {
+                        state.pop();
+                        out.replace_range(
+                            il..end,
+                            &s.get(s_pos + 1..char_pos - 1)?.underline().to_string(),
                         );
                     }
                     (' ' | '\r' | '\n', '~', _) => {
-                        state.push(Strikethrough(end));
+                        state.push(Strikethrough(end, char_pos));
                     }
-                    ('~', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Strikethrough(il))) => {
+                    ('~', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Strikethrough(il, s_pos)))
+                        if s_pos != char_pos - 1 =>
+                    {
                         state.pop();
                         out.replace_range(
                             il..end,
-                            &out.get(il + 1..end - 1)?.strikethrough().to_string(),
+                            &s.get(s_pos + 1..char_pos - 1)?.strikethrough().to_string(),
                         );
                     }
-                    ('`', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(InlineBlock(hl))) => {
-                        state.pop();
+                    ('`', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(InlineBlock(hl, s_pos)))
+                        if s_pos != char_pos - 1 =>
+                    {
                         out.replace_range(
                             hl..end,
-                            &out.get(hl + 1..out.len() - 1)?.green().to_string(),
+                            &s.get(s_pos + 1..char_pos - 1)?.green().to_string(),
                         );
                     }
-                    (' ' | '\r' | '\n', '`', _) => {
-                        state.push(InlineBlock(end));
+                    (' ' | '\n' | '\r' | '.' | '!' | '?', '`', _) => {
+                        state.push(InlineBlock(end, char_pos));
                     }
                     _ => (),
                 }
