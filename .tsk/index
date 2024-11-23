@@ -1,4 +1,5 @@
-tsk-20	Identify issue with existing workspaces on MacOS
+tsk-21	Add command to setup git stuff
+tsk-20	fix issue where links use absolute paths
 tsk-19	add "raw" output option for show
 tsk-8	IMAP4-based sync
 tsk-17	Add reopen command
