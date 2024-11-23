@@ -132,14 +132,15 @@ impl Workspace {
         // WARN: we could improperly increment the id if the task is not written to disk/errors.
         // But who cares
         let id = self.next_id()?;
+        let task_name = format!("tsk-{}.tsk", id.0);
         // the task goes in the archive first
-        let task_path = self.path.join("archive").join(format!("tsk-{}.tsk", id.0));
+        let task_path = self.path.join("archive").join(&task_name);
         let mut file = util::flopen(task_path.clone(), FlockArg::LockExclusive)?;
         file.write_all(format!("{title}\n\n{body}").as_bytes())?;
         // create a hardlink to the task dir to mark it as "open"
         symlink(
-            task_path,
-            self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
+            PathBuf::from("../archive").join(&task_name),
+            self.path.join("tasks").join(task_name),
         )?;
         Ok(Task {
             id,
