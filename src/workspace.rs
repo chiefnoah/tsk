@@ -5,6 +5,7 @@ use xattr::FileExt;
 use crate::attrs::Attrs;
 use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
+use crate::task::{parse as parse_task, ParsedLink};
 use crate::{fzf, util};
 use std::collections::{vec_deque, BTreeMap};
 use std::ffi::OsString;
@@ -20,6 +21,7 @@ use std::{fs::OpenOptions, io::Write};
 const INDEXFILE: &str = "index";
 const TITLECACHEFILE: &str = "cache";
 const XATTRPREFIX: &str = "user.tsk.";
+const BACKREFXATTR: &str = "user.tsk.references";
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Id(pub u32);
@@ -181,12 +183,49 @@ impl Workspace {
         })
     }
 
+    pub fn handle_metadata(&self, tsk: &Task) -> Result<()> {
+        // Parse the task and update any backlinks
+        if let Some(parsed_task) = parse_task(&tsk.to_string()) {
+            for link in parsed_task.links {
+                if let ParsedLink::Internal(id) = link {
+                    self.add_backlink(id, tsk.id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn add_backlink(&self, to: Id, from: Id) -> Result<()> {
+        let to_task = self.task(TaskIdentifier::Id(to))?;
+        let (_, current_backlinks_text) =
+            Self::read_xattr(&to_task.file, BACKREFXATTR.into()).unwrap_or_default();
+        let mut backlinks: Vec<Id> = current_backlinks_text
+            .split(',')
+            .filter_map(|s| Id::from_str(s).ok())
+            .collect();
+        backlinks.push(from);
+        Self::set_xattr(
+            &to_task.file,
+            BACKREFXATTR.into(),
+            &itertools::join(backlinks, ","),
+        )
+    }
+
     /// Reads an xattr from a file, stripping the prefix for
     fn read_xattr<D: Deref<Target = File>>(file: &D, key: OsString) -> Option<(String, String)> {
         // this *shouldn't* allocate, but it does O(n) scan the str for UTF-8 correctness
         let parsedkey = key.as_os_str().to_str()?.strip_prefix(XATTRPREFIX)?;
         let valuebytes = file.get_xattr(&key).ok().flatten()?;
         Some((parsedkey.to_string(), String::from_utf8(valuebytes).ok()?))
+    }
+
+    fn set_xattr<D: Deref<Target = File>>(file: &D, key: &str, value: &str) -> Result<()> {
+        let key = if !key.starts_with(XATTRPREFIX) {
+            format!("{XATTRPREFIX}.{key}")
+        } else {
+            key.to_string()
+        };
+        Ok(file.set_xattr(key, value.as_bytes())?)
     }
 
     pub fn read_stack(&self) -> Result<TaskStack> {

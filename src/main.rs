@@ -303,6 +303,7 @@ fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) ->
         }
     }
     let task = workspace.new_task(title, body)?;
+    workspace.handle_metadata(&task)?;
     workspace.push_task(task)
 }
 
@@ -344,6 +345,7 @@ fn command_edit(dir: PathBuf, id: TaskId) -> Result<()> {
     if let Some((title, body)) = new_content.split_once("\n") {
         task.title = title.to_string();
         task.body = body.to_string();
+        workspace.handle_metadata(&task)?;
         task.save()?;
     }
     Ok(())

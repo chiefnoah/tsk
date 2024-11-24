@@ -9,11 +9,12 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 edit = "0"
 nix = { version = "0", features = ["fs"] }
-thiserror = "1"
+thiserror = "2"
 url = "2"
 xattr = "1"
 colored = "2"
 open = "5"
+itertools = "0"
 
 [build-dependencies]
 clap_mangen = "0"
