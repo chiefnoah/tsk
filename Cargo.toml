@@ -3,6 +3,9 @@ name = "tsk"
 version = "0.2.3"
 edition = "2021"
 publish = true
+license = "MIT"
+license-file = "LICENSE"
+description = "A command-line first, file-system based task manager"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
