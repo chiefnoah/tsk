@@ -36,6 +36,15 @@ it. Patches that implement this for other operating systems are welcome.
 tsk expects to run on POSIX-like systems. Microsoft Windows and other
 non-UNIX-ey operating systems will never be directly supported.
 
+
+Installation
+------------
+
+```sh
+cargo install --locked tsk-cli
+```
+
+
 Building
 --------
 

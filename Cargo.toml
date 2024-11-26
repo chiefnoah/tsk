@@ -1,11 +1,15 @@
 [package]
-name = "tsk"
+name = "tsk-cli"
 version = "0.2.3"
 edition = "2021"
 publish = true
 license = "MIT"
 license-file = "LICENSE"
 description = "A command-line first, file-system based task manager"
+repository = "https://codeberg.org/ngp/tsk"
+homepage = "https://tsk.ngp.computer/"
+readme = "readme"
+authors = ["Noah Pederson <noah@packetlost.dev>"]
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
