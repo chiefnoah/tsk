@@ -142,7 +142,8 @@ impl TaskStack {
         self.file.seek(std::io::SeekFrom::Start(0))?;
         self.file.set_len(0)?;
         for item in self.all.iter() {
-            self.file.write_all(format!("{item}\n").as_bytes())?;
+            let time = item.modify_time.duration_since(UNIX_EPOCH)?.as_secs();
+            self.file.write_all(format!("{item}\t{}\n", time).as_bytes())?;
         }
         Ok(())
     }

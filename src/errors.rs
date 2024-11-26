@@ -27,6 +27,8 @@ pub enum Error {
     #[allow(dead_code)]
     #[error("An unexpected error occurred: {0}")]
     Oops(Box<dyn std::error::Error>),
+    #[error("System time/clock error: {0}")]
+    SystemTime(#[from] std::time::SystemTimeError),
 }
 
 impl From<Infallible> for Error {
