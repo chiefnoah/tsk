@@ -590,7 +590,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tsk"
+name = "tsk-cli"
 version = "0.2.3"
 dependencies = [
  "clap",

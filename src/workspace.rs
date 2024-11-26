@@ -31,6 +31,7 @@ impl FromStr for Id {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let s = s
+            .trim()
             .strip_prefix("tsk-")
             .ok_or(Self::Err::Parse(format!("expected tsk- prefix. Got {s}")))?;
         Ok(Self(s.parse()?))

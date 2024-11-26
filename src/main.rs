@@ -10,17 +10,22 @@ use errors::Result;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::exit;
+use std::str::FromStr as _;
 use std::{env::current_dir, io::Read};
 use task::ParsedLink;
 use workspace::{Id, TaskIdentifier, Workspace};
 
 //use smol;
 //use iocraft::prelude::*;
-use clap::{value_parser, Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use edit::edit as open_editor;
 
 fn default_dir() -> PathBuf {
     current_dir().unwrap()
+}
+
+fn parse_id(s: &str) -> std::result::Result<Id, &'static str> {
+    Ok(Id::from_str(s).map_err(|_| "Unable to parse tsk- ID")?)
 }
 
 #[derive(Parser)]
@@ -170,7 +175,7 @@ struct TaskId {
     id: Option<u32>,
 
     /// The ID of the task to select with the 'tsk-' prefix.
-    #[arg(short = 'T', value_name = "TSK-ID", value_parser = value_parser!(String))]
+    #[arg(short = 'T', value_name = "TSK-ID", value_parser = parse_id)]
     tsk_id: Option<Id>,
 
     /// Selects a task relative to the top of the stack.
