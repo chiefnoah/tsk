@@ -303,7 +303,7 @@ fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) ->
         }
     }
     let task = workspace.new_task(title, body)?;
-    workspace.handle_metadata(&task)?;
+    workspace.handle_metadata(&task, None)?;
     workspace.push_task(task)
 }
 
@@ -341,11 +341,12 @@ fn command_edit(dir: PathBuf, id: TaskId) -> Result<()> {
     let workspace = Workspace::from_path(dir)?;
     let id: TaskIdentifier = id.into();
     let mut task = workspace.task(id)?;
+    let pre_links = task::parse(&task.to_string()).map(|pt| pt.intenal_links());
     let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))?;
     if let Some((title, body)) = new_content.split_once("\n") {
         task.title = title.to_string();
         task.body = body.to_string();
-        workspace.handle_metadata(&task)?;
+        workspace.handle_metadata(&task, pre_links)?;
         task.save()?;
     }
     Ok(())

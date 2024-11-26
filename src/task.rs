@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 use url::Url;
 
 use crate::workspace::Id;
@@ -51,6 +51,18 @@ pub(crate) enum ParsedLink {
 pub(crate) struct ParsedTask {
     pub(crate) content: String,
     pub(crate) links: Vec<ParsedLink>,
+}
+
+impl ParsedTask {
+    pub(crate) fn intenal_links(&self) -> HashSet<Id> {
+        let mut out = HashSet::with_capacity(self.links.len());
+        for link in &self.links {
+            if let ParsedLink::Internal(id) = link {
+                out.insert(*id);
+            }
+        }
+        out
+    }
 }
 
 pub(crate) fn parse(s: &str) -> Option<ParsedTask> {

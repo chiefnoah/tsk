@@ -5,9 +5,9 @@ use xattr::FileExt;
 use crate::attrs::Attrs;
 use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
-use crate::task::{parse as parse_task, ParsedLink};
+use crate::task::parse as parse_task;
 use crate::{fzf, util};
-use std::collections::{vec_deque, BTreeMap};
+use std::collections::{vec_deque, BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::File;
@@ -23,7 +23,7 @@ const TITLECACHEFILE: &str = "cache";
 const XATTRPREFIX: &str = "user.tsk.";
 const BACKREFXATTR: &str = "user.tsk.references";
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Id(pub u32);
 
 impl FromStr for Id {
@@ -183,19 +183,24 @@ impl Workspace {
         })
     }
 
-    pub fn handle_metadata(&self, tsk: &Task) -> Result<()> {
+    pub fn handle_metadata(&self, tsk: &Task, pre_links: Option<HashSet<Id>>) -> Result<()> {
         // Parse the task and update any backlinks
         if let Some(parsed_task) = parse_task(&tsk.to_string()) {
-            for link in parsed_task.links {
-                if let ParsedLink::Internal(id) = link {
-                    self.add_backlink(id, tsk.id)?;
+            let internal_links = parsed_task.intenal_links();
+            for link in &internal_links {
+                self.add_backlink(*link, tsk.id)?;
+            }
+            if let Some(pre_links) = pre_links {
+                let removed_links = pre_links.difference(&internal_links);
+                for link in removed_links {
+                    self.remove_backlink(*link, tsk.id)?;
                 }
             }
         }
         Ok(())
     }
 
-    pub fn add_backlink(&self, to: Id, from: Id) -> Result<()> {
+    fn add_backlink(&self, to: Id, from: Id) -> Result<()> {
         let to_task = self.task(TaskIdentifier::Id(to))?;
         let (_, current_backlinks_text) =
             Self::read_xattr(&to_task.file, BACKREFXATTR.into()).unwrap_or_default();
@@ -204,6 +209,22 @@ impl Workspace {
             .filter_map(|s| Id::from_str(s).ok())
             .collect();
         backlinks.push(from);
+        Self::set_xattr(
+            &to_task.file,
+            BACKREFXATTR.into(),
+            &itertools::join(backlinks, ","),
+        )
+    }
+
+    fn remove_backlink(&self, to: Id, from: Id) -> Result<()> {
+        let to_task = self.task(TaskIdentifier::Id(to))?;
+        let (_, current_backlinks_text) =
+            Self::read_xattr(&to_task.file, BACKREFXATTR.into()).unwrap_or_default();
+        let mut backlinks: HashSet<Id> = current_backlinks_text
+            .split(',')
+            .filter_map(|s| Id::from_str(s).ok())
+            .collect();
+        backlinks.remove(&from);
         Self::set_xattr(
             &to_task.file,
             BACKREFXATTR.into(),
