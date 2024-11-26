@@ -204,11 +204,11 @@ impl Workspace {
         let to_task = self.task(TaskIdentifier::Id(to))?;
         let (_, current_backlinks_text) =
             Self::read_xattr(&to_task.file, BACKREFXATTR.into()).unwrap_or_default();
-        let mut backlinks: Vec<Id> = current_backlinks_text
+        let mut backlinks: HashSet<Id> = current_backlinks_text
             .split(',')
             .filter_map(|s| Id::from_str(s).ok())
             .collect();
-        backlinks.push(from);
+        backlinks.insert(from);
         Self::set_xattr(
             &to_task.file,
             BACKREFXATTR.into(),
