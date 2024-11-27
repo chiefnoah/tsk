@@ -11,6 +11,10 @@ homepage = "https://tsk.ngp.computer/"
 readme = "readme"
 authors = ["Noah Pederson <noah@packetlost.dev>"]
 
+[[bin]]
+name = "tsk"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"

@@ -115,12 +115,12 @@ enum Commands {
     /// address the link. That number should be supplied to the -l/link_index where it will be
     /// subsequently followed opened or shown.
     Follow {
-        /// The index of the link to open. Must be supplied.
-        #[arg(short = 'l')]
-        link_index: usize,
         /// The task whose body will be searched for links.
         #[command(flatten)]
         task_id: TaskId,
+        /// The index of the link to open. Must be supplied.
+        #[arg(short = 'l', default_value_t = 1)]
+        link_index: usize,
         /// When opening an internal link, whether to show or edit the addressed task.
         #[arg(short = 'e', default_value_t = false)]
         edit: bool,
