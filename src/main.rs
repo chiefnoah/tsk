@@ -90,9 +90,9 @@ enum Commands {
     Find {
         #[command(flatten)]
         args: FindArgs,
-        /// Whether to print the full TSK-ID (instead of just an integer)
-        #[arg(short = 'F', default_value_t = true)]
-        full_id: bool,
+        /// Whether to print the a shortened tsk ID (just the integer portion). Defaults to *false*
+        #[arg(short = 'f', default_value_t = false)]
+        short_id: bool,
     },
 
     /// Prints the contents of a task, parsing the body as rich text and formatting it using ANSI
@@ -251,7 +251,7 @@ fn main() {
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop { task_id } => command_drop(dir, task_id),
-        Commands::Find { args, full_id } => command_find(dir, full_id, args),
+        Commands::Find { args, short_id } => command_find(dir, short_id, args),
         Commands::Rot => Workspace::from_path(dir).unwrap().rot(),
         Commands::Tor => Workspace::from_path(dir).unwrap().tor(),
         Commands::Prioritize { task_id } => command_prioritize(dir, task_id),
@@ -373,14 +373,14 @@ fn command_drop(dir: PathBuf, task_id: TaskId) -> Result<()> {
     Ok(())
 }
 
-fn command_find(dir: PathBuf, full_id: bool, find_args: FindArgs) -> Result<()> {
+fn command_find(dir: PathBuf, short_id: bool, find_args: FindArgs) -> Result<()> {
     let id = Workspace::from_path(dir)?.search(None, find_args.search_body, false)?;
     if let Some(id) = id {
-        if full_id {
-            println!("{id}");
-        } else {
+        if short_id {
             // print as integer
             println!("{}", id.0);
+        } else {
+            println!("{id}");
         }
     } else {
         eprintln!("No task selected.");
