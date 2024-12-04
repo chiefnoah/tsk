@@ -317,7 +317,7 @@ impl Workspace {
         } else {
             None
         };
-        remove_file(self.path.join("tasks").join(format!("tsk-{}.tsk", id)))?;
+        remove_file(self.path.join("tasks").join(format!("{id}.tsk")))?;
         Ok(task)
     }
 
