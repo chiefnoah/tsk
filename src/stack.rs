@@ -143,7 +143,8 @@ impl TaskStack {
         self.file.set_len(0)?;
         for item in self.all.iter() {
             let time = item.modify_time.duration_since(UNIX_EPOCH)?.as_secs();
-            self.file.write_all(format!("{item}\t{}\n", time).as_bytes())?;
+            self.file
+                .write_all(format!("{item}\t{}\n", time).as_bytes())?;
         }
         Ok(())
     }
