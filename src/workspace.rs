@@ -10,7 +10,7 @@ use crate::{fzf, util};
 use std::collections::{vec_deque, BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Display;
-use std::fs::File;
+use std::fs::{remove_file, File};
 use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
 use std::ops::Deref;
 use std::os::unix::fs::symlink;
@@ -309,6 +309,7 @@ impl Workspace {
         let id = self.resolve(identifier)?;
         let mut stack = self.read_stack()?;
         let index = &stack.iter().map(|i| i.id).position(|i| i == id);
+        // TODO: remove the softlink in .tsk/tasks
         let task = if let Some(index) = index {
             let prioritized_task = stack.remove(*index);
             stack.save()?;
@@ -316,6 +317,7 @@ impl Workspace {
         } else {
             None
         };
+        remove_file(self.path.join("tasks").join(format!("tsk-{}.tsk", id)))?;
         Ok(task)
     }
 

@@ -1,0 +1,13 @@
+Add tool to clean up old tasks not in index
+
+Previously the `drop` command did not remove the symlink in .tsk/tasks when a
+task was dropped, only removing it from the index. I don't recall if this was
+because my original design expected the index to be the source of truth on
+whether a task was prioritized or not or if I simply forgot to add it. Either
+way, drop now properly removes the symlink but basically every existing
+workspace has a bunch of junk in it. I can write a simple script that deletes
+all symlinks that aren't present in the index.
+
+This does suggest that I should add a reindex command to add tasks that are not
+present in the index but are in the tasks folder to the index at the *bottom*,
+preserving the existing order of the index.
