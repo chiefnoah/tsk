@@ -1,9 +1,8 @@
 [package]
 name = "tsk-cli"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 publish = true
-license = "MIT"
 license-file = "LICENSE"
 description = "A command-line first, file-system based task manager"
 repository = "https://codeberg.org/ngp/tsk"

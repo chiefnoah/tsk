@@ -13,7 +13,7 @@ use std::process::exit;
 use std::str::FromStr as _;
 use std::{env::current_dir, io::Read};
 use task::ParsedLink;
-use workspace::{Id, TaskIdentifier, Workspace};
+use workspace::{Id, Task, TaskIdentifier, Workspace};
 
 //use smol;
 //use iocraft::prelude::*;
@@ -46,6 +46,24 @@ enum Commands {
     Init,
     /// Creates a new task, automatically assigning it a unique identifider and persisting
     Push {
+        /// Whether to open $EDITOR to edit the content of the task. The first line if the
+        /// resulting file will be the task's title. The body follows the title after two newlines,
+        /// similr to the format of a commit message.
+        #[arg(short = 'e', default_value_t = false)]
+        edit: bool,
+
+        /// The body of the task. It may be specified as either a string using quotes or the
+        /// special character '-' to read from stdin.
+        #[arg(short = 'b')]
+        body: Option<String>,
+
+        /// The title of the task as a raw string. It mus be proceeded by two dashes (--).
+        #[command(flatten)]
+        title: Title,
+    },
+    /// Creates a new task just like `push`, but instead of putting it at the top of the stack, it
+    /// puts it at the bottom
+    Append {
         /// Whether to open $EDITOR to edit the content of the task. The first line if the
         /// resulting file will be the task's title. The body follows the title after two newlines,
         /// similr to the format of a commit message.
@@ -236,6 +254,7 @@ fn main() {
     let var_name = match cli.command {
         Commands::Init => command_init(dir),
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
+        Commands::Append { edit, body, title } => command_append(dir, edit, body, title),
         Commands::List { all, count } => command_list(dir, all, count),
         Commands::Swap => command_swap(dir),
         Commands::Show {
@@ -283,8 +302,12 @@ fn command_init(dir: PathBuf) -> Result<()> {
     Workspace::init(dir)
 }
 
-fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
+fn create_task(
+    workspace: &mut Workspace,
+    edit: bool,
+    body: Option<String>,
+    title: Title,
+) -> Result<Task> {
     let mut title = if let Some(title) = title.title {
         title
     } else if let Some(title) = title.title_simple {
@@ -309,7 +332,19 @@ fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) ->
     }
     let task = workspace.new_task(title, body)?;
     workspace.handle_metadata(&task, None)?;
+    Ok(task)
+}
+
+fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) -> Result<()> {
+    let mut workspace = Workspace::from_path(dir)?;
+    let task = create_task(&mut workspace, edit, body, title)?;
     workspace.push_task(task)
+}
+
+fn command_append(dir: PathBuf, edit: bool, body: Option<String>, title: Title) -> Result<()> {
+    let mut workspace = Workspace::from_path(dir)?;
+    let task = create_task(&mut workspace, edit, body, title)?;
+    workspace.append_task(task)
 }
 
 fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {

@@ -261,6 +261,13 @@ impl Workspace {
         Ok(())
     }
 
+    pub fn append_task(&self, task: Task) -> Result<()> {
+        let mut stack = TaskStack::from_tskdir(&self.path)?;
+        stack.push_back(task.try_into()?);
+        stack.save()?;
+        Ok(())
+    }
+
     pub fn swap_top(&self) -> Result<()> {
         let mut stack = TaskStack::from_tskdir(&self.path)?;
         stack.swap();
