@@ -1,5 +1,5 @@
-tsk-29	style titles in list command output	1733932160
-tsk-28	Add tool to clean up old tasks not in index	1733334849
+tsk-30	Add flag to only print IDs in list command	1735007126
+tsk-28	Add tool to clean up old tasks not in index	1735006519
 tsk-10	foreign workspaces	1732594198
 tsk-21	Add command to setup git stuff	1732594198
 tsk-8	IMAP4-based sync	1732594198
@@ -9,4 +9,4 @@ tsk-15	Add link identification to tasks	1732594198
 tsk-9	fix timestamp storage and parsing	1732594198
 tsk-7	allow for creating tasks that don't go to top of stack	1732594198
 tsk-13	user-defined labels	1732594198
-tsk-18	Add reindex command	1732594198
+tsk-18	Add reindex command	1735006716
