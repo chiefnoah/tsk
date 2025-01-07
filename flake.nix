@@ -14,7 +14,7 @@
       {
         defaultPackage = naersk-lib.buildPackage ./.;
         devShell = with pkgs; mkShell {
-          buildInputs = [ libiconv cargo rustc rustfmt rust-analyzer rustPackages.clippy ];
+          buildInputs = [ libiconv cargo rustc rustfmt rust-analyzer rustPackages.clippy plan9port pandoc ];
           RUST_SRC_PATH = rustPlatform.rustLibSrc;
         };
       }
