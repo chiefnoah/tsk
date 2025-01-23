@@ -369,7 +369,7 @@ fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {
         } else {
             for stack_item in stack.into_iter() {
                 if let Some(parsed) = task::parse(&stack_item.title) {
-                    println!("{}\t{}", stack_item.id, parsed.content);
+                    println!("{}\t{}", stack_item.id, parsed.content.trim());
                 } else {
                     println!("{stack_item}");
                 }
