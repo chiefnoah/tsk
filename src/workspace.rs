@@ -51,7 +51,8 @@ impl From<u32> for Id {
 }
 
 impl Id {
-    pub fn to_filename(&self) -> String {
+    /// Returns the filename for a task with this id.
+    pub fn filename(&self) -> String {
         format!("tsk-{}.tsk", self.0)
     }
 }
@@ -83,13 +84,14 @@ impl Workspace {
         }
         std::fs::create_dir(&tsk_dir)?;
         // Create the tasks directory
-        std::fs::create_dir(&tsk_dir.join("tasks"))?;
+        std::fs::create_dir(tsk_dir.join("tasks"))?;
         // Create the archive directory
-        std::fs::create_dir(&tsk_dir.join("archive"))?;
+        std::fs::create_dir(tsk_dir.join("archive"))?;
         let mut next = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(tsk_dir.join("next"))?;
         next.write_all(b"1\n")?;
         Ok(())
@@ -212,7 +214,7 @@ impl Workspace {
         backlinks.insert(from);
         Self::set_xattr(
             &to_task.file,
-            BACKREFXATTR.into(),
+            BACKREFXATTR,
             &itertools::join(backlinks, ","),
         )
     }
@@ -228,7 +230,7 @@ impl Workspace {
         backlinks.remove(&from);
         Self::set_xattr(
             &to_task.file,
-            BACKREFXATTR.into(),
+            BACKREFXATTR,
             &itertools::join(backlinks, ","),
         )
     }
@@ -424,12 +426,12 @@ impl FromStr for SearchTask {
     type Err = Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let (tsk_id, task_content) = s.split_once('\t').ok_or(Error::Parse(format!(
-            "Missing TSK-ID or content or task parse."
-        )))?;
+        let (tsk_id, task_content) = s.split_once('\t').ok_or(Error::Parse(
+            "Missing TSK-ID or content or task parse.".to_owned(),
+        ))?;
         let (title, body) = task_content
             .split_once('\t')
-            .ok_or(Error::Parse(format!("Missing body for task parse.")))?;
+            .ok_or(Error::Parse("Missing body for task parse.".to_owned()))?;
         Ok(Self {
             id: tsk_id.parse()?,
             title: title.to_string(),

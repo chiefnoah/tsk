@@ -7,10 +7,11 @@ use crate::util;
 use std::collections::vec_deque::Iter;
 use std::collections::VecDeque;
 use std::fmt::Display;
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, Write};
+use std::path::Path;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{fs::File, path::PathBuf};
 
 use nix::fcntl::{Flock, FlockArg};
 
@@ -67,15 +68,15 @@ impl FromStr for StackItem {
         let mut parts = s.trim().split("\t");
         let id: Id = parts
             .next()
-            .ok_or(Error::Parse(format!(
-                "Incomplete index line. Missing tsk ID"
-            )))?
+            .ok_or(Error::Parse(
+                "Incomplete index line. Missing tsk ID".to_owned(),
+            ))?
             .parse()?;
         let title: String = parts
             .next()
-            .ok_or(Error::Parse(format!(
-                "Incomplete index line. Missing title."
-            )))?
+            .ok_or(Error::Parse(
+                "Incomplete index line. Missing title.".to_owned(),
+            ))?
             .trim()
             .to_string();
         // parse the timestamp as an integer
@@ -96,14 +97,14 @@ impl FromStr for StackItem {
 
 impl StackItem {
     /// Parses a [`StackItem`] from a string. The expected format is a tab-delimited line with the
-    /// files: task id	title
-    fn from_line(workspace_path: &PathBuf, line: String) -> Result<Self> {
+    /// files: task id title
+    fn from_line(workspace_path: &Path, line: String) -> Result<Self> {
         let mut stack_item: StackItem = line.parse()?;
 
         let task = util::flopen(
             workspace_path
                 .join(TASKSFOLDER)
-                .join(stack_item.id.to_filename()),
+                .join(stack_item.id.filename()),
             FlockArg::LockExclusive,
         )?;
         let task_modify_time = task.metadata()?.modified()?;
@@ -125,7 +126,7 @@ pub struct TaskStack {
 }
 
 impl TaskStack {
-    pub fn from_tskdir(workspace_path: &PathBuf) -> Result<Self> {
+    pub fn from_tskdir(workspace_path: &Path) -> Result<Self> {
         let file = util::flopen(workspace_path.join(INDEXFILE), FlockArg::LockExclusive)?;
         let index = BufReader::new(&*file).lines();
         let mut all = VecDeque::new();
@@ -164,9 +165,9 @@ impl TaskStack {
     pub fn swap(&mut self) {
         let tip = self.all.pop_front();
         let second = self.all.pop_front();
-        if tip.is_some() && second.is_some() {
-            self.all.push_front(tip.unwrap());
-            self.all.push_front(second.unwrap());
+        if let Some((tip, second)) = tip.zip(second) {
+            self.all.push_front(tip);
+            self.all.push_front(second);
         }
     }
 

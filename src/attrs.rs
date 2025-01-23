@@ -1,3 +1,4 @@
+use std::collections::btree_map::Entry;
 use std::collections::btree_map::{IntoIter as BTreeIntoIter, Iter as BTreeMapIter};
 use std::collections::BTreeMap;
 use std::iter::Chain;
@@ -20,7 +21,7 @@ impl IntoIterator for Attrs {
     type IntoIter = Chain<BTreeIntoIter<String, String>, BTreeIntoIter<String, String>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.written.into_iter().chain(self.updated.into_iter())
+        self.written.into_iter().chain(self.updated)
     }
 }
 
@@ -38,12 +39,13 @@ impl Attrs {
     }
 
     pub(crate) fn insert(&mut self, key: String, value: String) -> Option<String> {
-        if self.updated.contains_key(&key) {
-            self.updated.insert(key, value)
-        } else {
-            let maybe_old_value = self.written.get(&key);
-            self.updated.insert(key, value);
-            maybe_old_value.cloned()
+        match self.updated.entry(key.clone()) {
+            Entry::Occupied(mut e) => Some(e.insert(value)),
+            Entry::Vacant(e) => {
+                e.insert(value);
+                let maybe_old_value = self.written.get(&key);
+                maybe_old_value.cloned()
+            }
         }
     }
 

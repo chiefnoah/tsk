@@ -14,7 +14,7 @@ pub fn flopen(path: PathBuf, mode: FlockArg) -> Result<Flock<File>> {
         .write(true)
         .create(true)
         .open(path)?;
-    Ok(Flock::lock(file, mode).map_err(|(_, errno)| Error::Lock(errno))?)
+    Flock::lock(file, mode).map_err(|(_, errno)| Error::Lock(errno))
 }
 
 /// Recursively searches upwards for a directory

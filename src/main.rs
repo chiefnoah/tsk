@@ -25,7 +25,7 @@ fn default_dir() -> PathBuf {
 }
 
 fn parse_id(s: &str) -> std::result::Result<Id, &'static str> {
-    Ok(Id::from_str(s).map_err(|_| "Unable to parse tsk- ID")?)
+    Id::from_str(s).map_err(|_| "Unable to parse tsk- ID")
 }
 
 #[derive(Parser)]
@@ -235,15 +235,13 @@ impl From<TaskId> for TaskIdentifier {
     fn from(value: TaskId) -> Self {
         if let Some(id) = value.id.map(Id::from).or(value.tsk_id) {
             TaskIdentifier::Id(id)
-        } else {
-            if value.find.find {
-                TaskIdentifier::Find {
-                    search_body: value.find.args.search_body,
-                    archived: false,
-                }
-            } else {
-                TaskIdentifier::Relative(value.relative_id)
+        } else if value.find.find {
+            TaskIdentifier::Find {
+                search_body: value.find.args.search_body,
+                archived: false,
             }
+        } else {
+            TaskIdentifier::Relative(value.relative_id)
         }
     }
 }
@@ -311,8 +309,7 @@ fn create_task(
     let mut title = if let Some(title) = title.title {
         title
     } else if let Some(title) = title.title_simple {
-        let joined = title.join(" ");
-        joined
+        title.join(" ")
     } else {
         "".to_string()
     };
@@ -349,31 +346,22 @@ fn command_append(dir: PathBuf, edit: bool, body: Option<String>, title: Title) 
 
 fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {
     let workspace = Workspace::from_path(dir)?;
-    let stack = if all {
-        workspace.read_stack()?
-    } else {
-        workspace.read_stack()?
-    };
+    let stack = workspace.read_stack()?;
+
     if stack.empty() {
         println!("*No tasks*");
         exit(0);
-    } else {
-        if !all {
-            for stack_item in stack.into_iter().take(count) {
-                if let Some(parsed) = task::parse(&stack_item.title) {
-                    println!("{}\t{}", stack_item.id, parsed.content.trim());
-                } else {
-                    println!("{stack_item}");
-                }
-            }
+    }
+
+    for (_, stack_item) in stack
+        .into_iter()
+        .enumerate()
+        .take_while(|(idx, _)| all || idx < &count)
+    {
+        if let Some(parsed) = task::parse(&stack_item.title) {
+            println!("{}\t{}", stack_item.id, parsed.content.trim());
         } else {
-            for stack_item in stack.into_iter() {
-                if let Some(parsed) = task::parse(&stack_item.title) {
-                    println!("{}\t{}", stack_item.id, parsed.content.trim());
-                } else {
-                    println!("{stack_item}");
-                }
-            }
+            println!("{stack_item}");
         }
     }
     Ok(())

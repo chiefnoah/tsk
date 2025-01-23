@@ -86,7 +86,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                     (']', ']', Some(InternalLink(il, s_pos))) => {
                         state.pop();
                         let contents = s.get(s_pos + 1..char_pos - 1)?;
-                        if let Ok(id) = Id::from_str(&contents) {
+                        if let Ok(id) = Id::from_str(contents) {
                             let linktext = format!(
                                 "{}{}",
                                 contents.purple(),
@@ -291,21 +291,21 @@ mod test {
     fn test_link_no_terminal_link() {
         let input = "hello [world](https://ngp.computer\n";
         let output = parse(input).expect("parse to work");
-        assert!(output.links.len() == 0);
+        assert!(output.links.is_empty());
         assert_eq!(input, output.content);
     }
     #[test]
     fn test_link_bad_no_start_link() {
         let input = "hello [world]https://ngp.computer)\n";
         let output = parse(input).expect("parse to work");
-        assert!(output.links.len() == 0);
+        assert!(output.links.is_empty());
         assert_eq!(input, output.content);
     }
     #[test]
     fn test_link_bad_no_link() {
         let input = "hello [world]\n";
         let output = parse(input).expect("parse to work");
-        assert!(output.links.len() == 0);
+        assert!(output.links.is_empty());
         assert_eq!(input, output.content);
     }
 
@@ -324,7 +324,7 @@ mod test {
     fn test_internal_link_bad() {
         let input = "hello [[tsk-123";
         let output = parse(input).expect("parse to work");
-        assert!(output.links.len() == 0);
+        assert!(output.links.is_empty());
         assert_eq!(input, output.content);
     }
 
