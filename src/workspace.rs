@@ -457,7 +457,7 @@ struct LazyTaskLoader<'a> {
     workspace: &'a Workspace,
 }
 
-impl<'a> Iterator for LazyTaskLoader<'a> {
+impl Iterator for LazyTaskLoader<'_> {
     type Item = SearchTask;
 
     fn next(&mut self) -> Option<Self::Item> {

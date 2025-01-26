@@ -13,6 +13,7 @@ pub fn flopen(path: PathBuf, mode: FlockArg) -> Result<Flock<File>> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)?;
     Flock::lock(file, mode).map_err(|(_, errno)| Error::Lock(errno))
 }
