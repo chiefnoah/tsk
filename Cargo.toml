@@ -22,7 +22,7 @@ nix = { version = "0", features = ["fs"] }
 thiserror = "2"
 url = "2"
 xattr = "1"
-colored = "2"
+colored = "3"
 open = "5"
 itertools = "0"
 
