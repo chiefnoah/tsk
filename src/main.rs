@@ -86,6 +86,8 @@ enum Commands {
         all: bool,
         #[arg(short = 'c', default_value_t = 10)]
         count: usize,
+        #[arg(short = 'i', default_value_t = false)]
+        ids: bool
     },
 
     /// Swaps the top two tasks on the stack. If there are less than 2 tasks on the stack, there is
@@ -253,7 +255,7 @@ fn main() {
         Commands::Init => command_init(dir),
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
         Commands::Append { edit, body, title } => command_append(dir, edit, body, title),
-        Commands::List { all, count } => command_list(dir, all, count),
+        Commands::List { all, count, ids } => command_list(dir, all, ids, count),
         Commands::Swap => command_swap(dir),
         Commands::Show {
             task_id,
@@ -344,7 +346,7 @@ fn command_append(dir: PathBuf, edit: bool, body: Option<String>, title: Title) 
     workspace.append_task(task)
 }
 
-fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {
+fn command_list(dir: PathBuf, all: bool, only_print_ids: bool, count: usize) -> Result<()> {
     let workspace = Workspace::from_path(dir)?;
     let stack = workspace.read_stack()?;
 
@@ -358,10 +360,16 @@ fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {
         .enumerate()
         .take_while(|(idx, _)| all || idx < &count)
     {
-        if let Some(parsed) = task::parse(&stack_item.title) {
-            println!("{}\t{}", stack_item.id, parsed.content.trim());
-        } else {
-            println!("{stack_item}");
+        match (task::parse(&stack_item.title), only_print_ids) {
+            (None, false) => {
+                println!("{stack_item}");
+            },
+            (Some(parsed), false) => {
+                println!("{}\t{}", stack_item.id, parsed.content.trim())
+            },
+            (None, true) | (Some(_), true) => {
+                println!("{}", stack_item.id)
+            },
         }
     }
     Ok(())
