@@ -179,7 +179,7 @@ impl TaskStack {
         self.all.remove(index)
     }
 
-    pub fn iter(&self) -> Iter<StackItem> {
+    pub fn iter(&self) -> Iter<'_, StackItem> {
         self.all.iter()
     }
 
