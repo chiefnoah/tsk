@@ -7,14 +7,15 @@ use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
 use crate::task::parse as parse_task;
 use crate::{fzf, util};
-use std::collections::{vec_deque, BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, vec_deque};
 use std::ffi::OsString;
 use std::fmt::Display;
-use std::fs::{remove_file, File};
+use std::fs::{File, remove_file};
 use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
 use std::ops::Deref;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::{fs::OpenOptions, io::Write};
 
@@ -30,9 +31,10 @@ impl FromStr for Id {
     type Err = Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let s = s
+        let upper = s.to_uppercase();
+        let s = upper
             .trim()
-            .strip_prefix("tsk-")
+            .strip_prefix("TSK-")
             .ok_or(Self::Err::Parse(format!("expected tsk- prefix. Got {s}")))?;
         Ok(Self(s.parse()?))
     }
@@ -93,6 +95,7 @@ impl Workspace {
             .create(true)
             .truncate(true)
             .open(tsk_dir.join("next"))?;
+        // initialize the next file with ID 1
         next.write_all(b"1\n")?;
         Ok(())
     }
@@ -347,10 +350,25 @@ impl Workspace {
                 workspace: self,
             };
             // search the entirety of a task
-            Ok(fzf::select(loader)?.map(|bt| bt.id))
+            Ok(fzf::select::<_, Id, _>(
+                loader,
+                [
+                    "--no-multi-line",
+                    "--accept-nth=1",
+                    "--delimiter=\t",
+                    "--preview=tsk show -T {1}",
+                    "--preview-window=top",
+                    "--ansi",
+                    "--info-command=tsk show -T {1} | head -n1",
+                    "--info=inline-right",
+                ],
+            )?)
         } else {
             // just search the stack
-            Ok(fzf::select(stack)?.map(|si| si.id))
+            Ok(fzf::select::<_, Id, _>(
+                stack,
+                ["--delimiter=\t", "--accept-nth=1"],
+            )?)
         }
     }
 
@@ -406,6 +424,7 @@ impl Task {
         Ok(())
     }
 
+    /// Returns a [`SearchTas`] which is plain task data with no file or attrs
     fn bare(self) -> SearchTask {
         SearchTask {
             id: self.id,
@@ -422,33 +441,13 @@ pub struct SearchTask {
     pub body: String,
 }
 
-impl FromStr for SearchTask {
-    type Err = Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let (tsk_id, task_content) = s.split_once('\t').ok_or(Error::Parse(
-            "Missing TSK-ID or content or task parse.".to_owned(),
-        ))?;
-        let (title, body) = task_content
-            .split_once('\t')
-            .ok_or(Error::Parse("Missing body for task parse.".to_owned()))?;
-        Ok(Self {
-            id: tsk_id.parse()?,
-            title: title.to_string(),
-            body: body.to_string(),
-        })
-    }
-}
-
 impl Display for SearchTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}\t{}\t{}",
-            self.id,
-            self.title.trim(),
-            self.body.replace('\n', " ").replace('\r', "")
-        )
+        write!(f, "{}\t{}", self.id, self.title.trim())?;
+        if !self.body.is_empty() {
+            write!(f, "\n\n{}", self.body)?;
+        }
+        Ok(())
     }
 }
 
@@ -470,6 +469,24 @@ impl Iterator for LazyTaskLoader<'_> {
     }
 }
 
+fn select_task(input: impl IntoIterator<Item = SearchTask>) -> Result<Option<Id>> {
+    let mut child = Command::new("cat")
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let child_in = child.stdin.as_mut().unwrap();
+    for item in input.into_iter() {
+        writeln!(child_in, "{item}\0")?;
+    }
+    let output = child.wait_with_output()?;
+    if output.stdout.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(String::from_utf8(output.stdout)?.parse()?))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -479,10 +496,10 @@ mod test {
         let task = SearchTask {
             id: Id(123),
             title: "Hello, world".to_string(),
-            body: "The body of the task.\nAnother line\r\nis here.".to_string(),
+            body: "The body of the task.\nAnother line is here.".to_string(),
         };
         assert_eq!(
-            "tsk-123\tHello, world\tThe body of the task. Another line is here.",
+            "tsk-123\tHello, world\n\nThe body of the task.\nAnother line is here.",
             task.to_string()
         );
     }

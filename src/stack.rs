@@ -4,8 +4,8 @@
 
 use crate::errors::{Error, Result};
 use crate::util;
-use std::collections::vec_deque::Iter;
 use std::collections::VecDeque;
+use std::collections::vec_deque::Iter;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, Write};

@@ -1,6 +1,6 @@
+use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::collections::btree_map::{IntoIter as BTreeIntoIter, Iter as BTreeMapIter};
-use std::collections::BTreeMap;
 use std::iter::Chain;
 
 type Map = BTreeMap<String, String>;
