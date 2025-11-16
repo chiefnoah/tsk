@@ -62,7 +62,7 @@ impl Id {
 pub enum TaskIdentifier {
     Id(Id),
     Relative(u32),
-    Find { search_body: bool, archived: bool },
+    Find { exclude_body: bool, archived: bool },
 }
 
 impl From<Id> for TaskIdentifier {
@@ -114,10 +114,10 @@ impl Workspace {
                 Ok(stack_item.id)
             }
             TaskIdentifier::Find {
-                search_body,
+                exclude_body,
                 archived,
             } => self
-                .search(None, search_body, archived)?
+                .search(None, !exclude_body, archived)?
                 .ok_or(Error::NotSelected),
         }
     }

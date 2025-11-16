@@ -222,7 +222,7 @@ struct Find {
 struct FindArgs {
     /// Include the contents of tasks in the search criteria.
     #[arg(short = 'b', default_value_t = false)]
-    search_body: bool,
+    exclude_body: bool,
     /* TODO: implement this
     /// Include archived tasks in the search criteria. Combine with `-b` to include archived
     /// bodies in the search criteria.
@@ -237,7 +237,7 @@ impl From<TaskId> for TaskIdentifier {
             TaskIdentifier::Id(id)
         } else if value.find.find {
             TaskIdentifier::Find {
-                search_body: value.find.args.search_body,
+                exclude_body: value.find.args.exclude_body,
                 archived: false,
             }
         } else {
@@ -291,7 +291,7 @@ fn taskid_from_tsk_id(tsk_id: Id) -> TaskId {
         relative_id: 0,
         find: Find {
             find: false,
-            args: FindArgs { search_body: false },
+            args: FindArgs { exclude_body: true },
         },
     }
 }
@@ -405,7 +405,7 @@ fn command_drop(dir: PathBuf, task_id: TaskId) -> Result<()> {
 }
 
 fn command_find(dir: PathBuf, short_id: bool, find_args: FindArgs) -> Result<()> {
-    let id = Workspace::from_path(dir)?.search(None, find_args.search_body, false)?;
+    let id = Workspace::from_path(dir)?.search(None, !find_args.exclude_body, false)?;
     if let Some(id) = id {
         if short_id {
             // print as integer
