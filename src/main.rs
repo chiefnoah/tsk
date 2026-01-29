@@ -220,7 +220,7 @@ struct Find {
 #[derive(Args)]
 #[group(required = false, multiple = false)]
 struct FindArgs {
-    /// Include the contents of tasks in the search criteria.
+    /// Exclude the contents of tasks in the search criteria.
     #[arg(short = 'b', default_value_t = false)]
     exclude_body: bool,
     /* TODO: implement this
