@@ -313,7 +313,21 @@ fn create_task(
     } else {
         "".to_string()
     };
-    let mut body = body.unwrap_or_default();
+    // If no body was explicitly provided and the title contains newlines,
+    // treat the first line as the title and the rest as the body (like git commit -m)
+    let mut body = if body.is_none() {
+        if let Some((first_line, rest)) = title.split_once('\n') {
+            let extracted_body = rest.to_string();
+            title = first_line.to_string();
+            extracted_body
+        } else {
+            String::new()
+        }
+    } else {
+        // Body was explicitly provided, so strip any newlines from title
+        title = title.replace(['\n', '\r'], " ");
+        body.unwrap_or_default()
+    };
     if body == "-" {
         // add newline so you can type directly in the shell
         //eprintln!("");
@@ -327,6 +341,8 @@ fn create_task(
             body = content.1.to_string();
         }
     }
+    // Ensure title never contains newlines (invariant for index file format)
+    title = title.replace(['\n', '\r'], " ");
     let task = workspace.new_task(title, body)?;
     workspace.handle_metadata(&task, None)?;
     Ok(task)
@@ -380,7 +396,8 @@ fn command_edit(dir: PathBuf, id: TaskId) -> Result<()> {
     let pre_links = task::parse(&task.to_string()).map(|pt| pt.intenal_links());
     let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))?;
     if let Some((title, body)) = new_content.split_once("\n") {
-        task.title = title.to_string();
+        // Ensure title never contains newlines (invariant for index file format)
+        task.title = title.replace(['\n', '\r'], " ");
         task.body = body.to_string();
         workspace.handle_metadata(&task, pre_links)?;
         task.save()?;

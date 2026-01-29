@@ -6,6 +6,11 @@ use url::Url;
 use crate::workspace::Id;
 use colored::Colorize;
 
+/// Returns true if the character is a word boundary (whitespace or punctuation)
+fn is_boundary(c: char) -> bool {
+    c.is_whitespace() || c.is_ascii_punctuation()
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 enum ParserState {
     // Started by ` =`, terminated by `=
@@ -98,13 +103,13 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             panic!("Internal link is not a valid id: {contents}");
                         }
                     }
-                    (' ' | '\r' | '\n', '[', _) => {
+                    (last, '[', _) if is_boundary(last) => {
                         state.push(Linktext(end, char_pos));
                     }
                     (']', '(', Some(Linktext(_, _))) => {
                         state.push(Link(end, char_pos));
                     }
-                    (')', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Link(_, _))) => {
+                    (')', c, Some(Link(_, _))) if is_boundary(c) => {
                         // TODO: this needs to be updated to use `s` instead of `out` for position
                         // parsing
                         let linkpos = if let Link(lp, _) = state.pop().unwrap() {
@@ -130,8 +135,8 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             out.replace_range(linktextpos..end, &linktext);
                         }
                     }
-                    ('>', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(RawLink(hl, s_pos)))
-                        if s_pos != char_pos - 1 =>
+                    ('>', c, Some(RawLink(hl, s_pos)))
+                        if is_boundary(c) && s_pos != char_pos - 1 =>
                     {
                         state.pop();
                         let link = s.get(s_pos + 1..char_pos - 1)?;
@@ -142,11 +147,11 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             out.replace_range(hl..end, &linktext);
                         }
                     }
-                    (' ' | '\r' | '\n', '<', _) => {
+                    (last, '<', _) if is_boundary(last) => {
                         state.push(RawLink(end, char_pos));
                     }
-                    ('=', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Highlight(hl, s_pos)))
-                        if s_pos != char_pos - 1 =>
+                    ('=', c, Some(Highlight(hl, s_pos)))
+                        if is_boundary(c) && s_pos != char_pos - 1 =>
                     {
                         state.pop();
                         out.replace_range(
@@ -154,14 +159,14 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             &s.get(s_pos + 1..char_pos - 1)?.reversed().to_string(),
                         );
                     }
-                    (' ' | '\r' | '\n', '=', _) => {
+                    (last, '=', _) if is_boundary(last) => {
                         state.push(Highlight(end, char_pos));
                     }
-                    (' ' | '\r' | '\n', '*', _) => {
+                    (last, '*', _) if is_boundary(last) => {
                         state.push(Italics(end, char_pos));
                     }
-                    ('*', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Italics(il, s_pos)))
-                        if s_pos != char_pos - 1 =>
+                    ('*', c, Some(Italics(il, s_pos)))
+                        if is_boundary(c) && s_pos != char_pos - 1 =>
                     {
                         state.pop();
                         out.replace_range(
@@ -169,23 +174,21 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             &s.get(s_pos + 1..char_pos - 1)?.italic().to_string(),
                         );
                     }
-                    (' ' | '\r' | '\n', '!', _) => {
+                    (last, '!', _) if is_boundary(last) => {
                         state.push(Bold(end, char_pos));
                     }
-                    ('!', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Bold(il, s_pos)))
-                        if s_pos != char_pos - 1 =>
-                    {
+                    ('!', c, Some(Bold(il, s_pos))) if is_boundary(c) && s_pos != char_pos - 1 => {
                         state.pop();
                         out.replace_range(
                             il..end,
                             &s.get(s_pos + 1..char_pos - 1)?.bold().to_string(),
                         );
                     }
-                    (' ' | '\r' | '\n', '_', _) => {
+                    (last, '_', _) if is_boundary(last) => {
                         state.push(Underline(end, char_pos));
                     }
-                    ('_', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Underline(il, s_pos)))
-                        if s_pos != char_pos - 1 =>
+                    ('_', c, Some(Underline(il, s_pos)))
+                        if is_boundary(c) && s_pos != char_pos - 1 =>
                     {
                         state.pop();
                         out.replace_range(
@@ -193,11 +196,11 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             &s.get(s_pos + 1..char_pos - 1)?.underline().to_string(),
                         );
                     }
-                    (' ' | '\r' | '\n', '~', _) => {
+                    (last, '~', _) if is_boundary(last) => {
                         state.push(Strikethrough(end, char_pos));
                     }
-                    ('~', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(Strikethrough(il, s_pos)))
-                        if s_pos != char_pos - 1 =>
+                    ('~', c, Some(Strikethrough(il, s_pos)))
+                        if is_boundary(c) && s_pos != char_pos - 1 =>
                     {
                         state.pop();
                         out.replace_range(
@@ -205,15 +208,15 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             &s.get(s_pos + 1..char_pos - 1)?.strikethrough().to_string(),
                         );
                     }
-                    ('`', ' ' | '\n' | '\r' | '.' | '!' | '?', Some(InlineBlock(hl, s_pos)))
-                        if s_pos != char_pos - 1 =>
+                    ('`', c, Some(InlineBlock(hl, s_pos)))
+                        if is_boundary(c) && s_pos != char_pos - 1 =>
                     {
                         out.replace_range(
                             hl..end,
                             &s.get(s_pos + 1..char_pos - 1)?.green().to_string(),
                         );
                     }
-                    (' ' | '\n' | '\r' | '.' | '!' | '?', '`', _) => {
+                    (last, '`', _) if is_boundary(last) => {
                         state.push(InlineBlock(end, char_pos));
                     }
                     _ => (),

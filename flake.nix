@@ -5,18 +5,37 @@
     utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, utils, naersk }:
-    utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      utils,
+      naersk,
+    }:
+    utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs { inherit system; };
         naersk-lib = pkgs.callPackage naersk { };
       in
       {
         defaultPackage = naersk-lib.buildPackage ./.;
-        devShell = with pkgs; mkShell {
-          buildInputs = [ libiconv cargo rustc rustfmt rust-analyzer rustPackages.clippy plan9port pandoc ];
-          RUST_SRC_PATH = rustPlatform.rustLibSrc;
-        };
+        devShell =
+          with pkgs;
+          mkShell {
+            buildInputs = [
+              libiconv
+              cargo
+              rustc
+              rustfmt
+              rust-analyzer
+              rustPackages.clippy
+              plan9port
+              pandoc
+              codeberg-cli
+            ];
+            RUST_SRC_PATH = rustPlatform.rustLibSrc;
+          };
       }
     );
 }

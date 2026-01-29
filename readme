@@ -184,11 +184,14 @@ file within the .tsk folder.
 A quick overview of the format:
 
 - \!Bolded\! text is surrounded by exclamation marks (!)
-- \*Italicized\* text is surrouneded by single asterists (*)
+- \*Italicized\* text is surrounded by single asterisks (*)
 - \_Underlined\_ text is surrounded by underscores (_)
-- \~Strikenthrough\~ text is surrounded by tildes (~)
+- \~Strikethrough\~ text is surrounded by tildes (~)
+- \=Highlighted\= text is surrounded by equals signs (=)
+- \`Inline code\` is surrounded by backticks (`)
 
 Links like in Markdown, along with the wiki-style links documented above.
+Raw links can also be written as \<https://example.com\>.
 
 Misc
 ----
