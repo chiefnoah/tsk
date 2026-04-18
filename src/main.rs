@@ -11,7 +11,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr as _;
-use std::{env::current_dir, io::Read};
+use std::{env::current_dir, fs::OpenOptions, io::Read};
 use task::ParsedLink;
 use workspace::{Id, Task, TaskIdentifier, Workspace};
 
@@ -183,6 +183,13 @@ enum Commands {
         #[command(subcommand)]
         action: RemoteAction,
     },
+
+    /// Sets up git integration by adding .tsk/ to .git/info/exclude or .gitignore.
+    GitSetup {
+        /// Use .gitignore instead of .git/info/exclude.
+        #[arg(short = 'g', default_value_t = false)]
+        gitignore: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -309,6 +316,7 @@ fn main() {
         Commands::Deprioritize { task_id } => command_deprioritize(dir, task_id),
         Commands::Clean => command_clean(dir),
         Commands::Remote { action } => command_remote(dir, action),
+        Commands::GitSetup { gitignore } => command_git_setup(dir, gitignore),
     };
     let result = var_name;
     match result {
@@ -574,5 +582,37 @@ fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
             eprintln!("Removed remote '{prefix}'");
         }
     }
+    Ok(())
+}
+
+fn command_git_setup(dir: PathBuf, use_gitignore: bool) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
+    let git_dir = workspace.path.join(".git");
+    if !git_dir.exists() {
+        eprintln!("No .git directory found at workspace root.");
+        exit(1);
+    }
+    let (ignore_file, label) = if use_gitignore {
+        (workspace.path.join(".gitignore"), ".gitignore")
+    } else {
+        let info_dir = git_dir.join("info");
+        std::fs::create_dir_all(&info_dir)?;
+        (info_dir.join("exclude"), ".git/info/exclude")
+    };
+    let content = if ignore_file.exists() {
+        std::fs::read_to_string(&ignore_file)?
+    } else {
+        String::new()
+    };
+    if content.lines().any(|line| line.trim() == ".tsk/") {
+        eprintln!(".tsk/ is already in {label}.");
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&ignore_file)?;
+    writeln!(file, ".tsk/")?;
+    eprintln!("Added .tsk/ to {label}.");
     Ok(())
 }

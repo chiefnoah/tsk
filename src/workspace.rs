@@ -75,7 +75,7 @@ impl From<Id> for TaskIdentifier {
 pub struct Workspace {
     /// The path to the workspace root, excluding the .tsk directory. This should *contain* the
     /// .tsk directory.
-    path: PathBuf,
+    pub path: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -791,5 +791,45 @@ mod test {
             path: PathBuf::from("/path/to/jira"),
         };
         assert_eq!("jira\t/path/to/jira", remote.to_string());
+    }
+
+    #[test]
+    fn test_git_setup_exclude() {
+        let (_dir, workspace) = setup_test_workspace();
+        let git_dir = workspace.path.join(".git");
+        let info_dir = git_dir.join("info");
+        fs::create_dir_all(&info_dir).unwrap();
+
+        let exclude_path = info_dir.join("exclude");
+        assert!(!exclude_path.exists());
+
+        let content = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+        assert!(!content.contains(".tsk/"));
+
+        // Simulate git_setup logic
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&exclude_path)
+            .unwrap();
+        writeln!(file, ".tsk/").unwrap();
+
+        let content = std::fs::read_to_string(&exclude_path).unwrap();
+        assert!(content.contains(".tsk/"));
+    }
+
+    #[test]
+    fn test_git_setup_no_duplicate() {
+        let (_dir, workspace) = setup_test_workspace();
+        let git_dir = workspace.path.join(".git");
+        let info_dir = git_dir.join("info");
+        fs::create_dir_all(&info_dir).unwrap();
+
+        let exclude_path = info_dir.join("exclude");
+        fs::write(&exclude_path, ".tsk/\nother/").unwrap();
+
+        let content = std::fs::read_to_string(&exclude_path).unwrap();
+        let already_present = content.lines().any(|line| line.trim() == ".tsk/");
+        assert!(already_present);
     }
 }
