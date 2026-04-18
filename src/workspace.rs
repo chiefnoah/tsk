@@ -606,6 +606,15 @@ fn select_task(input: impl IntoIterator<Item = SearchTask>) -> Result<Option<Id>
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::fs;
+
+    fn setup_test_workspace() -> (tempfile::TempDir, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        Workspace::init(path.clone()).unwrap();
+        let workspace = Workspace::from_path(path.clone()).unwrap();
+        (dir, workspace)
+    }
 
     #[test]
     fn test_bare_task_display() {
@@ -630,5 +639,156 @@ mod test {
             attributes: Default::default(),
         };
         assert_eq!("Hello, world\n\nThe body of the task.", task.to_string());
+    }
+
+    #[test]
+    fn test_clean_removes_orphaned_tasks() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        {
+            let ws = Workspace::from_path(workspace.path.clone()).unwrap();
+            let task1 = ws
+                .new_task("Task one".to_string(), "body1".to_string())
+                .unwrap();
+            ws.push_task(task1).unwrap();
+
+            let task2 = ws
+                .new_task("Task two".to_string(), "body2".to_string())
+                .unwrap();
+            ws.push_task(task2).unwrap();
+
+            let task3 = ws
+                .new_task("Task three".to_string(), "body3".to_string())
+                .unwrap();
+            ws.push_task(task3).unwrap();
+        }
+
+        let stack = workspace.read_stack().unwrap();
+        assert_eq!(stack.iter().count(), 3);
+
+        let tasks_dir = workspace.path.join("tasks");
+        let task_files: Vec<_> = fs::read_dir(&tasks_dir)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().is_file())
+            .collect();
+        assert_eq!(task_files.len(), 3);
+
+        workspace.drop(TaskIdentifier::Relative(0)).unwrap();
+
+        let stack_after = workspace.read_stack().unwrap();
+        assert_eq!(stack_after.iter().count(), 2);
+
+        let task_files_after: Vec<_> = fs::read_dir(&tasks_dir)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().is_file())
+            .collect();
+        assert_eq!(task_files_after.len(), 3, "orphaned symlink still exists");
+
+        workspace.clean().unwrap();
+
+        let task_files_cleaned: Vec<_> = fs::read_dir(&tasks_dir)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().is_file())
+            .collect();
+        assert_eq!(
+            task_files_cleaned.len(),
+            2,
+            "clean should remove orphaned task"
+        );
+    }
+
+    #[test]
+    fn test_clean_does_nothing_when_no_orphans() {
+        let (_dir, workspace) = setup_test_workspace();
+        let ws = Workspace::from_path(workspace.path.clone()).unwrap();
+
+        let task = ws
+            .new_task("Only task".to_string(), "body".to_string())
+            .unwrap();
+        ws.push_task(task).unwrap();
+
+        workspace.clean().unwrap();
+
+        let tasks_dir = workspace.path.join("tasks");
+        let task_files: Vec<_> = fs::read_dir(&tasks_dir)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().is_file())
+            .collect();
+        assert_eq!(task_files.len(), 1);
+    }
+
+    #[test]
+    fn test_remote_add_and_list() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        let remotes = workspace.read_remotes().unwrap();
+        assert!(remotes.is_empty());
+
+        workspace.add_remote("jira", "/path/to/jira").unwrap();
+
+        let remotes = workspace.read_remotes().unwrap();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].prefix, "jira");
+        assert_eq!(remotes[0].path, PathBuf::from("/path/to/jira"));
+
+        workspace.add_remote("gl", "/path/to/gitlab").unwrap();
+
+        let remotes = workspace.read_remotes().unwrap();
+        assert_eq!(remotes.len(), 2);
+    }
+
+    #[test]
+    fn test_remote_add_duplicate_fails() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        workspace.add_remote("jira", "/path/to/jira").unwrap();
+
+        let result = workspace.add_remote("jira", "/other/path");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remote_remove() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        workspace.add_remote("jira", "/path/to/jira").unwrap();
+        workspace.add_remote("gl", "/path/to/gl").unwrap();
+
+        workspace.remove_remote("jira").unwrap();
+
+        let remotes = workspace.read_remotes().unwrap();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].prefix, "gl");
+    }
+
+    #[test]
+    fn test_remote_remove_nonexistent_fails() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        let result = workspace.remove_remote("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remote_persistence() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        workspace.add_remote("jira", "/path/to/jira").unwrap();
+        workspace.add_remote("gl", "/path/to/gl").unwrap();
+
+        let workspace2 = Workspace::from_path(workspace.path.clone()).unwrap();
+        let remotes = workspace2.read_remotes().unwrap();
+        assert_eq!(remotes.len(), 2);
+        assert_eq!(remotes[0].prefix, "jira");
+        assert_eq!(remotes[1].prefix, "gl");
+    }
+
+    #[test]
+    fn test_remote_display() {
+        let remote = Remote {
+            prefix: "jira".to_string(),
+            path: PathBuf::from("/path/to/jira"),
+        };
+        assert_eq!("jira\t/path/to/jira", remote.to_string());
     }
 }

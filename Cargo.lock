@@ -615,6 +615,7 @@ dependencies = [
  "itertools",
  "nix",
  "open",
+ "tempfile",
  "thiserror",
  "url",
  "xattr",

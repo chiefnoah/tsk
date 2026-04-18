@@ -450,4 +450,57 @@ mod test {
             output.content
         );
     }
+
+    #[test]
+    fn test_foreign_link_jira() {
+        setup();
+        let input = "see [[jira-123]]\n";
+        let output = parse(input).expect("parse to work");
+        assert_eq!(
+            &[ParsedLink::Foreign {
+                prefix: "jira".to_string(),
+                id: 123
+            }],
+            output.links.as_slice()
+        );
+    }
+
+    #[test]
+    fn test_foreign_link_gitlab() {
+        setup();
+        let input = "related to [[gl-456]]\n";
+        let output = parse(input).expect("parse to work");
+        assert_eq!(
+            &[ParsedLink::Foreign {
+                prefix: "gl".to_string(),
+                id: 456
+            }],
+            output.links.as_slice()
+        );
+    }
+
+    #[test]
+    fn test_mixed_internal_and_foreign_links() {
+        setup();
+        let input = "see [[tsk-1]] and [[jira-99]]\n";
+        let output = parse(input).expect("parse to work");
+        assert_eq!(
+            &[
+                ParsedLink::Internal(Id(1)),
+                ParsedLink::Foreign {
+                    prefix: "jira".to_string(),
+                    id: 99
+                }
+            ],
+            output.links.as_slice()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Internal link is not a valid id")]
+    fn test_foreign_link_bad_no_number() {
+        setup();
+        let input = "see [[jira-abc]]\n";
+        let _output = parse(input).expect("parse to work");
+    }
 }
