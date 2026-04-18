@@ -260,8 +260,14 @@ fn super_num(num: usize) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn setup() {
+        colored::control::set_override(true);
+    }
+
     #[test]
     fn test_highlight() {
+        setup();
         let input = "hello =world=\n";
         let output = parse(input).expect("parse to work");
         assert_eq!("hello \u{1b}[7mworld\u{1b}[0m\n", output.content);
@@ -269,6 +275,7 @@ mod test {
 
     #[test]
     fn test_highlight_bad() {
+        setup();
         let input = "hello =world\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(input, output.content);
@@ -276,6 +283,7 @@ mod test {
 
     #[test]
     fn test_link() {
+        setup();
         let input = "hello [world](https://ngp.computer)\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(
@@ -292,6 +300,7 @@ mod test {
 
     #[test]
     fn test_link_no_terminal_link() {
+        setup();
         let input = "hello [world](https://ngp.computer\n";
         let output = parse(input).expect("parse to work");
         assert!(output.links.is_empty());
@@ -299,6 +308,7 @@ mod test {
     }
     #[test]
     fn test_link_bad_no_start_link() {
+        setup();
         let input = "hello [world]https://ngp.computer)\n";
         let output = parse(input).expect("parse to work");
         assert!(output.links.is_empty());
@@ -306,6 +316,7 @@ mod test {
     }
     #[test]
     fn test_link_bad_no_link() {
+        setup();
         let input = "hello [world]\n";
         let output = parse(input).expect("parse to work");
         assert!(output.links.is_empty());
@@ -314,6 +325,7 @@ mod test {
 
     #[test]
     fn test_internal_link_good() {
+        setup();
         let input = "hello [[tsk-123]]\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(&[ParsedLink::Internal(Id(123))], output.links.as_slice());
@@ -325,6 +337,7 @@ mod test {
 
     #[test]
     fn test_internal_link_bad() {
+        setup();
         let input = "hello [[tsk-123";
         let output = parse(input).expect("parse to work");
         assert!(output.links.is_empty());
@@ -333,6 +346,7 @@ mod test {
 
     #[test]
     fn test_italics() {
+        setup();
         let input = "hello *world*\n";
         let output = parse(input).expect("parse to work");
         assert_eq!("hello \u{1b}[3mworld\u{1b}[0m\n", output.content);
@@ -340,6 +354,7 @@ mod test {
 
     #[test]
     fn test_italics_bad() {
+        setup();
         let input = "hello *world";
         let output = parse(input).expect("parse to work");
         assert_eq!(input, output.content);
@@ -347,6 +362,7 @@ mod test {
 
     #[test]
     fn test_bold() {
+        setup();
         let input = "hello !world!\n";
         let output = parse(input).expect("parse to work");
         assert_eq!("hello \u{1b}[1mworld\u{1b}[0m\n", output.content);
@@ -354,6 +370,7 @@ mod test {
 
     #[test]
     fn test_bold_bad() {
+        setup();
         let input = "hello !world\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(input, output.content);
@@ -361,6 +378,7 @@ mod test {
 
     #[test]
     fn test_underline() {
+        setup();
         let input = "hello _world_\n";
         let output = parse(input).expect("parse to work");
         assert_eq!("hello \u{1b}[4mworld\u{1b}[0m\n", output.content);
@@ -368,6 +386,7 @@ mod test {
 
     #[test]
     fn test_underline_bad() {
+        setup();
         let input = "hello _world\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(input, output.content);
@@ -375,6 +394,7 @@ mod test {
 
     #[test]
     fn test_strikethrough() {
+        setup();
         let input = "hello ~world~\n";
         let output = parse(input).expect("parse to work");
         assert_eq!("hello \u{1b}[9mworld\u{1b}[0m\n", output.content);
@@ -382,6 +402,7 @@ mod test {
 
     #[test]
     fn test_strikethrough_bad() {
+        setup();
         let input = "hello ~world\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(input, output.content);
@@ -389,6 +410,7 @@ mod test {
 
     #[test]
     fn test_inlineblock() {
+        setup();
         let input = "hello `world`\n";
         let output = parse(input).expect("parse to work");
         assert_eq!("hello \u{1b}[32mworld\u{1b}[0m\n", output.content);
@@ -396,6 +418,7 @@ mod test {
 
     #[test]
     fn test_inlineblock_bad() {
+        setup();
         let input = "hello `world\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(input, output.content);
@@ -403,6 +426,7 @@ mod test {
 
     #[test]
     fn test_multiple_styles() {
+        setup();
         let input = "hello *italic* ~strikethrough~ !bold!\n";
         let output = parse(input).expect("parse to work");
         assert_eq!(
