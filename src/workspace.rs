@@ -656,33 +656,34 @@ mod test {
                 .new_task("Task two".to_string(), "body2".to_string())
                 .unwrap();
             ws.push_task(task2).unwrap();
-
-            let task3 = ws
-                .new_task("Task three".to_string(), "body3".to_string())
-                .unwrap();
-            ws.push_task(task3).unwrap();
         }
 
-        let stack = workspace.read_stack().unwrap();
-        assert_eq!(stack.iter().count(), 3);
+        let stack_count = {
+            let stack = workspace.read_stack().unwrap();
+            stack.iter().count()
+        };
+        assert_eq!(stack_count, 2);
 
         let tasks_dir = workspace.path.join("tasks");
         let task_files: Vec<_> = fs::read_dir(&tasks_dir)
             .unwrap()
             .filter(|e| e.as_ref().unwrap().path().is_file())
             .collect();
-        assert_eq!(task_files.len(), 3);
+        assert_eq!(task_files.len(), 2);
 
-        workspace.drop(TaskIdentifier::Relative(0)).unwrap();
+        // Manually create an orphaned task file (not in the index) to simulate corruption
+        let orphan_path = tasks_dir.join("tsk-999.tsk");
+        fs::write(&orphan_path, "orphan\n\nbody").unwrap();
 
-        let stack_after = workspace.read_stack().unwrap();
-        assert_eq!(stack_after.iter().count(), 2);
-
-        let task_files_after: Vec<_> = fs::read_dir(&tasks_dir)
+        let task_files_with_orphan: Vec<_> = fs::read_dir(&tasks_dir)
             .unwrap()
             .filter(|e| e.as_ref().unwrap().path().is_file())
             .collect();
-        assert_eq!(task_files_after.len(), 3, "orphaned symlink still exists");
+        assert_eq!(
+            task_files_with_orphan.len(),
+            3,
+            "orphaned symlink should exist"
+        );
 
         workspace.clean().unwrap();
 
