@@ -190,6 +190,12 @@ enum Commands {
         #[arg(short = 'g', default_value_t = false)]
         gitignore: bool,
     },
+
+    /// Reopens an archived task, recreating the symlink and adding it back to the stack.
+    Reopen {
+        #[command(flatten)]
+        task_id: TaskId,
+    },
 }
 
 #[derive(Subcommand)]
@@ -317,6 +323,7 @@ fn main() {
         Commands::Clean => command_clean(dir),
         Commands::Remote { action } => command_remote(dir, action),
         Commands::GitSetup { gitignore } => command_git_setup(dir, gitignore),
+        Commands::Reopen { task_id } => command_reopen(dir, task_id),
     };
     let result = var_name;
     match result {
@@ -614,5 +621,14 @@ fn command_git_setup(dir: PathBuf, use_gitignore: bool) -> Result<()> {
         .open(&ignore_file)?;
     writeln!(file, ".tsk/")?;
     eprintln!("Added .tsk/ to {label}.");
+    Ok(())
+}
+
+fn command_reopen(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
+    let id: TaskIdentifier = task_id.into();
+    let reopened_id = workspace.reopen(id)?;
+    eprintln!("Reopened ");
+    println!("{reopened_id}");
     Ok(())
 }

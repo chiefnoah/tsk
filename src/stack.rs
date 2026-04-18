@@ -4,8 +4,8 @@
 
 use crate::errors::{Error, Result};
 use crate::util;
-use std::collections::VecDeque;
 use std::collections::vec_deque::Iter;
+use std::collections::VecDeque;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, Write};
@@ -98,7 +98,7 @@ impl FromStr for StackItem {
 impl StackItem {
     /// Parses a [`StackItem`] from a string. The expected format is a tab-delimited line with the
     /// files: task id title
-    fn from_line(workspace_path: &Path, line: String) -> Result<Self> {
+    pub fn from_line(workspace_path: &Path, line: String) -> Result<Self> {
         let mut stack_item: StackItem = line.parse()?;
 
         let task = util::flopen(

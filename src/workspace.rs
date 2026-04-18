@@ -513,6 +513,35 @@ impl Workspace {
         let task = workspace.task(TaskIdentifier::Id(Id(id)))?;
         Ok(Some(task))
     }
+
+    pub fn reopen(&self, identifier: TaskIdentifier) -> Result<Id> {
+        let id = self.resolve(identifier)?;
+        let archive_path = self.path.join("archive").join(id.filename());
+        if !archive_path.exists() {
+            return Err(Error::Parse(format!("Task {id} not found in archive")));
+        }
+        let tasks_path = self.path.join("tasks").join(id.filename());
+        if tasks_path.exists() {
+            return Err(Error::Parse(format!("Task {id} is already open")));
+        }
+        symlink(PathBuf::from("../archive").join(id.filename()), &tasks_path)?;
+        let mut stack = self.read_stack()?;
+        let title = std::fs::read_to_string(&archive_path)?
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let modify_time = std::fs::metadata(&archive_path)?.modified()?;
+        let stack_item = StackItem {
+            id,
+            title: title.replace('\t', " "),
+            modify_time,
+        };
+        stack.push(stack_item);
+        stack.save()?;
+        Ok(id)
+    }
 }
 
 pub struct Task {
@@ -831,5 +860,65 @@ mod test {
         let content = std::fs::read_to_string(&exclude_path).unwrap();
         let already_present = content.lines().any(|line| line.trim() == ".tsk/");
         assert!(already_present);
+    }
+
+    #[test]
+    fn test_reopen_archived_task() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        let task_id = {
+            let ws = Workspace::from_path(workspace.path.clone()).unwrap();
+            let task = ws
+                .new_task("Task to reopen".to_string(), "body".to_string())
+                .unwrap();
+            let id = task.id;
+            ws.push_task(task).unwrap();
+            id
+        };
+
+        workspace.drop(TaskIdentifier::Id(task_id)).unwrap();
+
+        {
+            let stack_after_drop = workspace.read_stack().unwrap();
+            assert_eq!(stack_after_drop.iter().count(), 0);
+        }
+
+        let tasks_dir = workspace.path.join("tasks");
+        let task_link = tasks_dir.join(task_id.filename());
+        assert!(!task_link.exists(), "symlink should be removed on drop");
+
+        workspace.reopen(TaskIdentifier::Id(task_id)).unwrap();
+
+        {
+            let stack_after_reopen = workspace.read_stack().unwrap();
+            assert_eq!(stack_after_reopen.iter().count(), 1);
+        }
+        assert!(task_link.exists(), "symlink should be recreated on reopen");
+    }
+
+    #[test]
+    fn test_reopen_nonexistent_task_fails() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        let result = workspace.reopen(TaskIdentifier::Id(Id(999)));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reopen_already_open_task_fails() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        let task_id = {
+            let ws = Workspace::from_path(workspace.path.clone()).unwrap();
+            let task = ws
+                .new_task("Open task".to_string(), "body".to_string())
+                .unwrap();
+            let id = task.id;
+            ws.push_task(task).unwrap();
+            id
+        };
+
+        let result = workspace.reopen(TaskIdentifier::Id(task_id));
+        assert!(result.is_err());
     }
 }
