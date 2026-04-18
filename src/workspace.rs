@@ -7,10 +7,10 @@ use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
 use crate::task::parse as parse_task;
 use crate::{fzf, util};
-use std::collections::{BTreeMap, HashSet, vec_deque};
+use std::collections::{vec_deque, BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Display;
-use std::fs::{File, remove_file};
+use std::fs::{remove_file, File};
 use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
 use std::ops::Deref;
 use std::os::unix::fs::symlink;
@@ -394,6 +394,39 @@ impl Workspace {
             // unwrap here is safe because we just searched for the index and know it exists
             stack.push_back(deprioritized_task.unwrap());
             stack.save()?;
+        }
+        Ok(())
+    }
+
+    pub fn clean(&self) -> Result<()> {
+        let stack = self.read_stack()?;
+        let indexed_ids: HashSet<Id> = stack.iter().map(|item| item.id).collect();
+
+        let tasks_dir = self.path.join("tasks");
+        if !tasks_dir.exists() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(&tasks_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let filename = entry.file_name();
+            let filename_str = filename.to_string_lossy();
+            if let Some(id_str) = filename_str
+                .strip_prefix("tsk-")
+                .and_then(|s| s.strip_suffix(".tsk"))
+            {
+                if let Ok(id_num) = id_str.parse::<u32>() {
+                    let id = Id(id_num);
+                    if !indexed_ids.contains(&id) {
+                        remove_file(&path)?;
+                        eprintln!("Removed orphaned task: {id}");
+                    }
+                }
+            }
         }
         Ok(())
     }

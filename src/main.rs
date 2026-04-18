@@ -5,7 +5,7 @@ mod stack;
 mod task;
 mod util;
 mod workspace;
-use clap_complete::{Shell, generate};
+use clap_complete::{generate, Shell};
 use errors::Result;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -86,6 +86,9 @@ enum Commands {
         all: bool,
         #[arg(short = 'c', default_value_t = 10)]
         count: usize,
+        /// Only print task IDs, one per line.
+        #[arg(short = 'q', default_value_t = false)]
+        ids_only: bool,
     },
 
     /// Swaps the top two tasks on the stack. If there are less than 2 tasks on the stack, there is
@@ -171,6 +174,9 @@ enum Commands {
         #[command(flatten)]
         task_id: TaskId,
     },
+
+    /// Cleans up orphaned task files in .tsk/tasks/ that are no longer in the stack index.
+    Clean,
 }
 
 #[derive(Args)]
@@ -253,7 +259,11 @@ fn main() {
         Commands::Init => command_init(dir),
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
         Commands::Append { edit, body, title } => command_append(dir, edit, body, title),
-        Commands::List { all, count } => command_list(dir, all, count),
+        Commands::List {
+            all,
+            count,
+            ids_only,
+        } => command_list(dir, all, count, ids_only),
         Commands::Swap => command_swap(dir),
         Commands::Show {
             task_id,
@@ -273,6 +283,7 @@ fn main() {
         Commands::Tor => Workspace::from_path(dir).unwrap().tor(),
         Commands::Prioritize { task_id } => command_prioritize(dir, task_id),
         Commands::Deprioritize { task_id } => command_deprioritize(dir, task_id),
+        Commands::Clean => command_clean(dir),
     };
     let result = var_name;
     match result {
@@ -360,7 +371,7 @@ fn command_append(dir: PathBuf, edit: bool, body: Option<String>, title: Title) 
     workspace.append_task(task)
 }
 
-fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {
+fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool) -> Result<()> {
     let workspace = Workspace::from_path(dir)?;
     let stack = workspace.read_stack()?;
 
@@ -374,7 +385,9 @@ fn command_list(dir: PathBuf, all: bool, count: usize) -> Result<()> {
         .enumerate()
         .take_while(|(idx, _)| all || idx < &count)
     {
-        if let Some(parsed) = task::parse(&stack_item.title) {
+        if ids_only {
+            println!("{}", stack_item.id);
+        } else if let Some(parsed) = task::parse(&stack_item.title) {
             println!("{}\t{}", stack_item.id, parsed.content.trim());
         } else {
             println!("{stack_item}");
@@ -492,4 +505,9 @@ fn command_follow(dir: PathBuf, task_id: TaskId, link_index: usize, edit: bool) 
         eprintln!("Unable to parse any links from body.");
         exit(1);
     }
+}
+
+fn command_clean(dir: PathBuf) -> Result<()> {
+    Workspace::from_path(dir)?.clean()?;
+    Ok(())
 }
