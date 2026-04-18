@@ -177,6 +177,30 @@ enum Commands {
 
     /// Cleans up orphaned task files in .tsk/tasks/ that are no longer in the stack index.
     Clean,
+
+    /// Manage remote workspace mappings for cross-workspace task linking.
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RemoteAction {
+    /// List configured remote workspaces.
+    List,
+    /// Add a remote workspace mapping.
+    Add {
+        /// The prefix to use for this remote (e.g. "jira", "gl").
+        prefix: String,
+        /// The path to the remote workspace.
+        path: String,
+    },
+    /// Remove a remote workspace mapping.
+    Remove {
+        /// The prefix of the remote to remove.
+        prefix: String,
+    },
 }
 
 #[derive(Args)]
@@ -284,6 +308,7 @@ fn main() {
         Commands::Prioritize { task_id } => command_prioritize(dir, task_id),
         Commands::Deprioritize { task_id } => command_deprioritize(dir, task_id),
         Commands::Clean => command_clean(dir),
+        Commands::Remote { action } => command_remote(dir, action),
     };
     let result = var_name;
     match result {
@@ -500,6 +525,21 @@ fn command_follow(dir: PathBuf, task_id: TaskId, link_index: usize, edit: bool) 
                     command_show(dir, taskid, false, false)
                 }
             }
+            ParsedLink::Foreign { prefix, id } => {
+                let workspace = Workspace::from_path(dir.clone())?;
+                if let Some(task) = workspace.resolve_foreign_link(prefix, *id)? {
+                    if edit {
+                        eprintln!("Editing foreign tasks is not supported.");
+                        exit(1);
+                    } else {
+                        println!("{task}");
+                    }
+                } else {
+                    eprintln!("Task {prefix}-{id} not found in remote workspace.");
+                    exit(1);
+                }
+                Ok(())
+            }
         }
     } else {
         eprintln!("Unable to parse any links from body.");
@@ -509,5 +549,30 @@ fn command_follow(dir: PathBuf, task_id: TaskId, link_index: usize, edit: bool) 
 
 fn command_clean(dir: PathBuf) -> Result<()> {
     Workspace::from_path(dir)?.clean()?;
+    Ok(())
+}
+
+fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
+    match action {
+        RemoteAction::List => {
+            let remotes = workspace.read_remotes()?;
+            if remotes.is_empty() {
+                println!("No remotes configured.");
+            } else {
+                for remote in remotes {
+                    println!("{remote}");
+                }
+            }
+        }
+        RemoteAction::Add { prefix, path } => {
+            workspace.add_remote(&prefix, &path)?;
+            eprintln!("Added remote '{prefix}' -> {path}");
+        }
+        RemoteAction::Remove { prefix } => {
+            workspace.remove_remote(&prefix)?;
+            eprintln!("Removed remote '{prefix}'");
+        }
+    }
     Ok(())
 }

@@ -21,6 +21,7 @@ use std::{fs::OpenOptions, io::Write};
 
 const INDEXFILE: &str = "index";
 const TITLECACHEFILE: &str = "cache";
+const REMOTESFILE: &str = "remotes";
 const XATTRPREFIX: &str = "user.tsk.";
 const BACKREFXATTR: &str = "user.tsk.references";
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
@@ -75,6 +76,18 @@ pub struct Workspace {
     /// The path to the workspace root, excluding the .tsk directory. This should *contain* the
     /// .tsk directory.
     path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Remote {
+    pub prefix: String,
+    pub path: PathBuf,
+}
+
+impl Display for Remote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\t{}", self.prefix, self.path.display())
+    }
 }
 
 impl Workspace {
@@ -429,6 +442,76 @@ impl Workspace {
             }
         }
         Ok(())
+    }
+
+    pub fn read_remotes(&self) -> Result<Vec<Remote>> {
+        let remotes_path = self.path.join(REMOTESFILE);
+        if !remotes_path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = util::flopen(remotes_path, FlockArg::LockShared)?;
+        let reader = BufReader::new(&*file);
+        let mut remotes = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((prefix, path)) = line.split_once('\t') {
+                remotes.push(Remote {
+                    prefix: prefix.trim().to_string(),
+                    path: PathBuf::from(path.trim()),
+                });
+            }
+        }
+        Ok(remotes)
+    }
+
+    pub fn add_remote(&self, prefix: &str, path: &str) -> Result<()> {
+        let mut remotes = self.read_remotes()?;
+        if remotes.iter().any(|r| r.prefix == prefix) {
+            return Err(Error::Parse(format!("Remote '{prefix}' already exists")));
+        }
+        remotes.push(Remote {
+            prefix: prefix.to_string(),
+            path: PathBuf::from(path),
+        });
+        self.write_remotes(&remotes)
+    }
+
+    pub fn remove_remote(&self, prefix: &str) -> Result<()> {
+        let remotes = self.read_remotes()?;
+        let len = remotes.len();
+        let new_remotes: Vec<Remote> = remotes.into_iter().filter(|r| r.prefix != prefix).collect();
+        if new_remotes.len() == len {
+            return Err(Error::Parse(format!("Remote '{prefix}' not found")));
+        }
+        self.write_remotes(&new_remotes)
+    }
+
+    fn write_remotes(&self, remotes: &[Remote]) -> Result<()> {
+        let remotes_path = self.path.join(REMOTESFILE);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(remotes_path)?;
+        for remote in remotes {
+            writeln!(file, "{}\t{}", remote.prefix, remote.path.display())?;
+        }
+        Ok(())
+    }
+
+    pub fn resolve_foreign_link(&self, prefix: &str, id: u32) -> Result<Option<Task>> {
+        let remotes = self.read_remotes()?;
+        let remote = remotes
+            .iter()
+            .find(|r| r.prefix == prefix)
+            .ok_or_else(|| Error::Parse(format!("Unknown remote prefix: {prefix}")))?;
+        let workspace = Workspace::from_path(remote.path.clone())?;
+        let task = workspace.task(TaskIdentifier::Id(Id(id)))?;
+        Ok(Some(task))
     }
 }
 

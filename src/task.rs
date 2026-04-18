@@ -50,6 +50,7 @@ enum ParserState {
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) enum ParsedLink {
     Internal(Id),
+    Foreign { prefix: String, id: u32 },
     External(Url),
 }
 
@@ -99,6 +100,21 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             );
                             out.replace_range(il - 1..out.len(), &linktext);
                             links.push(ParsedLink::Internal(id));
+                        } else if let Some((prefix, id_str)) = contents.split_once('-') {
+                            if let Ok(id) = id_str.parse::<u32>() {
+                                let linktext = format!(
+                                    "{}{}",
+                                    contents.cyan(),
+                                    super_num(links.len() + 1).cyan()
+                                );
+                                out.replace_range(il - 1..out.len(), &linktext);
+                                links.push(ParsedLink::Foreign {
+                                    prefix: prefix.to_string(),
+                                    id,
+                                });
+                            } else {
+                                panic!("Internal link is not a valid id: {contents}");
+                            }
                         } else {
                             panic!("Internal link is not a valid id: {contents}");
                         }
