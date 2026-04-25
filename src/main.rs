@@ -192,6 +192,11 @@ enum Commands {
         gitignore: bool,
     },
 
+    /// Migrate a file-backed workspace to a git-backed one. The directory must
+    /// now be inside a git repository (run `git init` first if needed). All
+    /// task data is copied into refs/tsk/* and the on-disk files are removed.
+    Migrate,
+
     /// Reopens an archived task, recreating the symlink and adding it back to the stack.
     Reopen {
         #[command(flatten)]
@@ -323,6 +328,7 @@ fn main() {
         Commands::Clean => command_clean(dir),
         Commands::Remote { action } => command_remote(dir, action),
         Commands::GitSetup { gitignore } => command_git_setup(dir, gitignore),
+        Commands::Migrate => command_migrate(dir),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
     };
     let _ = sync_dir;
@@ -625,6 +631,13 @@ fn command_git_setup(dir: PathBuf, use_gitignore: bool) -> Result<()> {
         .open(&ignore_file)?;
     writeln!(file, ".tsk/")?;
     eprintln!("Added .tsk/ to {label}.");
+    Ok(())
+}
+
+fn command_migrate(dir: PathBuf) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
+    let git_dir = workspace.migrate_to_git()?;
+    eprintln!("Migrated workspace to git refs (git dir: {})", git_dir.display());
     Ok(())
 }
 

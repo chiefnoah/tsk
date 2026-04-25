@@ -105,7 +105,10 @@ impl Workspace {
     pub fn from_path(path: PathBuf) -> Result<Self> {
         let tsk_dir = util::find_parent_with_dir(path, ".tsk")?.ok_or(Error::Uninitialized)?;
         let store = backend::store_for(&tsk_dir)?;
-        Ok(Self { path: tsk_dir, store })
+        Ok(Self {
+            path: tsk_dir,
+            store,
+        })
     }
 
     pub fn store(&self) -> &dyn Store {
@@ -124,7 +127,10 @@ impl Workspace {
                 let stack_item = stack.get(r as usize).ok_or(Error::NoTasks)?;
                 Ok(stack_item.id)
             }
-            TaskIdentifier::Find { exclude_body, archived } => self
+            TaskIdentifier::Find {
+                exclude_body,
+                archived,
+            } => self
                 .search(None, !exclude_body, archived)?
                 .ok_or(Error::NotSelected),
         }
@@ -137,7 +143,12 @@ impl Workspace {
     pub fn new_task(&self, title: String, body: String) -> Result<Task> {
         let id = self.next_id()?;
         backend::write_task(self.store(), id, &title, &body, Loc::Active)?;
-        Ok(Task { id, title, body, attributes: Default::default() })
+        Ok(Task {
+            id,
+            title,
+            body,
+            attributes: Default::default(),
+        })
     }
 
     pub fn task(&self, identifier: TaskIdentifier) -> Result<Task> {
@@ -319,10 +330,16 @@ impl Workspace {
                     ],
                 )?)
             } else {
-                Ok(fzf::select::<_, Id, _>(all_tasks, ["--delimiter=\t", "--accept-nth=1"])?)
+                Ok(fzf::select::<_, Id, _>(
+                    all_tasks,
+                    ["--delimiter=\t", "--accept-nth=1"],
+                )?)
             }
         } else if search_body {
-            let loader = LazyTaskLoader { items: stack.into_iter(), workspace: self };
+            let loader = LazyTaskLoader {
+                items: stack.into_iter(),
+                workspace: self,
+            };
             Ok(fzf::select::<_, Id, _>(
                 loader,
                 [
@@ -337,7 +354,10 @@ impl Workspace {
                 ],
             )?)
         } else {
-            Ok(fzf::select::<_, Id, _>(stack, ["--delimiter=\t", "--accept-nth=1"])?)
+            Ok(fzf::select::<_, Id, _>(
+                stack,
+                ["--delimiter=\t", "--accept-nth=1"],
+            )?)
         }
     }
 
@@ -414,6 +434,49 @@ impl Workspace {
         Ok(Some(task))
     }
 
+    /// Migrate a file-backed workspace to a git-backed one. Returns Err if the
+    /// workspace is already git-backed or if no enclosing git repo is found.
+    /// All blobs are copied into refs/tsk/* and the on-disk task data is then
+    /// removed, leaving only the `.tsk/git-backed` marker.
+    pub fn migrate_to_git(&self) -> Result<PathBuf> {
+        if self.is_git_backed() {
+            return Err(Error::Parse("Workspace is already git-backed".into()));
+        }
+        let git_dir = backend::detect_git_dir(&self.path)
+            .ok_or_else(|| Error::Parse("No enclosing git repository found".into()))?;
+        let dest = backend::GitStore::open(git_dir.clone())?;
+        // Copy every logical blob across.
+        let prefixes = ["tasks", "archive", "attrs", "backlinks"];
+        for prefix in prefixes {
+            for key in self.store().list(prefix)? {
+                if let Some(data) = self.store().read(&key)? {
+                    dest.write(&key, &data)?;
+                }
+            }
+        }
+        for top in ["index", "next", "remotes"] {
+            if let Some(data) = self.store().read(top)? {
+                dest.write(top, &data)?;
+            }
+        }
+        // Drop on-disk file backend state: everything under .tsk/ except the
+        // marker we're about to write.
+        for entry in std::fs::read_dir(&self.path)? {
+            let entry = entry?;
+            let p = entry.path();
+            if p.is_dir() {
+                std::fs::remove_dir_all(&p)?;
+            } else {
+                std::fs::remove_file(&p)?;
+            }
+        }
+        std::fs::write(
+            self.path.join(backend::GIT_BACKED_MARKER),
+            git_dir.to_string_lossy().as_bytes(),
+        )?;
+        Ok(git_dir)
+    }
+
     pub fn reopen(&self, identifier: TaskIdentifier) -> Result<Id> {
         let id = self.resolve(identifier)?;
         match backend::task_location(self.store(), id)? {
@@ -450,7 +513,11 @@ impl Display for Task {
 
 impl Task {
     fn bare(self) -> SearchTask {
-        SearchTask { id: self.id, title: self.title, body: self.body }
+        SearchTask {
+            id: self.id,
+            title: self.title,
+            body: self.body,
+        }
     }
 }
 
@@ -509,17 +576,24 @@ mod test {
         Workspace::init(git_root.clone()).unwrap();
         let f = Workspace::from_path(file_root).unwrap();
         let g = Workspace::from_path(git_root).unwrap();
-        assert!(!f.is_git_backed(), "file workspace should not be git-backed");
+        assert!(
+            !f.is_git_backed(),
+            "file workspace should not be git-backed"
+        );
         assert!(g.is_git_backed(), "git workspace should be git-backed");
         (dir, f, g)
     }
 
     fn run_full_lifecycle(ws: &Workspace) {
         // Push two tasks, drop one, verify state.
-        let t1 = ws.new_task("First".to_string(), "body one".to_string()).unwrap();
+        let t1 = ws
+            .new_task("First".to_string(), "body one".to_string())
+            .unwrap();
         let id1 = t1.id;
         ws.push_task(t1).unwrap();
-        let t2 = ws.new_task("Second".to_string(), "body two".to_string()).unwrap();
+        let t2 = ws
+            .new_task("Second".to_string(), "body two".to_string())
+            .unwrap();
         let id2 = t2.id;
         ws.push_task(t2).unwrap();
 
@@ -555,7 +629,10 @@ mod test {
         assert_eq!(read.title, "First (edited)");
         let stack = ws.read_stack().unwrap();
         let item = stack.iter().find(|i| i.id == id1).unwrap();
-        assert_eq!(item.title, "First (edited)", "stack title should refresh on save");
+        assert_eq!(
+            item.title, "First (edited)",
+            "stack title should refresh on save"
+        );
 
         // Remotes.
         ws.add_remote("up", "/path").unwrap();
@@ -648,7 +725,10 @@ mod test {
             let id = t.id;
             ws.push_task(t).unwrap();
             ws.drop(TaskIdentifier::Id(id)).unwrap();
-            assert_eq!(backend::task_location(ws.store(), id).unwrap(), Some(Loc::Archived));
+            assert_eq!(
+                backend::task_location(ws.store(), id).unwrap(),
+                Some(Loc::Archived)
+            );
         }
     }
 
@@ -672,26 +752,108 @@ mod test {
             ws.tor().unwrap();
             let s = ws.read_stack().unwrap();
             let order: Vec<_> = s.iter().map(|i| i.id).collect();
-            assert_eq!(order, vec![ids[2], ids[1], ids[0]], "rot then tor is identity");
+            assert_eq!(
+                order,
+                vec![ids[2], ids[1], ids[0]],
+                "rot then tor is identity"
+            );
         }
     }
 
     #[test]
     fn test_remote_display() {
-        let r = Remote { prefix: "jira".into(), path: PathBuf::from("/p") };
+        let r = Remote {
+            prefix: "jira".into(),
+            path: PathBuf::from("/p"),
+        };
         assert_eq!(r.to_string(), "jira\t/p");
     }
 
     #[test]
     fn test_bare_task_display() {
-        let t = SearchTask { id: Id(1), title: "x".into(), body: "y".into() };
+        let t = SearchTask {
+            id: Id(1),
+            title: "x".into(),
+            body: "y".into(),
+        };
         assert_eq!(t.to_string(), "tsk-1\tx\n\ny");
     }
 
     #[test]
     fn test_task_display() {
-        let t = Task { id: Id(1), title: "x".into(), body: "y".into(), attributes: Default::default() };
+        let t = Task {
+            id: Id(1),
+            title: "x".into(),
+            body: "y".into(),
+            attributes: Default::default(),
+        };
         assert_eq!(t.to_string(), "x\n\ny");
+    }
+
+    #[test]
+    fn test_migrate_file_to_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        // Init as file-backed (no git yet).
+        Workspace::init(root.clone()).unwrap();
+        let ws = Workspace::from_path(root.clone()).unwrap();
+        assert!(!ws.is_git_backed());
+
+        // Populate some state.
+        let t1 = ws.new_task("Active".into(), "body1".into()).unwrap();
+        let id1 = t1.id;
+        ws.push_task(t1).unwrap();
+        let t2 = ws.new_task("Will archive".into(), "body2".into()).unwrap();
+        let id2 = t2.id;
+        ws.push_task(t2).unwrap();
+        ws.drop(TaskIdentifier::Id(id2)).unwrap();
+        ws.add_remote("up", "/path").unwrap();
+        let mut t = ws.task(TaskIdentifier::Id(id1)).unwrap();
+        t.attributes.insert("k".into(), "v".into());
+        ws.save_task(&t).unwrap();
+        ws.handle_metadata(
+            &Task {
+                id: id1,
+                title: "x".into(),
+                body: format!("see [[{id2}]]"),
+                attributes: Default::default(),
+            },
+            None,
+        )
+        .unwrap();
+
+        // Migration before git init must fail.
+        assert!(ws.migrate_to_git().is_err());
+
+        // Now turn the directory into a git repo and migrate.
+        run_git_init(&root);
+        ws.migrate_to_git().unwrap();
+
+        // Re-open the workspace (picks up the new marker → GitStore).
+        let ws2 = Workspace::from_path(root.clone()).unwrap();
+        assert!(ws2.is_git_backed());
+
+        // All on-disk task data should be gone except the marker.
+        let entries: Vec<_> = std::fs::read_dir(ws2.path.clone())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+            .collect();
+        assert_eq!(entries, vec!["git-backed".to_string()]);
+
+        // State preserved.
+        let stack = ws2.read_stack().unwrap();
+        let ids: Vec<_> = stack.iter().map(|i| i.id).collect();
+        assert_eq!(ids, vec![id1]);
+        let read = ws2.task(TaskIdentifier::Id(id1)).unwrap();
+        assert_eq!(read.title, "Active");
+        assert_eq!(read.attributes.get("k"), Some(&"v".to_string()));
+        assert_eq!(backend::task_location(ws2.store(), id2).unwrap(), Some(Loc::Archived));
+        let bl = backend::read_backlinks(ws2.store(), id2).unwrap();
+        assert!(bl.contains(&id1));
+        assert_eq!(ws2.read_remotes().unwrap().len(), 1);
+
+        // Migrating an already-git-backed workspace fails.
+        assert!(ws2.migrate_to_git().is_err());
     }
 
     #[test]

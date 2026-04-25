@@ -105,7 +105,6 @@ impl Store for FileStore {
         }
         Ok(out)
     }
-
 }
 
 // ─── GitStore ───────────────────────────────────────────────────────────────
@@ -139,7 +138,9 @@ fn read_blob(repo: &Repository, refname: &str) -> Result<Option<(Oid, Vec<u8>)>>
     let obj = r
         .peel(ObjectType::Blob)
         .map_err(|e| Error::Parse(format!("peel: {e}")))?;
-    let blob = obj.as_blob().ok_or_else(|| Error::Parse("not a blob".into()))?;
+    let blob = obj
+        .as_blob()
+        .ok_or_else(|| Error::Parse("not a blob".into()))?;
     Ok(Some((obj.id(), blob.content().to_vec())))
 }
 
@@ -199,7 +200,6 @@ impl Store for GitStore {
         }
         Ok(out)
     }
-
 }
 
 // ─── High-level operations over any Store ───────────────────────────────────
@@ -261,7 +261,9 @@ pub fn move_task(store: &dyn Store, id: Id, to: Loc) -> Result<()> {
     if from_key == to_key {
         return Ok(());
     }
-    let data = store.read(&from_key)?.ok_or_else(|| Error::Parse(format!("task {id} not present at {from_key}")))?;
+    let data = store
+        .read(&from_key)?
+        .ok_or_else(|| Error::Parse(format!("task {id} not present at {from_key}")))?;
     store.write(&to_key, &data)?;
     store.delete(&from_key)?;
     Ok(())
@@ -486,8 +488,14 @@ mod test {
         for s in [file.as_ref(), git.as_ref()] {
             assert!(read_remotes(s).unwrap().is_empty());
             let remotes = vec![
-                Remote { prefix: "a".into(), path: PathBuf::from("/x") },
-                Remote { prefix: "b".into(), path: PathBuf::from("/y") },
+                Remote {
+                    prefix: "a".into(),
+                    path: PathBuf::from("/x"),
+                },
+                Remote {
+                    prefix: "b".into(),
+                    path: PathBuf::from("/y"),
+                },
             ];
             write_remotes(s, &remotes).unwrap();
             assert_eq!(read_remotes(s).unwrap(), remotes);

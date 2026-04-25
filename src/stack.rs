@@ -62,7 +62,11 @@ impl FromStr for StackItem {
         let modify_time = UNIX_EPOCH
             .checked_add(Duration::from_secs(index_epoch))
             .unwrap_or(UNIX_EPOCH);
-        Ok(Self { id, title, modify_time })
+        Ok(Self {
+            id,
+            title,
+            modify_time,
+        })
     }
 }
 
