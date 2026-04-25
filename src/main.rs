@@ -465,14 +465,10 @@ fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool) -> Result
     {
         if ids_only {
             println!("{}", stack_item.id);
+        } else if let Some(parsed) = task::parse(&stack_item.title) {
+            println!("{}\t{}", stack_item.id, parsed.content.trim());
         } else {
-            // Pad the id to a fixed width with spaces so the title column lines
-            // up regardless of the user's tab stops. Width fits up to tsk-9999.
-            let id = stack_item.id.to_string();
-            let title = task::parse(&stack_item.title)
-                .map(|p| p.content.trim().to_string())
-                .unwrap_or_else(|| stack_item.title.trim().to_string());
-            println!("{id:<8}  {title}");
+            println!("{stack_item}");
         }
     }
     Ok(())
