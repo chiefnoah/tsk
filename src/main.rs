@@ -20,8 +20,8 @@ use workspace::{Id, Task, TaskIdentifier, Workspace};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use edit::edit as open_editor;
 
-fn default_dir() -> PathBuf {
-    current_dir().unwrap()
+fn default_dir() -> Result<PathBuf> {
+    Ok(current_dir()?)
 }
 
 fn parse_id(s: &str) -> std::result::Result<Id, &'static str> {
@@ -317,11 +317,12 @@ impl From<TaskId> for TaskIdentifier {
     }
 }
 
-fn main() {
-    let cli = Cli::parse();
-    let dir = cli.dir.unwrap_or(default_dir());
-    let sync_dir = dir.clone();
-    let var_name = match cli.command {
+fn run(cli: Cli) -> Result<()> {
+    let dir = match cli.dir {
+        Some(d) => d,
+        None => default_dir()?,
+    };
+    match cli.command {
         Commands::Init => command_init(dir),
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
         Commands::Append { edit, body, title } => command_append(dir, edit, body, title),
@@ -345,8 +346,8 @@ fn main() {
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop { task_id } => command_drop(dir, task_id),
         Commands::Find { args, short_id } => command_find(dir, short_id, args),
-        Commands::Rot => Workspace::from_path(dir).unwrap().rot(),
-        Commands::Tor => Workspace::from_path(dir).unwrap().tor(),
+        Commands::Rot => Workspace::from_path(dir)?.rot(),
+        Commands::Tor => Workspace::from_path(dir)?.tor(),
         Commands::Prioritize { task_id } => command_prioritize(dir, task_id),
         Commands::Deprioritize { task_id } => command_deprioritize(dir, task_id),
         Commands::Clean => command_clean(dir),
@@ -357,11 +358,12 @@ fn main() {
         Commands::Export { output } => command_export(dir, output),
         Commands::Migrate => command_migrate(dir),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
-    };
-    let _ = sync_dir;
-    let result = var_name;
-    match result {
-        Ok(_) => exit(0),
+    }
+}
+
+fn main() {
+    match run(Cli::parse()) {
+        Ok(()) => exit(0),
         Err(e) => {
             eprintln!("{e}");
             exit(2);

@@ -102,6 +102,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             links.push(ParsedLink::Internal(id));
                         } else if let Some((prefix, id_str)) = contents.split_once('-')
                             && let Ok(id) = id_str.parse::<u32>()
+                            && prefix.chars().all(|c| c.is_alphanumeric() || c == '_')
                         {
                             let linktext =
                                 format!("{}{}", contents.cyan(), super_num(links.len() + 1).cyan());
@@ -511,6 +512,18 @@ mod test {
         let input = "see [[not a link]]\n";
         let output = parse(input).expect("parse to work");
         assert!(output.links.is_empty());
+        assert_eq!(input, output.content);
+    }
+
+    /// A foreign-style link whose prefix contains `/` (or any other non-ident
+    /// character) is not a valid namespace; don't register a link, keep the
+    /// bracketed text as-is.
+    #[test]
+    fn test_foreign_link_prefix_with_slash() {
+        setup();
+        let input = "see [[ns/tsk-12]]\n";
+        let output = parse(input).expect("parse to work");
+        assert!(output.links.is_empty(), "{:?}", output.links);
         assert_eq!(input, output.content);
     }
 }
