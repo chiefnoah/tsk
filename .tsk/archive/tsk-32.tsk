@@ -1,0 +1,5 @@
+Use git refs to store tasks
+
+When we detect we're in a git repo, store tasks in a special ref namespace called tsk
+instead of plain files (though if it's easiest, cache files on disk in .tsk/ as is done
+now.)

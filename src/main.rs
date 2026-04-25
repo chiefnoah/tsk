@@ -266,12 +266,10 @@ struct FindArgs {
     /// Exclude the contents of tasks in the search criteria.
     #[arg(short = 'b', default_value_t = false)]
     exclude_body: bool,
-    /* TODO: implement this
     /// Include archived tasks in the search criteria. Combine with `-b` to include archived
     /// bodies in the search criteria.
     #[arg(short = 'a', default_value_t = false)]
     search_archived: bool,
-    */
 }
 
 impl From<TaskId> for TaskIdentifier {
@@ -281,7 +279,7 @@ impl From<TaskId> for TaskIdentifier {
         } else if value.find.find {
             TaskIdentifier::Find {
                 exclude_body: value.find.args.exclude_body,
-                archived: false,
+                archived: value.find.args.search_archived,
             }
         } else {
             TaskIdentifier::Relative(value.relative_id)
@@ -342,7 +340,10 @@ fn taskid_from_tsk_id(tsk_id: Id) -> TaskId {
         relative_id: 0,
         find: Find {
             find: false,
-            args: FindArgs { exclude_body: true },
+            args: FindArgs {
+                exclude_body: true,
+                search_archived: false,
+            },
         },
     }
 }

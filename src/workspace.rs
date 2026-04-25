@@ -350,19 +350,79 @@ impl Workspace {
         &self,
         stack: Option<TaskStack>,
         search_body: bool,
-        _include_archived: bool,
+        include_archived: bool,
     ) -> Result<Option<Id>> {
         let stack = if let Some(stack) = stack {
             stack
         } else {
             self.read_stack()?
         };
-        if search_body {
+        if include_archived {
+            let archive_dir = self.path.join("archive");
+            let mut all_tasks: Vec<SearchTask> = stack
+                .into_iter()
+                .filter_map(|item| {
+                    self.task(TaskIdentifier::Id(item.id))
+                        .ok()
+                        .map(|t| t.bare())
+                })
+                .collect();
+            let mut indexed_ids: HashSet<Id> = HashSet::new();
+            for t in &all_tasks {
+                indexed_ids.insert(t.id);
+            }
+            if archive_dir.exists() {
+                for entry in std::fs::read_dir(&archive_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    if let Some(id_str) = filename_str
+                        .strip_prefix("tsk-")
+                        .and_then(|s| s.strip_suffix(".tsk"))
+                    {
+                        if let Ok(id_num) = id_str.parse::<u32>() {
+                            let id = Id(id_num);
+                            if !indexed_ids.contains(&id) {
+                                if let Ok(contents) = std::fs::read_to_string(&path) {
+                                    let mut lines = contents.splitn(2, '\n');
+                                    let title = lines.next().unwrap_or("").trim().to_string();
+                                    let body = lines.next().unwrap_or("").trim().to_string();
+                                    all_tasks.push(SearchTask { id, title, body });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if search_body {
+                Ok(fzf::select::<_, Id, _>(
+                    all_tasks,
+                    [
+                        "--no-multi-line",
+                        "--accept-nth=1",
+                        "--delimiter=\t",
+                        "--preview=tsk show -T {1}",
+                        "--preview-window=top",
+                        "--ansi",
+                        "--info-command=tsk show -T {1} | head -n1",
+                        "--info=inline-right",
+                    ],
+                )?)
+            } else {
+                Ok(fzf::select::<_, Id, _>(
+                    all_tasks,
+                    ["--delimiter=\t", "--accept-nth=1"],
+                )?)
+            }
+        } else if search_body {
             let loader = LazyTaskLoader {
                 files: stack.into_iter(),
                 workspace: self,
             };
-            // search the entirety of a task
             Ok(fzf::select::<_, Id, _>(
                 loader,
                 [
@@ -377,7 +437,6 @@ impl Workspace {
                 ],
             )?)
         } else {
-            // just search the stack
             Ok(fzf::select::<_, Id, _>(
                 stack,
                 ["--delimiter=\t", "--accept-nth=1"],
@@ -920,5 +979,71 @@ mod test {
 
         let result = workspace.reopen(TaskIdentifier::Id(task_id));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_search_archived_includes_dropped_tasks() {
+        let (_dir, workspace) = setup_test_workspace();
+
+        let task_id = {
+            let ws = Workspace::from_path(workspace.path.clone()).unwrap();
+            let task = ws
+                .new_task("Archived task".to_string(), "archived body".to_string())
+                .unwrap();
+            let id = task.id;
+            ws.push_task(task).unwrap();
+            id
+        };
+
+        let stack_count = {
+            let stack = workspace.read_stack().unwrap();
+            stack.iter().count()
+        };
+        assert_eq!(stack_count, 1);
+
+        workspace.drop(TaskIdentifier::Id(task_id)).unwrap();
+
+        let stack_after_drop = {
+            let stack = workspace.read_stack().unwrap();
+            stack.iter().count()
+        };
+        assert_eq!(stack_after_drop, 0);
+
+        let archive_dir = workspace.path.join("archive");
+        assert!(archive_dir.join(format!("tsk-{}.tsk", task_id.0)).exists());
+
+        let archive_tasks_dir = workspace.path.join("tasks");
+        assert!(!archive_tasks_dir
+            .join(format!("tsk-{}.tsk", task_id.0))
+            .exists());
+
+        let archived_tasks: Vec<SearchTask> = std::fs::read_dir(&archive_dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let filename = entry.file_name();
+                let filename_str = filename.to_string_lossy();
+                let id_str = filename_str
+                    .strip_prefix("tsk-")
+                    .and_then(|s| s.strip_suffix(".tsk"))?;
+                let id_num = id_str.parse::<u32>().ok()?;
+                let contents = std::fs::read_to_string(&path).ok()?;
+                let mut lines = contents.splitn(2, '\n');
+                let title = lines.next().unwrap_or("").trim().to_string();
+                let body = lines.next().unwrap_or("").trim().to_string();
+                Some(SearchTask {
+                    id: Id(id_num),
+                    title,
+                    body,
+                })
+            })
+            .collect();
+
+        assert_eq!(archived_tasks.len(), 1);
+        assert_eq!(archived_tasks[0].title, "Archived task");
     }
 }
