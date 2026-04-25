@@ -1209,7 +1209,10 @@ mod test {
             .output()
             .unwrap();
         let names = String::from_utf8_lossy(&out.stdout);
-        assert!(names.contains(&format!("refs/tsk/tasks/{}", id.0)), "{names}");
+        assert!(
+            names.contains(&format!("refs/tsk/tasks/{}", id.0)),
+            "{names}"
+        );
         assert!(names.contains("refs/tsk/index"));
 
         // Now configure refspecs on the working repo and confirm `git push origin`
@@ -1221,7 +1224,11 @@ mod test {
             .output()
             .unwrap();
         let push_cfg = String::from_utf8_lossy(&cfg.stdout);
-        assert!(push_cfg.lines().any(|l| l.trim() == "refs/tsk/*:refs/tsk/*"));
+        assert!(
+            push_cfg
+                .lines()
+                .any(|l| l.trim() == "refs/tsk/*:refs/tsk/*")
+        );
         // Idempotent: running again does not duplicate.
         ws.configure_git_remote_refspecs("origin").unwrap();
         let cfg2 = std::process::Command::new("git")
@@ -1231,8 +1238,14 @@ mod test {
             .unwrap();
         let push_cfg2 = String::from_utf8_lossy(&cfg2.stdout);
         assert_eq!(
-            push_cfg.lines().filter(|l| l.trim() == "refs/tsk/*:refs/tsk/*").count(),
-            push_cfg2.lines().filter(|l| l.trim() == "refs/tsk/*:refs/tsk/*").count()
+            push_cfg
+                .lines()
+                .filter(|l| l.trim() == "refs/tsk/*:refs/tsk/*")
+                .count(),
+            push_cfg2
+                .lines()
+                .filter(|l| l.trim() == "refs/tsk/*:refs/tsk/*")
+                .count()
         );
 
         // Pull side: a fresh repo set up to fetch from the same remote, then
