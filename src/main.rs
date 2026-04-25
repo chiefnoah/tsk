@@ -1,6 +1,7 @@
 mod attrs;
 mod errors;
 mod fzf;
+mod git_store;
 mod stack;
 mod task;
 mod util;
@@ -290,6 +291,7 @@ impl From<TaskId> for TaskIdentifier {
 fn main() {
     let cli = Cli::parse();
     let dir = cli.dir.unwrap_or(default_dir());
+    let sync_dir = dir.clone();
     let var_name = match cli.command {
         Commands::Init => command_init(dir),
         Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
@@ -324,6 +326,14 @@ fn main() {
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
     };
     let result = var_name;
+    // Best-effort mirror to git refs if the workspace is git-backed. Failures here
+    // do not fail the user's command — the on-disk store remains authoritative.
+    if result.is_ok()
+        && let Ok(ws) = Workspace::from_path(sync_dir)
+        && let Err(e) = ws.sync_git()
+    {
+        eprintln!("warning: git ref sync failed: {e}");
+    }
     match result {
         Ok(_) => exit(0),
         Err(e) => {

@@ -6,7 +6,7 @@ use crate::attrs::Attrs;
 use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
 use crate::task::parse as parse_task;
-use crate::{fzf, util};
+use crate::{fzf, git_store, util};
 use std::collections::{BTreeMap, HashSet, vec_deque};
 use std::ffi::OsString;
 use std::fmt::Display;
@@ -110,7 +110,19 @@ impl Workspace {
             .open(tsk_dir.join("next"))?;
         // initialize the next file with ID 1
         next.write_all(b"1\n")?;
+        // If we're inside a git repository, mark this workspace as git-backed so
+        // future mutations mirror state into refs/tsk/. Outside of git this is a
+        // no-op and the file-based store is the only persistence.
+        if let Some(git_dir) = git_store::detect_git_dir(&path) {
+            git_store::write_marker(&tsk_dir, &git_dir)?;
+        }
         Ok(())
+    }
+
+    /// Mirror the workspace into git refs if this workspace was initialized
+    /// inside a git repository. No-op otherwise.
+    pub fn sync_git(&self) -> Result<()> {
+        git_store::sync(&self.path)
     }
 
     pub fn from_path(path: PathBuf) -> Result<Self> {
