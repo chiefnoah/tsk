@@ -556,9 +556,18 @@ mod test {
         // Legacy keys should be gone, new-scheme keys present.
         assert!(!store.exists("tasks/tsk-1.tsk").unwrap());
         assert!(!store.exists("archive/tsk-2.tsk").unwrap());
-        assert_eq!(store.read("tasks/1").unwrap().as_deref(), Some(&b"old\n\nbody"[..]));
-        assert_eq!(store.read("archive/2").unwrap().as_deref(), Some(&b"old2\n\nbody2"[..]));
-        assert_eq!(store.read("tasks/3").unwrap().as_deref(), Some(&b"new\n\nbody3"[..]));
+        assert_eq!(
+            store.read("tasks/1").unwrap().as_deref(),
+            Some(&b"old\n\nbody"[..])
+        );
+        assert_eq!(
+            store.read("archive/2").unwrap().as_deref(),
+            Some(&b"old2\n\nbody2"[..])
+        );
+        assert_eq!(
+            store.read("tasks/3").unwrap().as_deref(),
+            Some(&b"new\n\nbody3"[..])
+        );
     }
 
     #[test]
@@ -574,7 +583,10 @@ mod test {
         upgrade_legacy_keys(&store).unwrap();
 
         assert!(!store.exists("tasks/tsk-1.tsk").unwrap());
-        assert_eq!(store.read("tasks/1").unwrap().as_deref(), Some(&b"current"[..]));
+        assert_eq!(
+            store.read("tasks/1").unwrap().as_deref(),
+            Some(&b"current"[..])
+        );
     }
 
     #[test]

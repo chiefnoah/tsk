@@ -190,6 +190,22 @@ enum Commands {
         /// Use .gitignore instead of .git/info/exclude.
         #[arg(short = 'g', default_value_t = false)]
         gitignore: bool,
+        /// Also configure push/fetch refspecs on the named remote so refs/tsk/*
+        /// is included in `git push <remote>` and `git fetch <remote>`.
+        #[arg(short = 'r')]
+        remote: Option<String>,
+    },
+
+    /// Push refs/tsk/* to a git remote so other clones can pull task state.
+    GitPush {
+        /// Remote name (e.g. origin).
+        remote: String,
+    },
+
+    /// Fetch refs/tsk/* from a git remote, overwriting local task state.
+    GitPull {
+        /// Remote name (e.g. origin).
+        remote: String,
     },
 
     /// Export the entire workspace (tasks, archive, attrs, backlinks, index,
@@ -336,7 +352,9 @@ fn main() {
         Commands::Deprioritize { task_id } => command_deprioritize(dir, task_id),
         Commands::Clean => command_clean(dir),
         Commands::Remote { action } => command_remote(dir, action),
-        Commands::GitSetup { gitignore } => command_git_setup(dir, gitignore),
+        Commands::GitSetup { gitignore, remote } => command_git_setup(dir, gitignore, remote),
+        Commands::GitPush { remote } => command_git_push(dir, remote),
+        Commands::GitPull { remote } => command_git_pull(dir, remote),
         Commands::Export { output } => command_export(dir, output),
         Commands::Migrate => command_migrate(dir),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
@@ -612,7 +630,17 @@ fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
     Ok(())
 }
 
-fn command_git_setup(dir: PathBuf, use_gitignore: bool) -> Result<()> {
+fn command_git_push(dir: PathBuf, remote: String) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
+    workspace.git_push_refs(&remote)
+}
+
+fn command_git_pull(dir: PathBuf, remote: String) -> Result<()> {
+    let workspace = Workspace::from_path(dir)?;
+    workspace.git_pull_refs(&remote)
+}
+
+fn command_git_setup(dir: PathBuf, use_gitignore: bool, remote: Option<String>) -> Result<()> {
     let workspace = Workspace::from_path(dir)?;
     let git_dir = workspace.path.join(".git");
     if !git_dir.exists() {
@@ -641,6 +669,10 @@ fn command_git_setup(dir: PathBuf, use_gitignore: bool) -> Result<()> {
         .open(&ignore_file)?;
     writeln!(file, ".tsk/")?;
     eprintln!("Added .tsk/ to {label}.");
+    if let Some(remote) = remote {
+        workspace.configure_git_remote_refspecs(&remote)?;
+        eprintln!("Configured push/fetch refspecs on remote '{remote}' for refs/tsk/*");
+    }
     Ok(())
 }
 

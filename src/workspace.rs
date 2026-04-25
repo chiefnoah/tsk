@@ -434,6 +434,67 @@ impl Workspace {
         Ok(Some(task))
     }
 
+    fn require_git_dir(&self) -> Result<PathBuf> {
+        if !self.is_git_backed() {
+            return Err(Error::Parse("Workspace is not git-backed".into()));
+        }
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER))?;
+        Ok(PathBuf::from(marker.trim()))
+    }
+
+    fn run_git(&self, args: &[&str]) -> Result<()> {
+        let git_dir = self.require_git_dir()?;
+        let status = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(&git_dir)
+            .args(args)
+            .status()?;
+        if !status.success() {
+            return Err(Error::Parse(format!("git {args:?} exited with {status}")));
+        }
+        Ok(())
+    }
+
+    /// Push every refs/tsk/* ref to the given remote.
+    pub fn git_push_refs(&self, remote: &str) -> Result<()> {
+        self.run_git(&["push", remote, "refs/tsk/*:refs/tsk/*"])
+    }
+
+    /// Fetch every refs/tsk/* ref from the given remote, overwriting locally.
+    pub fn git_pull_refs(&self, remote: &str) -> Result<()> {
+        self.run_git(&["fetch", remote, "+refs/tsk/*:refs/tsk/*"])
+    }
+
+    /// Configure git so future `git push <remote>` / `git fetch <remote>`
+    /// include the tsk ref namespace. Idempotent.
+    pub fn configure_git_remote_refspecs(&self, remote: &str) -> Result<()> {
+        let git_dir = self.require_git_dir()?;
+        for (key, value) in [
+            (format!("remote.{remote}.push"), "refs/tsk/*:refs/tsk/*"),
+            (format!("remote.{remote}.fetch"), "+refs/tsk/*:refs/tsk/*"),
+        ] {
+            // Read existing values; skip if our refspec is already present.
+            let existing = std::process::Command::new("git")
+                .arg("--git-dir")
+                .arg(&git_dir)
+                .args(["config", "--get-all", &key])
+                .output()?;
+            let existing_text = String::from_utf8_lossy(&existing.stdout);
+            if existing_text.lines().any(|l| l.trim() == value) {
+                continue;
+            }
+            let status = std::process::Command::new("git")
+                .arg("--git-dir")
+                .arg(&git_dir)
+                .args(["config", "--add", &key, value])
+                .status()?;
+            if !status.success() {
+                return Err(Error::Parse(format!("git config --add {key} failed")));
+            }
+        }
+        Ok(())
+    }
+
     /// Write a zip archive containing every blob in the workspace. Layout in the
     /// zip mirrors the logical key namespace (`tasks/<id>`, `archive/<id>`,
     /// `attrs/<id>`, `backlinks/<id>`, `index`, `next`, `remotes`).
@@ -987,7 +1048,10 @@ mod test {
 
         // Editing an archived task should leave it archived, not resurrect it.
         ws.drop(TaskIdentifier::Id(id3)).unwrap();
-        assert_eq!(backend::task_location(ws.store(), id3).unwrap(), Some(Loc::Archived));
+        assert_eq!(
+            backend::task_location(ws.store(), id3).unwrap(),
+            Some(Loc::Archived)
+        );
         {
             let mut task = ws.task(TaskIdentifier::Id(id3)).unwrap();
             task.body = "edited while archived".into();
@@ -1030,19 +1094,37 @@ mod test {
         // command_drop
         ws.drop(TaskIdentifier::Id(id1)).unwrap();
         assert!(!ws.read_stack().unwrap().iter().any(|i| i.id == id1));
-        assert_eq!(backend::task_location(ws.store(), id1).unwrap(), Some(Loc::Archived));
+        assert_eq!(
+            backend::task_location(ws.store(), id1).unwrap(),
+            Some(Loc::Archived)
+        );
 
         // command_reopen
         ws.reopen(TaskIdentifier::Id(id1)).unwrap();
         assert!(ws.read_stack().unwrap().iter().any(|i| i.id == id1));
-        assert_eq!(backend::task_location(ws.store(), id1).unwrap(), Some(Loc::Active));
+        assert_eq!(
+            backend::task_location(ws.store(), id1).unwrap(),
+            Some(Loc::Active)
+        );
 
         // command_clean: orphan a task in active that isn't on the stack
         backend::write_task(ws.store(), Id(99_999), "orphan", "", Loc::Active).unwrap();
-        assert!(backend::list_active(ws.store()).unwrap().contains(&Id(99_999)));
+        assert!(
+            backend::list_active(ws.store())
+                .unwrap()
+                .contains(&Id(99_999))
+        );
         ws.clean().unwrap();
-        assert!(!backend::list_active(ws.store()).unwrap().contains(&Id(99_999)));
-        assert!(backend::list_archive(ws.store()).unwrap().contains(&Id(99_999)));
+        assert!(
+            !backend::list_active(ws.store())
+                .unwrap()
+                .contains(&Id(99_999))
+        );
+        assert!(
+            backend::list_archive(ws.store())
+                .unwrap()
+                .contains(&Id(99_999))
+        );
 
         // command_remote (List/Add/Remove)
         assert!(ws.read_remotes().unwrap().is_empty());
@@ -1078,6 +1160,109 @@ mod test {
         Workspace::init(dir.path().to_path_buf()).unwrap();
         let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
         run_every_command(&ws);
+    }
+
+    #[test]
+    fn test_git_push_pull_and_refspec_config() {
+        // Set up a bare "remote" and a working repo, both git-backed tsk
+        // workspaces. Push from one, pull into another.
+        let dir = tempfile::tempdir().unwrap();
+        let remote_dir = dir.path().join("remote.git");
+        let work_dir = dir.path().join("work");
+        let clone_dir = dir.path().join("clone");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&work_dir).unwrap();
+        std::fs::create_dir_all(&clone_dir).unwrap();
+
+        // Bare remote.
+        let s = std::process::Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .current_dir(&remote_dir)
+            .status()
+            .unwrap();
+        assert!(s.success());
+
+        // Working repo + tsk init.
+        run_git_init(&work_dir);
+        Workspace::init(work_dir.clone()).unwrap();
+        let ws = Workspace::from_path(work_dir.clone()).unwrap();
+        // Add the bare repo as `origin`.
+        let s = std::process::Command::new("git")
+            .args(["remote", "add", "origin"])
+            .arg(&remote_dir)
+            .current_dir(&work_dir)
+            .status()
+            .unwrap();
+        assert!(s.success());
+
+        // Pushing without configured refspecs (using the explicit refspec form).
+        let t = ws.new_task("task one".into(), "body".into()).unwrap();
+        let id = t.id;
+        ws.push_task(t).unwrap();
+        ws.git_push_refs("origin").unwrap();
+
+        // Confirm refs landed on the remote.
+        let out = std::process::Command::new("git")
+            .args(["--git-dir"])
+            .arg(&remote_dir)
+            .args(["for-each-ref", "--format=%(refname)", "refs/tsk/"])
+            .output()
+            .unwrap();
+        let names = String::from_utf8_lossy(&out.stdout);
+        assert!(names.contains(&format!("refs/tsk/tasks/{}", id.0)), "{names}");
+        assert!(names.contains("refs/tsk/index"));
+
+        // Now configure refspecs on the working repo and confirm `git push origin`
+        // (with no refspec) sends refs/tsk/*.
+        ws.configure_git_remote_refspecs("origin").unwrap();
+        let cfg = std::process::Command::new("git")
+            .args(["config", "--get-all", "remote.origin.push"])
+            .current_dir(&work_dir)
+            .output()
+            .unwrap();
+        let push_cfg = String::from_utf8_lossy(&cfg.stdout);
+        assert!(push_cfg.lines().any(|l| l.trim() == "refs/tsk/*:refs/tsk/*"));
+        // Idempotent: running again does not duplicate.
+        ws.configure_git_remote_refspecs("origin").unwrap();
+        let cfg2 = std::process::Command::new("git")
+            .args(["config", "--get-all", "remote.origin.push"])
+            .current_dir(&work_dir)
+            .output()
+            .unwrap();
+        let push_cfg2 = String::from_utf8_lossy(&cfg2.stdout);
+        assert_eq!(
+            push_cfg.lines().filter(|l| l.trim() == "refs/tsk/*:refs/tsk/*").count(),
+            push_cfg2.lines().filter(|l| l.trim() == "refs/tsk/*:refs/tsk/*").count()
+        );
+
+        // Pull side: a fresh repo set up to fetch from the same remote, then
+        // pulling tsk refs in.
+        run_git_init(&clone_dir);
+        Workspace::init(clone_dir.clone()).unwrap();
+        let cws = Workspace::from_path(clone_dir.clone()).unwrap();
+        let s = std::process::Command::new("git")
+            .args(["remote", "add", "origin"])
+            .arg(&remote_dir)
+            .current_dir(&clone_dir)
+            .status()
+            .unwrap();
+        assert!(s.success());
+
+        cws.git_pull_refs("origin").unwrap();
+        // The pulled-in workspace can read the task.
+        let pulled = cws.task(TaskIdentifier::Id(id)).unwrap();
+        assert_eq!(pulled.title, "task one");
+        let stack = cws.read_stack().unwrap();
+        assert!(stack.iter().any(|i| i.id == id));
+
+        // Errors when invoked on a file-backed workspace.
+        let file_dir = dir.path().join("file");
+        std::fs::create_dir_all(&file_dir).unwrap();
+        Workspace::init(file_dir.clone()).unwrap();
+        let fws = Workspace::from_path(file_dir).unwrap();
+        assert!(fws.git_push_refs("origin").is_err());
+        assert!(fws.git_pull_refs("origin").is_err());
+        assert!(fws.configure_git_remote_refspecs("origin").is_err());
     }
 
     #[test]
