@@ -1,6 +1,0 @@
-automatically add backlinks
-
-I need to parse on save/edit/create for outgoing internal links. If any exist and their
-corresponding task exists, update the targetted task with a backlink reference
-
-Using [[tsk-11]] as my test.

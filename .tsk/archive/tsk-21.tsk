@@ -1,7 +1,0 @@
-Add command to setup git stuff
-
-Will want to prompt to add `.tsk` to the `.git/info/exclude` file (or
-.gitignore/globally) and *probably* set up
-[metastore](https://github.com/przemoc/metastore)
-
-What else should we do?

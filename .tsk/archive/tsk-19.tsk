@@ -1,7 +1,0 @@
-add "raw" output option for show
-
-Should probably be some variant of `tsk show -x` or something to skip the parsing step,
-just display the body of the text directly.
-
-This does suggest I should add a `format` subcommand that takes in a body and outputs
-the parsed + styled form, could be useful for editor plugins

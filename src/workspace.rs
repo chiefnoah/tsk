@@ -840,8 +840,9 @@ mod test {
 
             let f = std::fs::File::open(&out).unwrap();
             let mut zip = zip::ZipArchive::new(f).unwrap();
-            let names: std::collections::HashSet<String> =
-                (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_string()).collect();
+            let names: std::collections::HashSet<String> = (0..zip.len())
+                .map(|i| zip.by_index(i).unwrap().name().to_string())
+                .collect();
             assert!(names.contains(&format!("tasks/{}", id.0)));
             assert!(names.contains("index"));
             assert!(names.contains("next"));
@@ -924,6 +925,159 @@ mod test {
 
         // Migrating an already-git-backed workspace fails.
         assert!(ws2.migrate_to_git().is_err());
+    }
+
+    /// Runs through every command's workspace-level logic against `ws`. Mirrors
+    /// what main.rs's `command_*` functions do (sans interactive bits like fzf
+    /// and $EDITOR).
+    fn run_every_command(ws: &Workspace) {
+        // command_push (twice): create_task → handle_metadata → push_task
+        let t1 = ws.new_task("first".into(), "body1".into()).unwrap();
+        let id1 = t1.id;
+        ws.handle_metadata(&t1, None).unwrap();
+        ws.push_task(t1).unwrap();
+
+        let t2 = ws.new_task("second".into(), "body2".into()).unwrap();
+        let id2 = t2.id;
+        ws.handle_metadata(&t2, None).unwrap();
+        ws.push_task(t2).unwrap();
+
+        // command_append: append_task at the bottom
+        let t3 = ws.new_task("third".into(), "".into()).unwrap();
+        let id3 = t3.id;
+        ws.append_task(t3).unwrap();
+
+        // command_list: stack reads in expected order
+        let stack = ws.read_stack().unwrap();
+        let order: Vec<_> = stack.iter().map(|i| i.id).collect();
+        assert_eq!(order, vec![id2, id1, id3], "{order:?}");
+
+        // command_show: read by id
+        let shown = ws.task(TaskIdentifier::Id(id1)).unwrap();
+        assert_eq!(shown.title, "first");
+        assert_eq!(shown.body, "body1");
+
+        // command_show: read by relative position
+        let top = ws.task(TaskIdentifier::Relative(0)).unwrap();
+        assert_eq!(top.id, id2);
+
+        // command_edit: this is the regression suspected by the user. Mirror the
+        // exact code path command_edit uses, sans open_editor.
+        {
+            let mut task = ws.task(TaskIdentifier::Id(id1)).unwrap();
+            let pre_links = parse_task(&task.to_string()).map(|pt| pt.intenal_links());
+            let new_content = format!("edited title [[{id3}]]\n\nedited body");
+            let (title, body) = new_content.split_once('\n').unwrap();
+            task.title = title.replace(['\n', '\r'], " ");
+            task.body = body.to_string();
+            ws.handle_metadata(&task, pre_links).unwrap();
+            ws.save_task(&task).unwrap();
+
+            let reread = ws.task(TaskIdentifier::Id(id1)).unwrap();
+            assert!(reread.title.starts_with("edited title"), "{}", reread.title);
+            assert_eq!(reread.body.trim(), "edited body");
+            // Stack title refreshed.
+            let s = ws.read_stack().unwrap();
+            let item = s.iter().find(|i| i.id == id1).unwrap();
+            assert!(item.title.starts_with("edited title"));
+            // Backlink from id1 → id3 should now exist.
+            let bl3 = backend::read_backlinks(ws.store(), id3).unwrap();
+            assert!(bl3.contains(&id1), "edit should add backlinks: {bl3:?}");
+        }
+
+        // Editing an archived task should leave it archived, not resurrect it.
+        ws.drop(TaskIdentifier::Id(id3)).unwrap();
+        assert_eq!(backend::task_location(ws.store(), id3).unwrap(), Some(Loc::Archived));
+        {
+            let mut task = ws.task(TaskIdentifier::Id(id3)).unwrap();
+            task.body = "edited while archived".into();
+            ws.save_task(&task).unwrap();
+            assert_eq!(
+                backend::task_location(ws.store(), id3).unwrap(),
+                Some(Loc::Archived),
+                "save_task must preserve archive location"
+            );
+            let reread = ws.task(TaskIdentifier::Id(id3)).unwrap();
+            assert_eq!(reread.body, "edited while archived");
+        }
+        // Reopen so subsequent stack ops have it back.
+        ws.reopen(TaskIdentifier::Id(id3)).unwrap();
+
+        // command_swap
+        let before: Vec<_> = ws.read_stack().unwrap().iter().map(|i| i.id).collect();
+        ws.swap_top().unwrap();
+        let after: Vec<_> = ws.read_stack().unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(after[0], before[1]);
+        assert_eq!(after[1], before[0]);
+        ws.swap_top().unwrap();
+
+        // command_rot / command_tor are inverses
+        let before: Vec<_> = ws.read_stack().unwrap().iter().map(|i| i.id).collect();
+        ws.rot().unwrap();
+        ws.tor().unwrap();
+        let after: Vec<_> = ws.read_stack().unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(before, after);
+
+        // command_prioritize
+        ws.prioritize(TaskIdentifier::Id(id1)).unwrap();
+        assert_eq!(ws.read_stack().unwrap().iter().next().unwrap().id, id1);
+
+        // command_deprioritize
+        ws.deprioritize(TaskIdentifier::Id(id1)).unwrap();
+        let s = ws.read_stack().unwrap();
+        assert_eq!(s.iter().last().unwrap().id, id1);
+
+        // command_drop
+        ws.drop(TaskIdentifier::Id(id1)).unwrap();
+        assert!(!ws.read_stack().unwrap().iter().any(|i| i.id == id1));
+        assert_eq!(backend::task_location(ws.store(), id1).unwrap(), Some(Loc::Archived));
+
+        // command_reopen
+        ws.reopen(TaskIdentifier::Id(id1)).unwrap();
+        assert!(ws.read_stack().unwrap().iter().any(|i| i.id == id1));
+        assert_eq!(backend::task_location(ws.store(), id1).unwrap(), Some(Loc::Active));
+
+        // command_clean: orphan a task in active that isn't on the stack
+        backend::write_task(ws.store(), Id(99_999), "orphan", "", Loc::Active).unwrap();
+        assert!(backend::list_active(ws.store()).unwrap().contains(&Id(99_999)));
+        ws.clean().unwrap();
+        assert!(!backend::list_active(ws.store()).unwrap().contains(&Id(99_999)));
+        assert!(backend::list_archive(ws.store()).unwrap().contains(&Id(99_999)));
+
+        // command_remote (List/Add/Remove)
+        assert!(ws.read_remotes().unwrap().is_empty());
+        ws.add_remote("up", "/tmp/p").unwrap();
+        assert_eq!(ws.read_remotes().unwrap().len(), 1);
+        assert!(ws.add_remote("up", "/tmp/q").is_err()); // duplicate
+        assert!(ws.remove_remote("nope").is_err()); // nonexistent
+        ws.remove_remote("up").unwrap();
+        assert!(ws.read_remotes().unwrap().is_empty());
+
+        // command_export: writes a zip with all blobs
+        let dest = ws.path.join("exp.zip");
+        ws.export_zip(&dest).unwrap();
+        assert!(dest.exists());
+        let f = std::fs::File::open(&dest).unwrap();
+        let zip = zip::ZipArchive::new(f).unwrap();
+        assert!(zip.len() >= 2, "export contains at least index + tasks");
+        std::fs::remove_file(&dest).unwrap();
+    }
+
+    #[test]
+    fn test_every_command_file_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        Workspace::init(dir.path().to_path_buf()).unwrap();
+        let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
+        run_every_command(&ws);
+    }
+
+    #[test]
+    fn test_every_command_git_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git_init(dir.path());
+        Workspace::init(dir.path().to_path_buf()).unwrap();
+        let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
+        run_every_command(&ws);
     }
 
     #[test]

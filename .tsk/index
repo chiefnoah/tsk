@@ -1,6 +1,0 @@
-tsk-15	Add link identification to tasks	1732594198
-tsk-9	fix timestamp storage and parsing	1732594198
-tsk-7	allow for creating tasks that don't go to top of stack	1732594198
-tsk-13	user-defined labels	1732594198
-tsk-18	Add reindex command	1735006716
-tsk-8	IMAP4-based sync	1767469318

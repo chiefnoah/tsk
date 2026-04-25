@@ -378,10 +378,43 @@ pub fn store_for(tsk_dir: &Path) -> Result<Box<dyn Store>> {
     let marker = tsk_dir.join(GIT_BACKED_MARKER);
     if marker.exists() {
         let git_dir = fs::read_to_string(&marker)?.trim().to_string();
-        Ok(Box::new(GitStore::open(PathBuf::from(git_dir))?))
+        let store = GitStore::open(PathBuf::from(git_dir))?;
+        upgrade_legacy_keys(&store)?;
+        Ok(Box::new(store))
     } else {
         Ok(Box::new(FileStore::new(tsk_dir.to_path_buf())))
     }
+}
+
+/// Rename legacy-scheme refs (`tasks/tsk-N.tsk`) to the current scheme
+/// (`tasks/N`). Older versions of the git backend named blobs after the file
+/// path used by the file backend; the current scheme uses just the integer id.
+/// Runs on every open so stale workspaces self-heal on first use.
+fn upgrade_legacy_keys(store: &dyn Store) -> Result<()> {
+    for bucket in ["tasks", "archive"] {
+        for key in store.list(bucket)? {
+            // key looks like "tasks/<name>" — strip prefix to get the leaf.
+            let leaf = key.split('/').next_back().unwrap_or("");
+            // Legacy names look like "tsk-N.tsk". New names are just "N".
+            if let Some(num) = leaf
+                .strip_prefix("tsk-")
+                .and_then(|s| s.strip_suffix(".tsk"))
+                && num.parse::<u32>().is_ok()
+            {
+                let new_key = format!("{bucket}/{num}");
+                if store.exists(&new_key)? {
+                    // New-scheme blob already present; just drop the legacy one.
+                    store.delete(&key)?;
+                    continue;
+                }
+                if let Some(data) = store.read(&key)? {
+                    store.write(&new_key, &data)?;
+                    store.delete(&key)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -502,6 +535,46 @@ mod test {
             write_remotes(s, &[]).unwrap();
             assert!(read_remotes(s).unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn test_upgrade_legacy_keys_renames_old_scheme() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        run_git_init(&root);
+        let store = GitStore::open(root.join(".git")).unwrap();
+
+        // Seed legacy-scheme refs (what older versions of tsk wrote).
+        store.write("tasks/tsk-1.tsk", b"old\n\nbody").unwrap();
+        store.write("archive/tsk-2.tsk", b"old2\n\nbody2").unwrap();
+        // And one already-correct new-scheme ref alongside.
+        store.write("tasks/3", b"new\n\nbody3").unwrap();
+
+        upgrade_legacy_keys(&store).unwrap();
+
+        // Legacy keys should be gone, new-scheme keys present.
+        assert!(!store.exists("tasks/tsk-1.tsk").unwrap());
+        assert!(!store.exists("archive/tsk-2.tsk").unwrap());
+        assert_eq!(store.read("tasks/1").unwrap().as_deref(), Some(&b"old\n\nbody"[..]));
+        assert_eq!(store.read("archive/2").unwrap().as_deref(), Some(&b"old2\n\nbody2"[..]));
+        assert_eq!(store.read("tasks/3").unwrap().as_deref(), Some(&b"new\n\nbody3"[..]));
+    }
+
+    #[test]
+    fn test_upgrade_legacy_keys_keeps_new_when_both_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        fs::create_dir_all(&root).unwrap();
+        run_git_init(&root);
+        let store = GitStore::open(root.join(".git")).unwrap();
+
+        store.write("tasks/tsk-1.tsk", b"legacy").unwrap();
+        store.write("tasks/1", b"current").unwrap();
+        upgrade_legacy_keys(&store).unwrap();
+
+        assert!(!store.exists("tasks/tsk-1.tsk").unwrap());
+        assert_eq!(store.read("tasks/1").unwrap().as_deref(), Some(&b"current"[..]));
     }
 
     #[test]
