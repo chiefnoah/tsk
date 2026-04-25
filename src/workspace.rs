@@ -1,36 +1,24 @@
 #![allow(dead_code)]
-use nix::fcntl::{Flock, FlockArg};
-use xattr::FileExt;
+//! High-level workspace API. The workspace owns a [`Store`](crate::backend::Store)
+//! and exposes typed task / stack / remote operations on top of it.
 
 use crate::attrs::Attrs;
+use crate::backend::{self, Loc, Store};
 use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
 use crate::task::parse as parse_task;
-use crate::{fzf, git_store, util};
+use crate::{fzf, util};
 use std::collections::{BTreeMap, HashSet, vec_deque};
-use std::ffi::OsString;
 use std::fmt::Display;
-use std::fs::{File, remove_file};
-use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
-use std::ops::Deref;
-use std::os::unix::fs::symlink;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::str::FromStr;
-use std::{fs::OpenOptions, io::Write};
 
-const INDEXFILE: &str = "index";
-const TITLECACHEFILE: &str = "cache";
-const REMOTESFILE: &str = "remotes";
-const XATTRPREFIX: &str = "user.tsk.";
-const BACKREFXATTR: &str = "user.tsk.references";
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Id(pub u32);
 
 impl FromStr for Id {
     type Err = Error;
-
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let upper = s.to_uppercase();
         let s = upper
@@ -54,7 +42,6 @@ impl From<u32> for Id {
 }
 
 impl Id {
-    /// Returns the filename for a task with this id.
     pub fn filename(&self) -> String {
         format!("tsk-{}.tsk", self.0)
     }
@@ -72,12 +59,6 @@ impl From<Id> for TaskIdentifier {
     }
 }
 
-pub struct Workspace {
-    /// The path to the workspace root, excluding the .tsk directory. This should *contain* the
-    /// .tsk directory.
-    pub path: PathBuf,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Remote {
     pub prefix: String,
@@ -90,44 +71,49 @@ impl Display for Remote {
     }
 }
 
+pub struct Workspace {
+    /// The path to the .tsk marker directory.
+    pub path: PathBuf,
+    store: Box<dyn Store>,
+}
+
 impl Workspace {
     pub fn init(path: PathBuf) -> Result<()> {
-        // TODO: detect if in a git repo and add .tsk/ to `.git/info/exclude`
         let tsk_dir = path.join(".tsk");
         if tsk_dir.exists() {
             return Err(Error::AlreadyInitialized);
         }
         std::fs::create_dir(&tsk_dir)?;
-        // Create the tasks directory
-        std::fs::create_dir(tsk_dir.join("tasks"))?;
-        // Create the archive directory
-        std::fs::create_dir(tsk_dir.join("archive"))?;
-        let mut next = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(tsk_dir.join("next"))?;
-        // initialize the next file with ID 1
-        next.write_all(b"1\n")?;
-        // If we're inside a git repository, mark this workspace as git-backed so
-        // future mutations mirror state into refs/tsk/. Outside of git this is a
-        // no-op and the file-based store is the only persistence.
-        if let Some(git_dir) = git_store::detect_git_dir(&path) {
-            git_store::write_marker(&tsk_dir, &git_dir)?;
+        // If we're in a git repo, mark this workspace as git-backed and use refs
+        // for storage. Otherwise fall back to the file backend (tasks live under
+        // .tsk/).
+        if let Some(git_dir) = backend::detect_git_dir(&path) {
+            std::fs::write(
+                tsk_dir.join(backend::GIT_BACKED_MARKER),
+                git_dir.to_string_lossy().as_bytes(),
+            )?;
+            // GitStore is fully ref-based — no on-disk task data.
+        } else {
+            // Pre-create directory tree for the file backend.
+            std::fs::create_dir(tsk_dir.join("tasks"))?;
+            std::fs::create_dir(tsk_dir.join("archive"))?;
+            std::fs::write(tsk_dir.join("next"), b"1\n")?;
         }
         Ok(())
     }
 
-    /// Mirror the workspace into git refs if this workspace was initialized
-    /// inside a git repository. No-op otherwise.
-    pub fn sync_git(&self) -> Result<()> {
-        git_store::sync(&self.path)
-    }
-
     pub fn from_path(path: PathBuf) -> Result<Self> {
         let tsk_dir = util::find_parent_with_dir(path, ".tsk")?.ok_or(Error::Uninitialized)?;
-        Ok(Self { path: tsk_dir })
+        let store = backend::store_for(&tsk_dir)?;
+        Ok(Self { path: tsk_dir, store })
+    }
+
+    pub fn store(&self) -> &dyn Store {
+        self.store.as_ref()
+    }
+
+    pub fn is_git_backed(&self) -> bool {
+        self.path.join(backend::GIT_BACKED_MARKER).exists()
     }
 
     fn resolve(&self, identifier: TaskIdentifier) -> Result<Id> {
@@ -138,84 +124,68 @@ impl Workspace {
                 let stack_item = stack.get(r as usize).ok_or(Error::NoTasks)?;
                 Ok(stack_item.id)
             }
-            TaskIdentifier::Find {
-                exclude_body,
-                archived,
-            } => self
+            TaskIdentifier::Find { exclude_body, archived } => self
                 .search(None, !exclude_body, archived)?
                 .ok_or(Error::NotSelected),
         }
     }
 
-    /// Increments the `next` counter and returns the previous value.
     pub fn next_id(&self) -> Result<Id> {
-        let mut file = util::flopen(self.path.join("next"), FlockArg::LockExclusive)?;
-        let mut buf = String::new();
-        file.read_to_string(&mut buf)?;
-        let id = buf.trim().parse::<u32>()?;
-        // reset the files contents
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        // store the *next* if
-        file.write_all(format!("{}\n", id + 1).as_bytes())?;
-        Ok(Id(id))
+        backend::next_id(self.store())
     }
 
     pub fn new_task(&self, title: String, body: String) -> Result<Task> {
-        // WARN: we could improperly increment the id if the task is not written to disk/errors.
-        // But who cares
         let id = self.next_id()?;
-        let task_name = format!("tsk-{}.tsk", id.0);
-        // the task goes in the archive first
-        let task_path = self.path.join("archive").join(&task_name);
-        let mut file = util::flopen(task_path.clone(), FlockArg::LockExclusive)?;
-        file.write_all(format!("{title}\n\n{body}").as_bytes())?;
-        // create a hardlink to the task dir to mark it as "open"
-        symlink(
-            PathBuf::from("../archive").join(&task_name),
-            self.path.join("tasks").join(task_name),
-        )?;
-        Ok(Task {
-            id,
-            title,
-            body,
-            file,
-            attributes: Default::default(),
-        })
+        backend::write_task(self.store(), id, &title, &body, Loc::Active)?;
+        Ok(Task { id, title, body, attributes: Default::default() })
     }
 
     pub fn task(&self, identifier: TaskIdentifier) -> Result<Task> {
         let id = self.resolve(identifier)?;
-
-        let file = util::flopen(
-            self.path.join("tasks").join(format!("tsk-{}.tsk", id.0)),
-            FlockArg::LockExclusive,
-        )?;
-        let mut title = String::new();
-        let mut body = String::new();
-        let mut reader = BufReader::new(&*file);
-        reader.read_line(&mut title)?;
-        reader.read_to_string(&mut body)?;
-        drop(reader);
-        let mut read_attributes = BTreeMap::new();
-        if let Ok(attrs) = file.list_xattr() {
-            for attr in attrs {
-                if let Some((key, value)) = Self::read_xattr(&file, attr) {
-                    read_attributes.insert(key, value);
-                }
-            }
-        }
+        let (title, body, _loc) = backend::read_task(self.store(), id)?
+            .ok_or_else(|| Error::Parse(format!("Task {id} not found")))?;
+        let attrs_map = backend::read_attrs(self.store(), id)?;
         Ok(Task {
             id,
-            file,
-            title: title.trim().to_string(),
-            body: body.trim().to_string(),
-            attributes: Attrs::from_written(read_attributes),
+            title,
+            body,
+            attributes: Attrs::from_written(attrs_map),
         })
     }
 
+    pub fn save_task(&self, task: &Task) -> Result<()> {
+        let loc = match backend::task_location(self.store(), task.id)? {
+            Some(l) => l,
+            None => Loc::Active,
+        };
+        backend::write_task(self.store(), task.id, &task.title, &task.body, loc)?;
+        // Persist any modified attrs.
+        let mut combined: BTreeMap<String, String> = task.attributes.written.clone();
+        for (k, v) in task.attributes.updated.iter() {
+            combined.insert(k.clone(), v.clone());
+        }
+        backend::write_attrs(self.store(), task.id, &combined)?;
+        // After editing, refresh stack title for this id.
+        self.update_stack_title(task.id, &task.title)?;
+        Ok(())
+    }
+
+    fn update_stack_title(&self, id: Id, title: &str) -> Result<()> {
+        let mut stack = self.read_stack()?;
+        let mut changed = false;
+        for item in stack.all.iter_mut() {
+            if item.id == id {
+                item.title = title.replace('\t', " ");
+                changed = true;
+            }
+        }
+        if changed {
+            stack.save(self.store())?;
+        }
+        Ok(())
+    }
+
     pub fn handle_metadata(&self, tsk: &Task, pre_links: Option<HashSet<Id>>) -> Result<()> {
-        // Parse the task and update any backlinks
         if let Some(parsed_task) = parse_task(&tsk.to_string()) {
             let internal_links = parsed_task.intenal_links();
             for link in &internal_links {
@@ -232,130 +202,78 @@ impl Workspace {
     }
 
     fn add_backlink(&self, to: Id, from: Id) -> Result<()> {
-        let to_task = self.task(TaskIdentifier::Id(to))?;
-        let (_, current_backlinks_text) =
-            Self::read_xattr(&to_task.file, BACKREFXATTR.into()).unwrap_or_default();
-        let mut backlinks: HashSet<Id> = current_backlinks_text
-            .split(',')
-            .filter_map(|s| Id::from_str(s).ok())
-            .collect();
-        backlinks.insert(from);
-        Self::set_xattr(
-            &to_task.file,
-            BACKREFXATTR,
-            &itertools::join(backlinks, ","),
-        )
+        let mut links = backend::read_backlinks(self.store(), to)?;
+        links.insert(from);
+        backend::write_backlinks(self.store(), to, &links)
     }
 
     fn remove_backlink(&self, to: Id, from: Id) -> Result<()> {
-        let to_task = self.task(TaskIdentifier::Id(to))?;
-        let (_, current_backlinks_text) =
-            Self::read_xattr(&to_task.file, BACKREFXATTR.into()).unwrap_or_default();
-        let mut backlinks: HashSet<Id> = current_backlinks_text
-            .split(',')
-            .filter_map(|s| Id::from_str(s).ok())
-            .collect();
-        backlinks.remove(&from);
-        Self::set_xattr(
-            &to_task.file,
-            BACKREFXATTR,
-            &itertools::join(backlinks, ","),
-        )
-    }
-
-    /// Reads an xattr from a file, stripping the prefix for
-    fn read_xattr<D: Deref<Target = File>>(file: &D, key: OsString) -> Option<(String, String)> {
-        // this *shouldn't* allocate, but it does O(n) scan the str for UTF-8 correctness
-        let parsedkey = key.as_os_str().to_str()?.strip_prefix(XATTRPREFIX)?;
-        let valuebytes = file.get_xattr(&key).ok().flatten()?;
-        Some((parsedkey.to_string(), String::from_utf8(valuebytes).ok()?))
-    }
-
-    fn set_xattr<D: Deref<Target = File>>(file: &D, key: &str, value: &str) -> Result<()> {
-        let key = if !key.starts_with(XATTRPREFIX) {
-            format!("{XATTRPREFIX}.{key}")
-        } else {
-            key.to_string()
-        };
-        Ok(file.set_xattr(key, value.as_bytes())?)
+        let mut links = backend::read_backlinks(self.store(), to)?;
+        links.remove(&from);
+        backend::write_backlinks(self.store(), to, &links)
     }
 
     pub fn read_stack(&self) -> Result<TaskStack> {
-        TaskStack::from_tskdir(&self.path)
+        TaskStack::load(self.store())
     }
 
     pub fn push_task(&self, task: Task) -> Result<()> {
-        let mut stack = TaskStack::from_tskdir(&self.path)?;
-        stack.push(task.try_into()?);
-        stack.save()?;
-        Ok(())
+        let mut stack = self.read_stack()?;
+        stack.push((&task).into());
+        stack.save(self.store())
     }
 
     pub fn append_task(&self, task: Task) -> Result<()> {
-        let mut stack = TaskStack::from_tskdir(&self.path)?;
-        stack.push_back(task.try_into()?);
-        stack.save()?;
-        Ok(())
+        let mut stack = self.read_stack()?;
+        stack.push_back((&task).into());
+        stack.save(self.store())
     }
 
     pub fn swap_top(&self) -> Result<()> {
-        let mut stack = TaskStack::from_tskdir(&self.path)?;
+        let mut stack = self.read_stack()?;
         stack.swap();
-        stack.save()?;
-        Ok(())
+        stack.save(self.store())
     }
 
     pub fn rot(&self) -> Result<()> {
-        let mut stack = TaskStack::from_tskdir(&self.path)?;
-        let top = stack.pop();
-        let second = stack.pop();
-        let third = stack.pop();
-
-        if top.is_none() || second.is_none() || third.is_none() {
-            return Ok(());
+        let mut stack = self.read_stack()?;
+        let (a, b, c) = (stack.pop(), stack.pop(), stack.pop());
+        if let (Some(a), Some(b), Some(c)) = (a, b, c) {
+            stack.push(b);
+            stack.push(a);
+            stack.push(c);
+            stack.save(self.store())?;
         }
-
-        // unwrap is ok here because we checked above
-        stack.push(second.unwrap());
-        stack.push(top.unwrap());
-        stack.push(third.unwrap());
-        stack.save()?;
         Ok(())
     }
 
-    /// The inverse of tor. Pushes the top item behind the second item, shifting #2 and #3 to #1
-    /// and #2 respectively.
     pub fn tor(&self) -> Result<()> {
-        let mut stack = TaskStack::from_tskdir(&self.path)?;
-        let top = stack.pop();
-        let second = stack.pop();
-        let third = stack.pop();
-
-        if top.is_none() || second.is_none() || third.is_none() {
-            return Ok(());
+        let mut stack = self.read_stack()?;
+        let (a, b, c) = (stack.pop(), stack.pop(), stack.pop());
+        if let (Some(a), Some(b), Some(c)) = (a, b, c) {
+            stack.push(a);
+            stack.push(c);
+            stack.push(b);
+            stack.save(self.store())?;
         }
-
-        stack.push(top.unwrap());
-        stack.push(third.unwrap());
-        stack.push(second.unwrap());
-        stack.save()?;
         Ok(())
     }
 
     pub fn drop(&self, identifier: TaskIdentifier) -> Result<Option<Id>> {
         let id = self.resolve(identifier)?;
         let mut stack = self.read_stack()?;
-        let index = &stack.iter().map(|i| i.id).position(|i| i == id);
-        // TODO: remove the softlink in .tsk/tasks
-        let task = if let Some(index) = index {
-            let prioritized_task = stack.remove(*index);
-            stack.save()?;
-            prioritized_task.map(|t| t.id)
+        let removed = if let Some(idx) = stack.position(id) {
+            let item = stack.remove(idx);
+            stack.save(self.store())?;
+            item.map(|t| t.id)
         } else {
             None
         };
-        remove_file(self.path.join("tasks").join(format!("{id}.tsk")))?;
-        Ok(task)
+        // Move the task content to the archive bucket.
+        if backend::task_location(self.store(), id)? == Some(Loc::Active) {
+            backend::move_task(self.store(), id, Loc::Archived)?;
+        }
+        Ok(removed)
     }
 
     pub fn search(
@@ -370,44 +288,20 @@ impl Workspace {
             self.read_stack()?
         };
         if include_archived {
-            let archive_dir = self.path.join("archive");
-            let mut all_tasks: Vec<SearchTask> = stack
-                .into_iter()
-                .filter_map(|item| {
-                    self.task(TaskIdentifier::Id(item.id))
-                        .ok()
-                        .map(|t| t.bare())
-                })
-                .collect();
-            let mut indexed_ids: HashSet<Id> = HashSet::new();
-            for t in &all_tasks {
-                indexed_ids.insert(t.id);
+            let mut all_tasks: Vec<SearchTask> = Vec::new();
+            let mut seen: HashSet<Id> = HashSet::new();
+            for item in stack.iter() {
+                if let Ok(t) = self.task(TaskIdentifier::Id(item.id)) {
+                    seen.insert(t.id);
+                    all_tasks.push(t.bare());
+                }
             }
-            if archive_dir.exists() {
-                for entry in std::fs::read_dir(&archive_dir)? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if !path.is_file() {
-                        continue;
-                    }
-                    let filename = entry.file_name();
-                    let filename_str = filename.to_string_lossy();
-                    if let Some(id_str) = filename_str
-                        .strip_prefix("tsk-")
-                        .and_then(|s| s.strip_suffix(".tsk"))
-                    {
-                        if let Ok(id_num) = id_str.parse::<u32>() {
-                            let id = Id(id_num);
-                            if !indexed_ids.contains(&id) {
-                                if let Ok(contents) = std::fs::read_to_string(&path) {
-                                    let mut lines = contents.splitn(2, '\n');
-                                    let title = lines.next().unwrap_or("").trim().to_string();
-                                    let body = lines.next().unwrap_or("").trim().to_string();
-                                    all_tasks.push(SearchTask { id, title, body });
-                                }
-                            }
-                        }
-                    }
+            for id in backend::list_archive(self.store())? {
+                if seen.contains(&id) {
+                    continue;
+                }
+                if let Some((title, body, _)) = backend::read_task(self.store(), id)? {
+                    all_tasks.push(SearchTask { id, title, body });
                 }
             }
             if search_body {
@@ -425,16 +319,10 @@ impl Workspace {
                     ],
                 )?)
             } else {
-                Ok(fzf::select::<_, Id, _>(
-                    all_tasks,
-                    ["--delimiter=\t", "--accept-nth=1"],
-                )?)
+                Ok(fzf::select::<_, Id, _>(all_tasks, ["--delimiter=\t", "--accept-nth=1"])?)
             }
         } else if search_body {
-            let loader = LazyTaskLoader {
-                files: stack.into_iter(),
-                workspace: self,
-            };
+            let loader = LazyTaskLoader { items: stack.into_iter(), workspace: self };
             Ok(fzf::select::<_, Id, _>(
                 loader,
                 [
@@ -449,22 +337,17 @@ impl Workspace {
                 ],
             )?)
         } else {
-            Ok(fzf::select::<_, Id, _>(
-                stack,
-                ["--delimiter=\t", "--accept-nth=1"],
-            )?)
+            Ok(fzf::select::<_, Id, _>(stack, ["--delimiter=\t", "--accept-nth=1"])?)
         }
     }
 
     pub fn prioritize(&self, identifier: TaskIdentifier) -> Result<()> {
         let id = self.resolve(identifier)?;
         let mut stack = self.read_stack()?;
-        let index = &stack.iter().map(|i| i.id).position(|i| i == id);
-        if let Some(index) = index {
-            let prioritized_task = stack.remove(*index);
-            // unwrap here is safe because we just searched for the index and know it exists
-            stack.push(prioritized_task.unwrap());
-            stack.save()?;
+        if let Some(idx) = stack.position(id) {
+            let task = stack.remove(idx).unwrap();
+            stack.push(task);
+            stack.save(self.store())?;
         }
         Ok(())
     }
@@ -472,71 +355,30 @@ impl Workspace {
     pub fn deprioritize(&self, identifier: TaskIdentifier) -> Result<()> {
         let id = self.resolve(identifier)?;
         let mut stack = self.read_stack()?;
-        let index = &stack.iter().map(|i| i.id).position(|i| i == id);
-        if let Some(index) = index {
-            let deprioritized_task = stack.remove(*index);
-            // unwrap here is safe because we just searched for the index and know it exists
-            stack.push_back(deprioritized_task.unwrap());
-            stack.save()?;
+        if let Some(idx) = stack.position(id) {
+            let task = stack.remove(idx).unwrap();
+            stack.push_back(task);
+            stack.save(self.store())?;
         }
         Ok(())
     }
 
+    /// Remove "active" task entries that aren't in the index.
     pub fn clean(&self) -> Result<()> {
         let stack = self.read_stack()?;
-        let indexed_ids: HashSet<Id> = stack.iter().map(|item| item.id).collect();
-
-        let tasks_dir = self.path.join("tasks");
-        if !tasks_dir.exists() {
-            return Ok(());
-        }
-
-        for entry in std::fs::read_dir(&tasks_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let filename = entry.file_name();
-            let filename_str = filename.to_string_lossy();
-            if let Some(id_str) = filename_str
-                .strip_prefix("tsk-")
-                .and_then(|s| s.strip_suffix(".tsk"))
-            {
-                if let Ok(id_num) = id_str.parse::<u32>() {
-                    let id = Id(id_num);
-                    if !indexed_ids.contains(&id) {
-                        remove_file(&path)?;
-                        eprintln!("Removed orphaned task: {id}");
-                    }
-                }
+        let indexed: HashSet<Id> = stack.iter().map(|i| i.id).collect();
+        for id in backend::list_active(self.store())? {
+            if !indexed.contains(&id) {
+                // Move orphan to archive rather than delete, to avoid data loss.
+                backend::move_task(self.store(), id, Loc::Archived)?;
+                eprintln!("Removed orphaned task: {id}");
             }
         }
         Ok(())
     }
 
     pub fn read_remotes(&self) -> Result<Vec<Remote>> {
-        let remotes_path = self.path.join(REMOTESFILE);
-        if !remotes_path.exists() {
-            return Ok(Vec::new());
-        }
-        let file = util::flopen(remotes_path, FlockArg::LockShared)?;
-        let reader = BufReader::new(&*file);
-        let mut remotes = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((prefix, path)) = line.split_once('\t') {
-                remotes.push(Remote {
-                    prefix: prefix.trim().to_string(),
-                    path: PathBuf::from(path.trim()),
-                });
-            }
-        }
-        Ok(remotes)
+        backend::read_remotes(self.store())
     }
 
     pub fn add_remote(&self, prefix: &str, path: &str) -> Result<()> {
@@ -548,7 +390,7 @@ impl Workspace {
             prefix: prefix.to_string(),
             path: PathBuf::from(path),
         });
-        self.write_remotes(&remotes)
+        backend::write_remotes(self.store(), &remotes)
     }
 
     pub fn remove_remote(&self, prefix: &str) -> Result<()> {
@@ -558,20 +400,7 @@ impl Workspace {
         if new_remotes.len() == len {
             return Err(Error::Parse(format!("Remote '{prefix}' not found")));
         }
-        self.write_remotes(&new_remotes)
-    }
-
-    fn write_remotes(&self, remotes: &[Remote]) -> Result<()> {
-        let remotes_path = self.path.join(REMOTESFILE);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(remotes_path)?;
-        for remote in remotes {
-            writeln!(file, "{}\t{}", remote.prefix, remote.path.display())?;
-        }
-        Ok(())
+        backend::write_remotes(self.store(), &new_remotes)
     }
 
     pub fn resolve_foreign_link(&self, prefix: &str, id: u32) -> Result<Option<Task>> {
@@ -587,30 +416,21 @@ impl Workspace {
 
     pub fn reopen(&self, identifier: TaskIdentifier) -> Result<Id> {
         let id = self.resolve(identifier)?;
-        let archive_path = self.path.join("archive").join(id.filename());
-        if !archive_path.exists() {
-            return Err(Error::Parse(format!("Task {id} not found in archive")));
+        match backend::task_location(self.store(), id)? {
+            None => return Err(Error::Parse(format!("Task {id} not found in archive"))),
+            Some(Loc::Active) => return Err(Error::Parse(format!("Task {id} is already open"))),
+            Some(Loc::Archived) => {}
         }
-        let tasks_path = self.path.join("tasks").join(id.filename());
-        if tasks_path.exists() {
-            return Err(Error::Parse(format!("Task {id} is already open")));
-        }
-        symlink(PathBuf::from("../archive").join(id.filename()), &tasks_path)?;
+        backend::move_task(self.store(), id, Loc::Active)?;
+        let (title, _, _) = backend::read_task(self.store(), id)?
+            .ok_or_else(|| Error::Parse(format!("Task {id} content missing after move")))?;
         let mut stack = self.read_stack()?;
-        let title = std::fs::read_to_string(&archive_path)?
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let modify_time = std::fs::metadata(&archive_path)?.modified()?;
-        let stack_item = StackItem {
+        stack.push(StackItem {
             id,
             title: title.replace('\t', " "),
-            modify_time,
-        };
-        stack.push(stack_item);
-        stack.save()?;
+            modify_time: std::time::SystemTime::now(),
+        });
+        stack.save(self.store())?;
         Ok(id)
     }
 }
@@ -619,7 +439,6 @@ pub struct Task {
     pub id: Id,
     pub title: String,
     pub body: String,
-    pub file: Flock<File>,
     pub attributes: Attrs,
 }
 
@@ -630,27 +449,11 @@ impl Display for Task {
 }
 
 impl Task {
-    /// Consumes a task and saves it to disk.
-    pub fn save(mut self) -> Result<()> {
-        self.file.set_len(0)?;
-        self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(self.title.trim().as_bytes())?;
-        self.file.write_all(b"\n\n")?;
-        self.file.write_all(self.body.trim().as_bytes())?;
-        Ok(())
-    }
-
-    /// Returns a [`SearchTas`] which is plain task data with no file or attrs
     fn bare(self) -> SearchTask {
-        SearchTask {
-            id: self.id,
-            title: self.title,
-            body: self.body,
-        }
+        SearchTask { id: self.id, title: self.title, body: self.body }
     }
 }
 
-/// A task container without a file handle
 pub struct SearchTask {
     pub id: Id,
     pub title: String,
@@ -668,396 +471,240 @@ impl Display for SearchTask {
 }
 
 struct LazyTaskLoader<'a> {
-    files: vec_deque::IntoIter<StackItem>,
+    items: vec_deque::IntoIter<StackItem>,
     workspace: &'a Workspace,
 }
 
 impl Iterator for LazyTaskLoader<'_> {
     type Item = SearchTask;
-
     fn next(&mut self) -> Option<Self::Item> {
-        let stack_item = self.files.next()?;
-        let task = self
-            .workspace
-            .task(TaskIdentifier::Id(stack_item.id))
-            .ok()?;
+        let item = self.items.next()?;
+        let task = self.workspace.task(TaskIdentifier::Id(item.id)).ok()?;
         Some(task.bare())
-    }
-}
-
-fn select_task(input: impl IntoIterator<Item = SearchTask>) -> Result<Option<Id>> {
-    let mut child = Command::new("cat")
-        .stderr(Stdio::inherit())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    let child_in = child.stdin.as_mut().unwrap();
-    for item in input.into_iter() {
-        writeln!(child_in, "{item}\0")?;
-    }
-    let output = child.wait_with_output()?;
-    if output.stdout.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(String::from_utf8(output.stdout)?.parse()?))
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::fs;
 
-    fn setup_test_workspace() -> (tempfile::TempDir, Workspace) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().to_path_buf();
-        Workspace::init(path.clone()).unwrap();
-        let workspace = Workspace::from_path(path.clone()).unwrap();
-        (dir, workspace)
-    }
-
-    #[test]
-    fn test_bare_task_display() {
-        let task = SearchTask {
-            id: Id(123),
-            title: "Hello, world".to_string(),
-            body: "The body of the task.\nAnother line is here.".to_string(),
-        };
-        assert_eq!(
-            "tsk-123\tHello, world\n\nThe body of the task.\nAnother line is here.",
-            task.to_string()
-        );
-    }
-
-    #[test]
-    fn test_task_display() {
-        let task = Task {
-            id: Id(123),
-            title: "Hello, world".to_string(),
-            body: "The body of the task.".to_string(),
-            file: util::flopen("/dev/null".into(), FlockArg::LockShared).unwrap(),
-            attributes: Default::default(),
-        };
-        assert_eq!("Hello, world\n\nThe body of the task.", task.to_string());
-    }
-
-    #[test]
-    fn test_clean_removes_orphaned_tasks() {
-        let (_dir, workspace) = setup_test_workspace();
-
-        {
-            let ws = Workspace::from_path(workspace.path.clone()).unwrap();
-            let task1 = ws
-                .new_task("Task one".to_string(), "body1".to_string())
-                .unwrap();
-            ws.push_task(task1).unwrap();
-
-            let task2 = ws
-                .new_task("Task two".to_string(), "body2".to_string())
-                .unwrap();
-            ws.push_task(task2).unwrap();
-        }
-
-        let stack_count = {
-            let stack = workspace.read_stack().unwrap();
-            stack.iter().count()
-        };
-        assert_eq!(stack_count, 2);
-
-        let tasks_dir = workspace.path.join("tasks");
-        let task_files: Vec<_> = fs::read_dir(&tasks_dir)
-            .unwrap()
-            .filter(|e| e.as_ref().unwrap().path().is_file())
-            .collect();
-        assert_eq!(task_files.len(), 2);
-
-        // Manually create an orphaned task file (not in the index) to simulate corruption
-        let orphan_path = tasks_dir.join("tsk-999.tsk");
-        fs::write(&orphan_path, "orphan\n\nbody").unwrap();
-
-        let task_files_with_orphan: Vec<_> = fs::read_dir(&tasks_dir)
-            .unwrap()
-            .filter(|e| e.as_ref().unwrap().path().is_file())
-            .collect();
-        assert_eq!(
-            task_files_with_orphan.len(),
-            3,
-            "orphaned symlink should exist"
-        );
-
-        workspace.clean().unwrap();
-
-        let task_files_cleaned: Vec<_> = fs::read_dir(&tasks_dir)
-            .unwrap()
-            .filter(|e| e.as_ref().unwrap().path().is_file())
-            .collect();
-        assert_eq!(
-            task_files_cleaned.len(),
-            2,
-            "clean should remove orphaned task"
-        );
-    }
-
-    #[test]
-    fn test_clean_does_nothing_when_no_orphans() {
-        let (_dir, workspace) = setup_test_workspace();
-        let ws = Workspace::from_path(workspace.path.clone()).unwrap();
-
-        let task = ws
-            .new_task("Only task".to_string(), "body".to_string())
+    fn run_git_init(dir: &std::path::Path) {
+        let s = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
             .unwrap();
-        ws.push_task(task).unwrap();
-
-        workspace.clean().unwrap();
-
-        let tasks_dir = workspace.path.join("tasks");
-        let task_files: Vec<_> = fs::read_dir(&tasks_dir)
-            .unwrap()
-            .filter(|e| e.as_ref().unwrap().path().is_file())
-            .collect();
-        assert_eq!(task_files.len(), 1);
+        assert!(s.success());
     }
 
-    #[test]
-    fn test_remote_add_and_list() {
-        let (_dir, workspace) = setup_test_workspace();
+    /// Create both a file-backed and a git-backed workspace for the same test.
+    fn setup_dual() -> (tempfile::TempDir, Workspace, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        let file_root = dir.path().join("file");
+        let git_root = dir.path().join("git");
+        std::fs::create_dir_all(&file_root).unwrap();
+        std::fs::create_dir_all(&git_root).unwrap();
+        run_git_init(&git_root);
+        Workspace::init(file_root.clone()).unwrap();
+        Workspace::init(git_root.clone()).unwrap();
+        let f = Workspace::from_path(file_root).unwrap();
+        let g = Workspace::from_path(git_root).unwrap();
+        assert!(!f.is_git_backed(), "file workspace should not be git-backed");
+        assert!(g.is_git_backed(), "git workspace should be git-backed");
+        (dir, f, g)
+    }
 
-        let remotes = workspace.read_remotes().unwrap();
-        assert!(remotes.is_empty());
+    fn run_full_lifecycle(ws: &Workspace) {
+        // Push two tasks, drop one, verify state.
+        let t1 = ws.new_task("First".to_string(), "body one".to_string()).unwrap();
+        let id1 = t1.id;
+        ws.push_task(t1).unwrap();
+        let t2 = ws.new_task("Second".to_string(), "body two".to_string()).unwrap();
+        let id2 = t2.id;
+        ws.push_task(t2).unwrap();
 
-        workspace.add_remote("jira", "/path/to/jira").unwrap();
+        let stack = ws.read_stack().unwrap();
+        assert_eq!(stack.iter().count(), 2);
+        assert_eq!(stack.iter().next().unwrap().id, id2, "newest on top");
 
-        let remotes = workspace.read_remotes().unwrap();
+        // Read back the task content.
+        let read = ws.task(TaskIdentifier::Id(id1)).unwrap();
+        assert_eq!(read.title, "First");
+        assert_eq!(read.body, "body one");
+
+        // Drop top.
+        ws.drop(TaskIdentifier::Id(id2)).unwrap();
+        let stack = ws.read_stack().unwrap();
+        assert_eq!(stack.iter().count(), 1);
+        assert_eq!(stack.iter().next().unwrap().id, id1);
+
+        // Reopen.
+        ws.reopen(TaskIdentifier::Id(id2)).unwrap();
+        let stack = ws.read_stack().unwrap();
+        assert_eq!(stack.iter().count(), 2);
+
+        // Reopen non-archived fails.
+        assert!(ws.reopen(TaskIdentifier::Id(id1)).is_err());
+
+        // Edit and save.
+        let mut t = ws.task(TaskIdentifier::Id(id1)).unwrap();
+        t.title = "First (edited)".into();
+        t.body = "new body".into();
+        ws.save_task(&t).unwrap();
+        let read = ws.task(TaskIdentifier::Id(id1)).unwrap();
+        assert_eq!(read.title, "First (edited)");
+        let stack = ws.read_stack().unwrap();
+        let item = stack.iter().find(|i| i.id == id1).unwrap();
+        assert_eq!(item.title, "First (edited)", "stack title should refresh on save");
+
+        // Remotes.
+        ws.add_remote("up", "/path").unwrap();
+        let remotes = ws.read_remotes().unwrap();
         assert_eq!(remotes.len(), 1);
-        assert_eq!(remotes[0].prefix, "jira");
-        assert_eq!(remotes[0].path, PathBuf::from("/path/to/jira"));
+        ws.remove_remote("up").unwrap();
+        assert!(ws.read_remotes().unwrap().is_empty());
 
-        workspace.add_remote("gl", "/path/to/gitlab").unwrap();
-
-        let remotes = workspace.read_remotes().unwrap();
-        assert_eq!(remotes.len(), 2);
+        // Backlinks.
+        ws.handle_metadata(
+            &Task {
+                id: id1,
+                title: "x".into(),
+                body: format!("see [[{id2}]]"),
+                attributes: Default::default(),
+            },
+            None,
+        )
+        .unwrap();
+        let bl = backend::read_backlinks(ws.store(), id2).unwrap();
+        assert!(bl.contains(&id1));
     }
 
     #[test]
-    fn test_remote_add_duplicate_fails() {
-        let (_dir, workspace) = setup_test_workspace();
-
-        workspace.add_remote("jira", "/path/to/jira").unwrap();
-
-        let result = workspace.add_remote("jira", "/other/path");
-        assert!(result.is_err());
+    fn test_full_lifecycle_file_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        Workspace::init(dir.path().to_path_buf()).unwrap();
+        let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
+        assert!(!ws.is_git_backed());
+        run_full_lifecycle(&ws);
     }
 
     #[test]
-    fn test_remote_remove() {
-        let (_dir, workspace) = setup_test_workspace();
-
-        workspace.add_remote("jira", "/path/to/jira").unwrap();
-        workspace.add_remote("gl", "/path/to/gl").unwrap();
-
-        workspace.remove_remote("jira").unwrap();
-
-        let remotes = workspace.read_remotes().unwrap();
-        assert_eq!(remotes.len(), 1);
-        assert_eq!(remotes[0].prefix, "gl");
+    fn test_full_lifecycle_git_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git_init(dir.path());
+        Workspace::init(dir.path().to_path_buf()).unwrap();
+        let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
+        assert!(ws.is_git_backed());
+        run_full_lifecycle(&ws);
     }
 
     #[test]
-    fn test_remote_remove_nonexistent_fails() {
-        let (_dir, workspace) = setup_test_workspace();
+    fn test_init_picks_backend_correctly() {
+        let (_d, f, g) = setup_dual();
+        assert!(!f.is_git_backed());
+        assert!(g.is_git_backed());
+    }
 
-        let result = workspace.remove_remote("nonexistent");
-        assert!(result.is_err());
+    #[test]
+    fn test_clean_archives_orphaned_tasks() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            // Push a task, then directly orphan it in the store.
+            let t = ws.new_task("Indexed".into(), "ok".into()).unwrap();
+            ws.push_task(t).unwrap();
+            // Write an unindexed task directly to the store.
+            backend::write_task(ws.store(), Id(999), "orphan", "", Loc::Active).unwrap();
+
+            let active_before = backend::list_active(ws.store()).unwrap();
+            assert!(active_before.contains(&Id(999)));
+            ws.clean().unwrap();
+            let active_after = backend::list_active(ws.store()).unwrap();
+            assert!(!active_after.contains(&Id(999)));
+            let archived = backend::list_archive(ws.store()).unwrap();
+            assert!(archived.contains(&Id(999)));
+        }
     }
 
     #[test]
     fn test_remote_persistence() {
-        let (_dir, workspace) = setup_test_workspace();
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            ws.add_remote("a", "/x").unwrap();
+            ws.add_remote("b", "/y").unwrap();
+            let ws2 = Workspace::from_path(ws.path.clone()).unwrap();
+            assert_eq!(ws2.read_remotes().unwrap().len(), 2);
+            assert!(ws.add_remote("a", "/z").is_err());
+            assert!(ws.remove_remote("nope").is_err());
+            ws.remove_remote("a").unwrap();
+            assert_eq!(ws.read_remotes().unwrap().len(), 1);
+        }
+    }
 
-        workspace.add_remote("jira", "/path/to/jira").unwrap();
-        workspace.add_remote("gl", "/path/to/gl").unwrap();
+    #[test]
+    fn test_search_archived_round_trip() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            let t = ws.new_task("Archived".into(), "a".into()).unwrap();
+            let id = t.id;
+            ws.push_task(t).unwrap();
+            ws.drop(TaskIdentifier::Id(id)).unwrap();
+            assert_eq!(backend::task_location(ws.store(), id).unwrap(), Some(Loc::Archived));
+        }
+    }
 
-        let workspace2 = Workspace::from_path(workspace.path.clone()).unwrap();
-        let remotes = workspace2.read_remotes().unwrap();
-        assert_eq!(remotes.len(), 2);
-        assert_eq!(remotes[0].prefix, "jira");
-        assert_eq!(remotes[1].prefix, "gl");
+    #[test]
+    fn test_rot_tor_swap() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            let mut ids = Vec::new();
+            for n in 0..3 {
+                let t = ws.new_task(format!("t{n}"), "".into()).unwrap();
+                ids.push(t.id);
+                ws.push_task(t).unwrap();
+            }
+            // Stack now: [ids[2], ids[1], ids[0]]
+            ws.swap_top().unwrap();
+            let s = ws.read_stack().unwrap();
+            let order: Vec<_> = s.iter().map(|i| i.id).collect();
+            assert_eq!(order, vec![ids[1], ids[2], ids[0]]);
+            ws.swap_top().unwrap(); // back
+            ws.rot().unwrap();
+            ws.tor().unwrap();
+            let s = ws.read_stack().unwrap();
+            let order: Vec<_> = s.iter().map(|i| i.id).collect();
+            assert_eq!(order, vec![ids[2], ids[1], ids[0]], "rot then tor is identity");
+        }
     }
 
     #[test]
     fn test_remote_display() {
-        let remote = Remote {
-            prefix: "jira".to_string(),
-            path: PathBuf::from("/path/to/jira"),
-        };
-        assert_eq!("jira\t/path/to/jira", remote.to_string());
+        let r = Remote { prefix: "jira".into(), path: PathBuf::from("/p") };
+        assert_eq!(r.to_string(), "jira\t/p");
     }
 
     #[test]
-    fn test_git_setup_exclude() {
-        let (_dir, workspace) = setup_test_workspace();
-        let git_dir = workspace.path.join(".git");
-        let info_dir = git_dir.join("info");
-        fs::create_dir_all(&info_dir).unwrap();
-
-        let exclude_path = info_dir.join("exclude");
-        assert!(!exclude_path.exists());
-
-        let content = std::fs::read_to_string(&exclude_path).unwrap_or_default();
-        assert!(!content.contains(".tsk/"));
-
-        // Simulate git_setup logic
-        let mut file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&exclude_path)
-            .unwrap();
-        writeln!(file, ".tsk/").unwrap();
-
-        let content = std::fs::read_to_string(&exclude_path).unwrap();
-        assert!(content.contains(".tsk/"));
+    fn test_bare_task_display() {
+        let t = SearchTask { id: Id(1), title: "x".into(), body: "y".into() };
+        assert_eq!(t.to_string(), "tsk-1\tx\n\ny");
     }
 
     #[test]
-    fn test_git_setup_no_duplicate() {
-        let (_dir, workspace) = setup_test_workspace();
-        let git_dir = workspace.path.join(".git");
-        let info_dir = git_dir.join("info");
-        fs::create_dir_all(&info_dir).unwrap();
-
-        let exclude_path = info_dir.join("exclude");
-        fs::write(&exclude_path, ".tsk/\nother/").unwrap();
-
-        let content = std::fs::read_to_string(&exclude_path).unwrap();
-        let already_present = content.lines().any(|line| line.trim() == ".tsk/");
-        assert!(already_present);
+    fn test_task_display() {
+        let t = Task { id: Id(1), title: "x".into(), body: "y".into(), attributes: Default::default() };
+        assert_eq!(t.to_string(), "x\n\ny");
     }
 
     #[test]
-    fn test_reopen_archived_task() {
-        let (_dir, workspace) = setup_test_workspace();
-
-        let task_id = {
-            let ws = Workspace::from_path(workspace.path.clone()).unwrap();
-            let task = ws
-                .new_task("Task to reopen".to_string(), "body".to_string())
-                .unwrap();
-            let id = task.id;
-            ws.push_task(task).unwrap();
-            id
-        };
-
-        workspace.drop(TaskIdentifier::Id(task_id)).unwrap();
-
-        {
-            let stack_after_drop = workspace.read_stack().unwrap();
-            assert_eq!(stack_after_drop.iter().count(), 0);
+    fn test_attrs_round_trip() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            let mut t = ws.new_task("t".into(), "b".into()).unwrap();
+            t.attributes.insert("k1".into(), "v1".into());
+            t.attributes.insert("k2".into(), "v2".into());
+            ws.save_task(&t).unwrap();
+            let reread = ws.task(TaskIdentifier::Id(t.id)).unwrap();
+            assert_eq!(reread.attributes.get("k1"), Some(&"v1".to_string()));
+            assert_eq!(reread.attributes.get("k2"), Some(&"v2".to_string()));
         }
-
-        let tasks_dir = workspace.path.join("tasks");
-        let task_link = tasks_dir.join(task_id.filename());
-        assert!(!task_link.exists(), "symlink should be removed on drop");
-
-        workspace.reopen(TaskIdentifier::Id(task_id)).unwrap();
-
-        {
-            let stack_after_reopen = workspace.read_stack().unwrap();
-            assert_eq!(stack_after_reopen.iter().count(), 1);
-        }
-        assert!(task_link.exists(), "symlink should be recreated on reopen");
-    }
-
-    #[test]
-    fn test_reopen_nonexistent_task_fails() {
-        let (_dir, workspace) = setup_test_workspace();
-
-        let result = workspace.reopen(TaskIdentifier::Id(Id(999)));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_reopen_already_open_task_fails() {
-        let (_dir, workspace) = setup_test_workspace();
-
-        let task_id = {
-            let ws = Workspace::from_path(workspace.path.clone()).unwrap();
-            let task = ws
-                .new_task("Open task".to_string(), "body".to_string())
-                .unwrap();
-            let id = task.id;
-            ws.push_task(task).unwrap();
-            id
-        };
-
-        let result = workspace.reopen(TaskIdentifier::Id(task_id));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_search_archived_includes_dropped_tasks() {
-        let (_dir, workspace) = setup_test_workspace();
-
-        let task_id = {
-            let ws = Workspace::from_path(workspace.path.clone()).unwrap();
-            let task = ws
-                .new_task("Archived task".to_string(), "archived body".to_string())
-                .unwrap();
-            let id = task.id;
-            ws.push_task(task).unwrap();
-            id
-        };
-
-        let stack_count = {
-            let stack = workspace.read_stack().unwrap();
-            stack.iter().count()
-        };
-        assert_eq!(stack_count, 1);
-
-        workspace.drop(TaskIdentifier::Id(task_id)).unwrap();
-
-        let stack_after_drop = {
-            let stack = workspace.read_stack().unwrap();
-            stack.iter().count()
-        };
-        assert_eq!(stack_after_drop, 0);
-
-        let archive_dir = workspace.path.join("archive");
-        assert!(archive_dir.join(format!("tsk-{}.tsk", task_id.0)).exists());
-
-        let archive_tasks_dir = workspace.path.join("tasks");
-        assert!(
-            !archive_tasks_dir
-                .join(format!("tsk-{}.tsk", task_id.0))
-                .exists()
-        );
-
-        let archived_tasks: Vec<SearchTask> = std::fs::read_dir(&archive_dir)
-            .unwrap()
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if !path.is_file() {
-                    return None;
-                }
-                let filename = entry.file_name();
-                let filename_str = filename.to_string_lossy();
-                let id_str = filename_str
-                    .strip_prefix("tsk-")
-                    .and_then(|s| s.strip_suffix(".tsk"))?;
-                let id_num = id_str.parse::<u32>().ok()?;
-                let contents = std::fs::read_to_string(&path).ok()?;
-                let mut lines = contents.splitn(2, '\n');
-                let title = lines.next().unwrap_or("").trim().to_string();
-                let body = lines.next().unwrap_or("").trim().to_string();
-                Some(SearchTask {
-                    id: Id(id_num),
-                    title,
-                    body,
-                })
-            })
-            .collect();
-
-        assert_eq!(archived_tasks.len(), 1);
-        assert_eq!(archived_tasks[0].title, "Archived task");
     }
 }

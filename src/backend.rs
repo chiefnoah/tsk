@@ -1,0 +1,510 @@
+//! Storage backends for tsk workspaces.
+//!
+//! A [`Store`] is a logical key/value blob store. Two impls are provided:
+//!
+//! - [`FileStore`] keeps blobs as files under `.tsk/`. Used when `tsk init` runs
+//!   outside a git repository.
+//! - [`GitStore`] stores each blob as a git blob, addressed by a ref under
+//!   `refs/tsk/`. Used when `tsk init` runs inside a git repository — the git
+//!   refs are the only durable storage; nothing is cached on disk.
+//!
+//! Higher-level operations (tasks, attrs, backlinks, index, remotes) are
+//! implemented as free functions over `dyn Store` so both backends share a
+//! single implementation.
+
+use crate::errors::{Error, Result};
+use crate::workspace::{Id, Remote};
+use git2::{ObjectType, Oid, Repository};
+use std::collections::{BTreeMap, HashSet};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+pub const GIT_BACKED_MARKER: &str = "git-backed";
+const REF_PREFIX: &str = "refs/tsk";
+
+/// A logical blob store. Keys are forward-slash separated strings.
+pub trait Store: Send + Sync {
+    fn read(&self, key: &str) -> Result<Option<Vec<u8>>>;
+    fn write(&self, key: &str, data: &[u8]) -> Result<()>;
+    fn delete(&self, key: &str) -> Result<()>;
+    fn exists(&self, key: &str) -> Result<bool>;
+    /// List all keys with the given prefix (no trailing slash). Returns full keys.
+    fn list(&self, prefix: &str) -> Result<Vec<String>>;
+}
+
+// ─── FileStore ──────────────────────────────────────────────────────────────
+
+pub struct FileStore {
+    pub root: PathBuf,
+}
+
+impl FileStore {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn path(&self, key: &str) -> PathBuf {
+        self.root.join(key)
+    }
+}
+
+impl Store for FileStore {
+    fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let p = self.path(key);
+        match fs::read(&p) {
+            Ok(data) => Ok(Some(data)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn write(&self, key: &str, data: &[u8]) -> Result<()> {
+        let p = self.path(key);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp = p.with_extension("tmp");
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+        fs::rename(&tmp, &p)?;
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        match fs::remove_file(self.path(key)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn exists(&self, key: &str) -> Result<bool> {
+        Ok(self.path(key).exists())
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let dir = self.path(prefix);
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                out.push(format!("{prefix}/{name}"));
+            }
+        }
+        Ok(out)
+    }
+
+}
+
+// ─── GitStore ───────────────────────────────────────────────────────────────
+
+pub struct GitStore {
+    git_dir: PathBuf,
+}
+
+impl GitStore {
+    pub fn open(git_dir: PathBuf) -> Result<Self> {
+        // Validate by opening once.
+        Repository::open(&git_dir).map_err(|e| Error::Parse(format!("git open failed: {e}")))?;
+        Ok(Self { git_dir })
+    }
+
+    fn repo(&self) -> Result<Repository> {
+        Repository::open(&self.git_dir).map_err(|e| Error::Parse(format!("git open: {e}")))
+    }
+
+    fn refname(key: &str) -> String {
+        format!("{REF_PREFIX}/{key}")
+    }
+}
+
+fn read_blob(repo: &Repository, refname: &str) -> Result<Option<(Oid, Vec<u8>)>> {
+    let r = match repo.find_reference(refname) {
+        Ok(r) => r,
+        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(e) => return Err(Error::Parse(format!("find_reference {refname}: {e}"))),
+    };
+    let obj = r
+        .peel(ObjectType::Blob)
+        .map_err(|e| Error::Parse(format!("peel: {e}")))?;
+    let blob = obj.as_blob().ok_or_else(|| Error::Parse("not a blob".into()))?;
+    Ok(Some((obj.id(), blob.content().to_vec())))
+}
+
+impl Store for GitStore {
+    fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let repo = self.repo()?;
+        Ok(read_blob(&repo, &Self::refname(key))?.map(|(_, data)| data))
+    }
+
+    fn write(&self, key: &str, data: &[u8]) -> Result<()> {
+        let repo = self.repo()?;
+        let oid = repo
+            .blob(data)
+            .map_err(|e| Error::Parse(format!("blob write: {e}")))?;
+        repo.reference(&Self::refname(key), oid, true, "tsk write")
+            .map_err(|e| Error::Parse(format!("update ref: {e}")))?;
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        let repo = self.repo()?;
+        let refname = Self::refname(key);
+        match repo.find_reference(&refname) {
+            Ok(mut r) => {
+                r.delete()
+                    .map_err(|e| Error::Parse(format!("delete ref: {e}")))?;
+                Ok(())
+            }
+            Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(()),
+            Err(e) => Err(Error::Parse(format!("find_reference: {e}"))),
+        }
+    }
+
+    fn exists(&self, key: &str) -> Result<bool> {
+        let repo = self.repo()?;
+        match repo.find_reference(&Self::refname(key)) {
+            Ok(_) => Ok(true),
+            Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(false),
+            Err(e) => Err(Error::Parse(format!("find_reference: {e}"))),
+        }
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let repo = self.repo()?;
+        let glob = format!("{REF_PREFIX}/{prefix}/*");
+        let mut out = Vec::new();
+        let refs = repo
+            .references_glob(&glob)
+            .map_err(|e| Error::Parse(format!("references_glob: {e}")))?;
+        for r in refs {
+            let r = r.map_err(|e| Error::Parse(format!("ref iter: {e}")))?;
+            if let Some(name) = r.name()
+                && let Some(stripped) = name.strip_prefix(&format!("{REF_PREFIX}/"))
+            {
+                out.push(stripped.to_string());
+            }
+        }
+        Ok(out)
+    }
+
+}
+
+// ─── High-level operations over any Store ───────────────────────────────────
+
+pub fn next_id(store: &dyn Store) -> Result<Id> {
+    let cur = store
+        .read("next")?
+        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+        .unwrap_or_else(|| "1".to_string());
+    let id: u32 = cur.parse().unwrap_or(1);
+    store.write("next", format!("{}\n", id + 1).as_bytes())?;
+    Ok(Id(id))
+}
+
+fn task_key(id: Id, archived: bool) -> String {
+    let bucket = if archived { "archive" } else { "tasks" };
+    format!("{bucket}/{}", id.0)
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum Loc {
+    Active,
+    Archived,
+}
+
+pub fn task_location(store: &dyn Store, id: Id) -> Result<Option<Loc>> {
+    if store.exists(&task_key(id, false))? {
+        Ok(Some(Loc::Active))
+    } else if store.exists(&task_key(id, true))? {
+        Ok(Some(Loc::Archived))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn read_task(store: &dyn Store, id: Id) -> Result<Option<(String, String, Loc)>> {
+    for (loc, archived) in [(Loc::Active, false), (Loc::Archived, true)] {
+        if let Some(data) = store.read(&task_key(id, archived))? {
+            let text = String::from_utf8_lossy(&data);
+            let mut parts = text.splitn(2, '\n');
+            let title = parts.next().unwrap_or("").trim().to_string();
+            let body = parts.next().unwrap_or("").trim().to_string();
+            return Ok(Some((title, body, loc)));
+        }
+    }
+    Ok(None)
+}
+
+pub fn write_task(store: &dyn Store, id: Id, title: &str, body: &str, loc: Loc) -> Result<()> {
+    let payload = format!("{}\n\n{}", title.trim(), body.trim());
+    store.write(&task_key(id, loc == Loc::Archived), payload.as_bytes())?;
+    Ok(())
+}
+
+pub fn move_task(store: &dyn Store, id: Id, to: Loc) -> Result<()> {
+    let from_archived = to == Loc::Active;
+    let from_key = task_key(id, from_archived);
+    let to_key = task_key(id, to == Loc::Archived);
+    if from_key == to_key {
+        return Ok(());
+    }
+    let data = store.read(&from_key)?.ok_or_else(|| Error::Parse(format!("task {id} not present at {from_key}")))?;
+    store.write(&to_key, &data)?;
+    store.delete(&from_key)?;
+    Ok(())
+}
+
+pub fn list_active(store: &dyn Store) -> Result<Vec<Id>> {
+    list_bucket(store, "tasks")
+}
+
+pub fn list_archive(store: &dyn Store) -> Result<Vec<Id>> {
+    list_bucket(store, "archive")
+}
+
+fn list_bucket(store: &dyn Store, bucket: &str) -> Result<Vec<Id>> {
+    let mut ids = Vec::new();
+    for key in store.list(bucket)? {
+        if let Some(idstr) = key.strip_prefix(&format!("{bucket}/"))
+            && let Ok(n) = idstr.trim_end_matches(".tsk").parse::<u32>()
+        {
+            ids.push(Id(n));
+        }
+    }
+    ids.sort_by_key(|i| i.0);
+    Ok(ids)
+}
+
+pub fn read_attrs(store: &dyn Store, id: Id) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    if let Some(data) = store.read(&format!("attrs/{}", id.0))? {
+        for line in String::from_utf8_lossy(&data).lines() {
+            if let Some((k, v)) = line.split_once('\t') {
+                out.insert(k.to_string(), v.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn write_attrs(store: &dyn Store, id: Id, attrs: &BTreeMap<String, String>) -> Result<()> {
+    if attrs.is_empty() {
+        return store.delete(&format!("attrs/{}", id.0));
+    }
+    let mut buf = String::new();
+    for (k, v) in attrs {
+        buf.push_str(k);
+        buf.push('\t');
+        buf.push_str(v);
+        buf.push('\n');
+    }
+    store.write(&format!("attrs/{}", id.0), buf.as_bytes())
+}
+
+pub fn read_backlinks(store: &dyn Store, id: Id) -> Result<HashSet<Id>> {
+    let mut out = HashSet::new();
+    if let Some(data) = store.read(&format!("backlinks/{}", id.0))? {
+        for tok in String::from_utf8_lossy(&data).split(',') {
+            if let Ok(i) = Id::from_str(tok.trim()) {
+                out.insert(i);
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn write_backlinks(store: &dyn Store, id: Id, links: &HashSet<Id>) -> Result<()> {
+    if links.is_empty() {
+        return store.delete(&format!("backlinks/{}", id.0));
+    }
+    let joined = itertools::join(links, ",");
+    store.write(&format!("backlinks/{}", id.0), joined.as_bytes())
+}
+
+pub fn read_remotes(store: &dyn Store) -> Result<Vec<Remote>> {
+    let mut out = Vec::new();
+    if let Some(data) = store.read("remotes")? {
+        for line in String::from_utf8_lossy(&data).lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((prefix, path)) = line.split_once('\t') {
+                out.push(Remote {
+                    prefix: prefix.trim().to_string(),
+                    path: PathBuf::from(path.trim()),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn write_remotes(store: &dyn Store, remotes: &[Remote]) -> Result<()> {
+    if remotes.is_empty() {
+        return store.delete("remotes");
+    }
+    let mut buf = String::new();
+    for r in remotes {
+        buf.push_str(&format!("{}\t{}\n", r.prefix, r.path.display()));
+    }
+    store.write("remotes", buf.as_bytes())
+}
+
+// ─── Detection / construction ──────────────────────────────────────────────
+
+pub fn detect_git_dir(start: &Path) -> Option<PathBuf> {
+    crate::util::find_parent_with_dir(start.to_path_buf(), ".git")
+        .ok()
+        .flatten()
+}
+
+pub fn store_for(tsk_dir: &Path) -> Result<Box<dyn Store>> {
+    let marker = tsk_dir.join(GIT_BACKED_MARKER);
+    if marker.exists() {
+        let git_dir = fs::read_to_string(&marker)?.trim().to_string();
+        Ok(Box::new(GitStore::open(PathBuf::from(git_dir))?))
+    } else {
+        Ok(Box::new(FileStore::new(tsk_dir.to_path_buf())))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn run_git_init(dir: &Path) {
+        let s = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(s.success());
+    }
+
+    fn store_pair() -> (tempfile::TempDir, Box<dyn Store>, Box<dyn Store>) {
+        let dir = tempfile::tempdir().unwrap();
+        let file_root = dir.path().join("file");
+        let git_root = dir.path().join("git");
+        fs::create_dir_all(&file_root).unwrap();
+        fs::create_dir_all(&git_root).unwrap();
+        run_git_init(&git_root);
+        let f: Box<dyn Store> = Box::new(FileStore::new(file_root));
+        let g: Box<dyn Store> = Box::new(GitStore::open(git_root.join(".git")).unwrap());
+        (dir, f, g)
+    }
+
+    #[test]
+    fn test_basic_blob_ops_both_backends() {
+        let (_d, file, git) = store_pair();
+        for s in [file, git] {
+            assert_eq!(s.read("missing").unwrap(), None);
+            assert!(!s.exists("k").unwrap());
+            s.write("k", b"hello").unwrap();
+            assert!(s.exists("k").unwrap());
+            assert_eq!(s.read("k").unwrap().as_deref(), Some(&b"hello"[..]));
+            s.write("k", b"world").unwrap();
+            assert_eq!(s.read("k").unwrap().as_deref(), Some(&b"world"[..]));
+            s.delete("k").unwrap();
+            assert!(!s.exists("k").unwrap());
+            // delete nonexistent is fine
+            s.delete("k").unwrap();
+        }
+    }
+
+    #[test]
+    fn test_list_both_backends() {
+        let (_d, file, git) = store_pair();
+        for s in [file, git] {
+            s.write("tasks/1", b"a").unwrap();
+            s.write("tasks/2", b"b").unwrap();
+            s.write("archive/3", b"c").unwrap();
+            let mut tasks = s.list("tasks").unwrap();
+            tasks.sort();
+            assert_eq!(tasks, vec!["tasks/1", "tasks/2"]);
+            let arch = s.list("archive").unwrap();
+            assert_eq!(arch, vec!["archive/3"]);
+            assert!(s.list("nothing").unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_high_level_task_ops_both_backends() {
+        let (_d, file, git) = store_pair();
+        for s in [file.as_ref(), git.as_ref()] {
+            let id = next_id(s).unwrap();
+            assert_eq!(id, Id(1));
+            let id2 = next_id(s).unwrap();
+            assert_eq!(id2, Id(2));
+
+            write_task(s, id, "title", "body", Loc::Active).unwrap();
+            let (t, b, loc) = read_task(s, id).unwrap().unwrap();
+            assert_eq!(t, "title");
+            assert_eq!(b, "body");
+            assert_eq!(loc, Loc::Active);
+
+            move_task(s, id, Loc::Archived).unwrap();
+            assert_eq!(task_location(s, id).unwrap(), Some(Loc::Archived));
+            move_task(s, id, Loc::Active).unwrap();
+            assert_eq!(task_location(s, id).unwrap(), Some(Loc::Active));
+
+            let mut attrs = BTreeMap::new();
+            attrs.insert("foo".to_string(), "bar".to_string());
+            write_attrs(s, id, &attrs).unwrap();
+            assert_eq!(read_attrs(s, id).unwrap(), attrs);
+
+            let mut bl = HashSet::new();
+            bl.insert(Id(7));
+            bl.insert(Id(9));
+            write_backlinks(s, id, &bl).unwrap();
+            assert_eq!(read_backlinks(s, id).unwrap(), bl);
+
+            // Empty attrs/backlinks delete the blob.
+            write_attrs(s, id, &BTreeMap::new()).unwrap();
+            assert!(read_attrs(s, id).unwrap().is_empty());
+            write_backlinks(s, id, &HashSet::new()).unwrap();
+            assert!(read_backlinks(s, id).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_remotes_round_trip_both_backends() {
+        let (_d, file, git) = store_pair();
+        for s in [file.as_ref(), git.as_ref()] {
+            assert!(read_remotes(s).unwrap().is_empty());
+            let remotes = vec![
+                Remote { prefix: "a".into(), path: PathBuf::from("/x") },
+                Remote { prefix: "b".into(), path: PathBuf::from("/y") },
+            ];
+            write_remotes(s, &remotes).unwrap();
+            assert_eq!(read_remotes(s).unwrap(), remotes);
+            write_remotes(s, &[]).unwrap();
+            assert!(read_remotes(s).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_list_active_archive_helpers() {
+        let (_d, file, git) = store_pair();
+        for s in [file.as_ref(), git.as_ref()] {
+            write_task(s, Id(1), "t1", "", Loc::Active).unwrap();
+            write_task(s, Id(2), "t2", "", Loc::Archived).unwrap();
+            write_task(s, Id(3), "t3", "", Loc::Active).unwrap();
+            assert_eq!(list_active(s).unwrap(), vec![Id(1), Id(3)]);
+            assert_eq!(list_archive(s).unwrap(), vec![Id(2)]);
+        }
+    }
+}

@@ -12,8 +12,6 @@ pub enum Error {
     AlreadyInitialized,
     #[error("Unable to read file: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Unable to acquire locc: {0}")]
-    Lock(nix::errno::Errno),
     #[error("Unable to parse id: {0}")]
     ParseId(#[from] std::num::ParseIntError),
     #[error("General parsing error: {0}")]

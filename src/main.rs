@@ -1,7 +1,7 @@
 mod attrs;
+mod backend;
 mod errors;
 mod fzf;
-mod git_store;
 mod stack;
 mod task;
 mod util;
@@ -325,15 +325,8 @@ fn main() {
         Commands::GitSetup { gitignore } => command_git_setup(dir, gitignore),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
     };
+    let _ = sync_dir;
     let result = var_name;
-    // Best-effort mirror to git refs if the workspace is git-backed. Failures here
-    // do not fail the user's command — the on-disk store remains authoritative.
-    if result.is_ok()
-        && let Ok(ws) = Workspace::from_path(sync_dir)
-        && let Err(e) = ws.sync_git()
-    {
-        eprintln!("warning: git ref sync failed: {e}");
-    }
     match result {
         Ok(_) => exit(0),
         Err(e) => {
@@ -464,7 +457,7 @@ fn command_edit(dir: PathBuf, id: TaskId) -> Result<()> {
         task.title = title.replace(['\n', '\r'], " ");
         task.body = body.to_string();
         workspace.handle_metadata(&task, pre_links)?;
-        task.save()?;
+        workspace.save_task(&task)?;
     }
     Ok(())
 }
