@@ -7,7 +7,7 @@ use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
 use crate::task::parse as parse_task;
 use crate::{fzf, util};
-use std::collections::{BTreeMap, HashSet, vec_deque};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -238,16 +238,24 @@ impl Workspace {
         self.mutate_stack(|stack| {
             if let (Some(a), Some(b), Some(c)) = (stack.pop(), stack.pop(), stack.pop()) {
                 if swap_third_with_top {
-                    stack.push(b); stack.push(a); stack.push(c);
+                    stack.push(b);
+                    stack.push(a);
+                    stack.push(c);
                 } else {
-                    stack.push(a); stack.push(c); stack.push(b);
+                    stack.push(a);
+                    stack.push(c);
+                    stack.push(b);
                 }
             }
         })
     }
 
-    pub fn rot(&self) -> Result<()> { self.rotate_top3(true) }
-    pub fn tor(&self) -> Result<()> { self.rotate_top3(false) }
+    pub fn rot(&self) -> Result<()> {
+        self.rotate_top3(true)
+    }
+    pub fn tor(&self) -> Result<()> {
+        self.rotate_top3(false)
+    }
 
     pub fn drop(&self, identifier: TaskIdentifier) -> Result<Option<Id>> {
         let id = self.resolve(identifier)?;
@@ -272,71 +280,45 @@ impl Workspace {
         search_body: bool,
         include_archived: bool,
     ) -> Result<Option<Id>> {
-        let stack = if let Some(stack) = stack {
-            stack
-        } else {
-            self.read_stack()?
-        };
+        const BODY_ARGS: &[&str] = &[
+            "--no-multi-line",
+            "--accept-nth=1",
+            "--delimiter=\t",
+            "--preview=tsk show -T {1}",
+            "--preview-window=top",
+            "--ansi",
+            "--info-command=tsk show -T {1} | head -n1",
+            "--info=inline-right",
+        ];
+        const ID_ARGS: &[&str] = &["--delimiter=\t", "--accept-nth=1"];
+        let args = if search_body { BODY_ARGS } else { ID_ARGS };
+        let stack = stack.map_or_else(|| self.read_stack(), Ok)?;
         if include_archived {
-            let mut all_tasks: Vec<SearchTask> = Vec::new();
             let mut seen: HashSet<Id> = HashSet::new();
-            for item in stack.iter() {
-                if let Ok(t) = self.task(TaskIdentifier::Id(item.id)) {
+            let mut all: Vec<SearchTask> = stack
+                .iter()
+                .filter_map(|item| self.task(TaskIdentifier::Id(item.id)).ok().map(Task::bare))
+                .inspect(|t| {
                     seen.insert(t.id);
-                    all_tasks.push(t.bare());
-                }
-            }
+                })
+                .collect();
             for id in backend::list_archive(self.store())? {
-                if seen.contains(&id) {
-                    continue;
-                }
-                if let Some((title, body, _)) = backend::read_task(self.store(), id)? {
-                    all_tasks.push(SearchTask { id, title, body });
+                if !seen.contains(&id)
+                    && let Some((title, body, _)) = backend::read_task(self.store(), id)?
+                {
+                    all.push(SearchTask { id, title, body });
                 }
             }
-            if search_body {
-                Ok(fzf::select::<_, Id, _>(
-                    all_tasks,
-                    [
-                        "--no-multi-line",
-                        "--accept-nth=1",
-                        "--delimiter=\t",
-                        "--preview=tsk show -T {1}",
-                        "--preview-window=top",
-                        "--ansi",
-                        "--info-command=tsk show -T {1} | head -n1",
-                        "--info=inline-right",
-                    ],
-                )?)
-            } else {
-                Ok(fzf::select::<_, Id, _>(
-                    all_tasks,
-                    ["--delimiter=\t", "--accept-nth=1"],
-                )?)
-            }
+            fzf::select::<_, Id, _>(all, args)
         } else if search_body {
-            let loader = LazyTaskLoader {
-                items: stack.into_iter(),
-                workspace: self,
-            };
-            Ok(fzf::select::<_, Id, _>(
-                loader,
-                [
-                    "--no-multi-line",
-                    "--accept-nth=1",
-                    "--delimiter=\t",
-                    "--preview=tsk show -T {1}",
-                    "--preview-window=top",
-                    "--ansi",
-                    "--info-command=tsk show -T {1} | head -n1",
-                    "--info=inline-right",
-                ],
-            )?)
+            fzf::select::<_, Id, _>(
+                stack
+                    .into_iter()
+                    .filter_map(|item| self.task(TaskIdentifier::Id(item.id)).ok().map(Task::bare)),
+                args,
+            )
         } else {
-            Ok(fzf::select::<_, Id, _>(
-                stack,
-                ["--delimiter=\t", "--accept-nth=1"],
-            )?)
+            fzf::select::<_, Id, _>(stack, args)
         }
     }
 
@@ -346,7 +328,11 @@ impl Workspace {
             if let Some(idx) = stack.position(id)
                 && let Some(item) = stack.remove(idx)
             {
-                if to_front { stack.push(item) } else { stack.push_back(item) }
+                if to_front {
+                    stack.push(item)
+                } else {
+                    stack.push_back(item)
+                }
             }
         })
     }
@@ -418,13 +404,14 @@ impl Workspace {
         Ok(PathBuf::from(marker.trim()))
     }
 
+    fn git_cmd(&self) -> Result<std::process::Command> {
+        let mut c = std::process::Command::new("git");
+        c.arg("--git-dir").arg(self.require_git_dir()?);
+        Ok(c)
+    }
+
     fn run_git(&self, args: &[&str]) -> Result<()> {
-        let git_dir = self.require_git_dir()?;
-        let status = std::process::Command::new("git")
-            .arg("--git-dir")
-            .arg(&git_dir)
-            .args(args)
-            .status()?;
+        let status = self.git_cmd()?.args(args).status()?;
         if !status.success() {
             return Err(Error::Parse(format!("git {args:?} exited with {status}")));
         }
@@ -444,72 +431,63 @@ impl Workspace {
     /// Configure git so future `git push <remote>` / `git fetch <remote>`
     /// include the tsk ref namespace. Idempotent.
     pub fn configure_git_remote_refspecs(&self, remote: &str) -> Result<()> {
-        let git_dir = self.require_git_dir()?;
         for (key, value) in [
             (format!("remote.{remote}.push"), "refs/tsk/*:refs/tsk/*"),
             (format!("remote.{remote}.fetch"), "+refs/tsk/*:refs/tsk/*"),
         ] {
-            // Read existing values; skip if our refspec is already present.
-            let existing = std::process::Command::new("git")
-                .arg("--git-dir")
-                .arg(&git_dir)
+            let existing = self
+                .git_cmd()?
                 .args(["config", "--get-all", &key])
                 .output()?;
-            let existing_text = String::from_utf8_lossy(&existing.stdout);
-            if existing_text.lines().any(|l| l.trim() == value) {
+            if String::from_utf8_lossy(&existing.stdout)
+                .lines()
+                .any(|l| l.trim() == value)
+            {
                 continue;
             }
-            let status = std::process::Command::new("git")
-                .arg("--git-dir")
-                .arg(&git_dir)
-                .args(["config", "--add", &key, value])
-                .status()?;
-            if !status.success() {
-                return Err(Error::Parse(format!("git config --add {key} failed")));
-            }
+            self.run_git(&["config", "--add", &key, value])?;
         }
         Ok(())
     }
 
-    /// Write a zip archive containing every blob in the workspace. Layout in the
-    /// zip mirrors the logical key namespace (`tasks/<id>`, `archive/<id>`,
-    /// `attrs/<id>`, `backlinks/<id>`, `index`, `next`, `remotes`).
-    pub fn export_zip(&self, dest: &std::path::Path) -> Result<()> {
-        let file = std::fs::File::create(dest)?;
-        let mut writer = zip::ZipWriter::new(file);
-        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-
+    /// Every logical blob key that currently exists in the workspace.
+    fn all_keys(&self) -> Result<Vec<String>> {
         let mut keys: Vec<String> = Vec::new();
         for prefix in ["tasks", "archive", "attrs", "backlinks"] {
             keys.extend(self.store().list(prefix)?);
         }
         for top in ["index", "next", "remotes"] {
             if self.store().exists(top)? {
-                keys.push(top.to_string());
+                keys.push(top.into());
             }
         }
         keys.sort();
+        Ok(keys)
+    }
 
+    /// Write a zip archive containing every blob in the workspace. Layout in the
+    /// zip mirrors the logical key namespace.
+    pub fn export_zip(&self, dest: &std::path::Path) -> Result<()> {
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(dest)?);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
         use std::io::Write as _;
-        for key in keys {
+        for key in self.all_keys()? {
             if let Some(data) = self.store().read(&key)? {
                 writer
                     .start_file(&key, opts)
-                    .map_err(|e| Error::Parse(format!("zip start_file: {e}")))?;
+                    .map_err(|e| Error::Parse(format!("zip: {e}")))?;
                 writer.write_all(&data)?;
             }
         }
         writer
             .finish()
-            .map_err(|e| Error::Parse(format!("zip finish: {e}")))?;
+            .map_err(|e| Error::Parse(format!("zip: {e}")))?;
         Ok(())
     }
 
     /// Migrate a file-backed workspace to a git-backed one. Returns Err if the
     /// workspace is already git-backed or if no enclosing git repo is found.
-    /// All blobs are copied into refs/tsk/* and the on-disk task data is then
-    /// removed, leaving only the `.tsk/git-backed` marker.
     pub fn migrate_to_git(&self) -> Result<PathBuf> {
         if self.is_git_backed() {
             return Err(Error::Parse("Workspace is already git-backed".into()));
@@ -517,29 +495,17 @@ impl Workspace {
         let git_dir = backend::detect_git_dir(&self.path)
             .ok_or_else(|| Error::Parse("No enclosing git repository found".into()))?;
         let dest = backend::GitStore::open(git_dir.clone())?;
-        // Copy every logical blob across.
-        let prefixes = ["tasks", "archive", "attrs", "backlinks"];
-        for prefix in prefixes {
-            for key in self.store().list(prefix)? {
-                if let Some(data) = self.store().read(&key)? {
-                    dest.write(&key, &data)?;
-                }
+        for key in self.all_keys()? {
+            if let Some(data) = self.store().read(&key)? {
+                dest.write(&key, &data)?;
             }
         }
-        for top in ["index", "next", "remotes"] {
-            if let Some(data) = self.store().read(top)? {
-                dest.write(top, &data)?;
-            }
-        }
-        // Drop on-disk file backend state: everything under .tsk/ except the
-        // marker we're about to write.
         for entry in std::fs::read_dir(&self.path)? {
-            let entry = entry?;
-            let p = entry.path();
+            let p = entry?.path();
             if p.is_dir() {
-                std::fs::remove_dir_all(&p)?;
+                std::fs::remove_dir_all(&p)?
             } else {
-                std::fs::remove_file(&p)?;
+                std::fs::remove_file(&p)?
             }
         }
         std::fs::write(
@@ -606,20 +572,6 @@ impl Display for SearchTask {
             write!(f, "\n\n{}", self.body)?;
         }
         Ok(())
-    }
-}
-
-struct LazyTaskLoader<'a> {
-    items: vec_deque::IntoIter<StackItem>,
-    workspace: &'a Workspace,
-}
-
-impl Iterator for LazyTaskLoader<'_> {
-    type Item = SearchTask;
-    fn next(&mut self) -> Option<Self::Item> {
-        let item = self.items.next()?;
-        let task = self.workspace.task(TaskIdentifier::Id(item.id)).ok()?;
-        Some(task.bare())
     }
 }
 

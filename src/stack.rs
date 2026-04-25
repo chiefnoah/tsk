@@ -70,32 +70,30 @@ pub struct TaskStack {
 
 impl TaskStack {
     pub fn parse(text: &str) -> Result<Self> {
-        let mut all = VecDeque::new();
-        for line in text.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            all.push_back(line.parse()?);
-        }
-        Ok(Self { all })
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::parse)
+            .collect::<Result<VecDeque<_>>>()
+            .map(|all| Self { all })
     }
 
     pub fn load(store: &dyn Store) -> Result<Self> {
-        let raw = store.read("index")?.unwrap_or_default();
-        Self::parse(&String::from_utf8_lossy(&raw))
+        Self::parse(&String::from_utf8_lossy(
+            &store.read("index")?.unwrap_or_default(),
+        ))
     }
 
     pub fn serialize(&self) -> String {
-        let mut s = String::new();
-        for item in &self.all {
-            let ts = item
-                .modify_time
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            s.push_str(&format!("{item}\t{ts}\n"));
-        }
-        s
+        self.all
+            .iter()
+            .map(|i| {
+                let ts = i
+                    .modify_time
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                format!("{i}\t{ts}\n")
+            })
+            .collect()
     }
 
     pub fn save(&self, store: &dyn Store) -> Result<()> {
@@ -142,7 +140,6 @@ impl TaskStack {
     pub fn position(&self, id: Id) -> Option<usize> {
         self.all.iter().position(|i| i.id == id)
     }
-
 }
 
 impl IntoIterator for TaskStack {

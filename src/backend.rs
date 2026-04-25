@@ -144,7 +144,12 @@ impl Store for GitStore {
             return Ok(None);
         };
         let blob = r.peel(ObjectType::Blob)?;
-        Ok(Some(blob.as_blob().ok_or_else(|| Error::Parse("not a blob".into()))?.content().to_vec()))
+        Ok(Some(
+            blob.as_blob()
+                .ok_or_else(|| Error::Parse("not a blob".into()))?
+                .content()
+                .to_vec(),
+        ))
     }
 
     fn write(&self, key: &str, data: &[u8]) -> Result<()> {
@@ -172,7 +177,11 @@ impl Store for GitStore {
         repo.references_glob(&format!("{REF_PREFIX}/{prefix}/*"))?
             .filter_map(|r| {
                 r.ok()
-                    .and_then(|r| r.name().and_then(|n| n.strip_prefix(&strip)).map(str::to_string))
+                    .and_then(|r| {
+                        r.name()
+                            .and_then(|n| n.strip_prefix(&strip))
+                            .map(str::to_string)
+                    })
                     .map(Ok)
             })
             .collect()
@@ -255,92 +264,91 @@ pub fn list_archive(store: &dyn Store) -> Result<Vec<Id>> {
 }
 
 fn list_bucket(store: &dyn Store, bucket: &str) -> Result<Vec<Id>> {
-    let mut ids = Vec::new();
-    for key in store.list(bucket)? {
-        if let Some(idstr) = key.strip_prefix(&format!("{bucket}/"))
-            && let Ok(n) = idstr.trim_end_matches(".tsk").parse::<u32>()
-        {
-            ids.push(Id(n));
-        }
-    }
+    let prefix = format!("{bucket}/");
+    let mut ids: Vec<Id> = store
+        .list(bucket)?
+        .iter()
+        .filter_map(|k| {
+            k.strip_prefix(&prefix)?
+                .trim_end_matches(".tsk")
+                .parse()
+                .ok()
+                .map(Id)
+        })
+        .collect();
     ids.sort_by_key(|i| i.0);
     Ok(ids)
 }
 
-pub fn read_attrs(store: &dyn Store, id: Id) -> Result<BTreeMap<String, String>> {
-    let mut out = BTreeMap::new();
-    if let Some(data) = store.read(&format!("attrs/{}", id.0))? {
-        for line in String::from_utf8_lossy(&data).lines() {
-            if let Some((k, v)) = line.split_once('\t') {
-                out.insert(k.to_string(), v.to_string());
-            }
-        }
+/// Read+lossy-decode a blob, returning empty string when absent.
+fn read_text(store: &dyn Store, key: &str) -> Result<String> {
+    Ok(store
+        .read(key)?
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default())
+}
+
+/// Write `body` to `key`, or delete the blob if `body` is empty.
+fn write_or_delete(store: &dyn Store, key: &str, body: &str) -> Result<()> {
+    if body.is_empty() {
+        store.delete(key)
+    } else {
+        store.write(key, body.as_bytes())
     }
-    Ok(out)
+}
+
+pub fn read_attrs(store: &dyn Store, id: Id) -> Result<BTreeMap<String, String>> {
+    Ok(read_text(store, &format!("attrs/{}", id.0))?
+        .lines()
+        .filter_map(|l| {
+            l.split_once('\t')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
+        .collect())
 }
 
 pub fn write_attrs(store: &dyn Store, id: Id, attrs: &BTreeMap<String, String>) -> Result<()> {
-    if attrs.is_empty() {
-        return store.delete(&format!("attrs/{}", id.0));
-    }
-    let mut buf = String::new();
-    for (k, v) in attrs {
-        buf.push_str(k);
-        buf.push('\t');
-        buf.push_str(v);
-        buf.push('\n');
-    }
-    store.write(&format!("attrs/{}", id.0), buf.as_bytes())
+    let body = attrs
+        .iter()
+        .map(|(k, v)| format!("{k}\t{v}\n"))
+        .collect::<String>();
+    write_or_delete(store, &format!("attrs/{}", id.0), &body)
 }
 
 pub fn read_backlinks(store: &dyn Store, id: Id) -> Result<HashSet<Id>> {
-    let mut out = HashSet::new();
-    if let Some(data) = store.read(&format!("backlinks/{}", id.0))? {
-        for tok in String::from_utf8_lossy(&data).split(',') {
-            if let Ok(i) = Id::from_str(tok.trim()) {
-                out.insert(i);
-            }
-        }
-    }
-    Ok(out)
+    Ok(read_text(store, &format!("backlinks/{}", id.0))?
+        .split(',')
+        .filter_map(|t| Id::from_str(t.trim()).ok())
+        .collect())
 }
 
 pub fn write_backlinks(store: &dyn Store, id: Id, links: &HashSet<Id>) -> Result<()> {
-    if links.is_empty() {
-        return store.delete(&format!("backlinks/{}", id.0));
-    }
-    let joined = itertools::join(links, ",");
-    store.write(&format!("backlinks/{}", id.0), joined.as_bytes())
+    write_or_delete(
+        store,
+        &format!("backlinks/{}", id.0),
+        &itertools::join(links, ","),
+    )
 }
 
 pub fn read_remotes(store: &dyn Store) -> Result<Vec<Remote>> {
-    let mut out = Vec::new();
-    if let Some(data) = store.read("remotes")? {
-        for line in String::from_utf8_lossy(&data).lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((prefix, path)) = line.split_once('\t') {
-                out.push(Remote {
-                    prefix: prefix.trim().to_string(),
-                    path: PathBuf::from(path.trim()),
-                });
-            }
-        }
-    }
-    Ok(out)
+    Ok(read_text(store, "remotes")?
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(p, path)| Remote {
+            prefix: p.trim().into(),
+            path: PathBuf::from(path.trim()),
+        })
+        .collect())
 }
 
 pub fn write_remotes(store: &dyn Store, remotes: &[Remote]) -> Result<()> {
-    if remotes.is_empty() {
-        return store.delete("remotes");
-    }
-    let mut buf = String::new();
-    for r in remotes {
-        buf.push_str(&format!("{}\t{}\n", r.prefix, r.path.display()));
-    }
-    store.write("remotes", buf.as_bytes())
+    let body: String = remotes
+        .iter()
+        .map(|r| format!("{}\t{}\n", r.prefix, r.path.display()))
+        .collect();
+    write_or_delete(store, "remotes", &body)
 }
 
 // ─── Detection / construction ──────────────────────────────────────────────
