@@ -100,24 +100,19 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             );
                             out.replace_range(il - 1..out.len(), &linktext);
                             links.push(ParsedLink::Internal(id));
-                        } else if let Some((prefix, id_str)) = contents.split_once('-') {
-                            if let Ok(id) = id_str.parse::<u32>() {
-                                let linktext = format!(
-                                    "{}{}",
-                                    contents.cyan(),
-                                    super_num(links.len() + 1).cyan()
-                                );
-                                out.replace_range(il - 1..out.len(), &linktext);
-                                links.push(ParsedLink::Foreign {
-                                    prefix: prefix.to_string(),
-                                    id,
-                                });
-                            } else {
-                                panic!("Internal link is not a valid id: {contents}");
-                            }
-                        } else {
-                            panic!("Internal link is not a valid id: {contents}");
+                        } else if let Some((prefix, id_str)) = contents.split_once('-')
+                            && let Ok(id) = id_str.parse::<u32>()
+                        {
+                            let linktext =
+                                format!("{}{}", contents.cyan(), super_num(links.len() + 1).cyan());
+                            out.replace_range(il - 1..out.len(), &linktext);
+                            links.push(ParsedLink::Foreign {
+                                prefix: prefix.to_string(),
+                                id,
+                            });
                         }
+                        // If the bracketed text isn't a valid id, leave it in
+                        // the output as-is (no link registered, no panic).
                     }
                     (last, '[', _) if is_boundary(last) => {
                         state.push(Linktext(end, char_pos));
@@ -496,11 +491,26 @@ mod test {
         );
     }
 
+    /// `[[jira-abc]]` looks like a foreign link but the id portion isn't
+    /// numeric. The parser must not panic; the bracketed text is left as plain
+    /// content and no link is registered.
     #[test]
-    #[should_panic(expected = "Internal link is not a valid id")]
     fn test_foreign_link_bad_no_number() {
         setup();
         let input = "see [[jira-abc]]\n";
-        let _output = parse(input).expect("parse to work");
+        let output = parse(input).expect("parse to work");
+        assert!(output.links.is_empty());
+        assert_eq!(input, output.content);
+    }
+
+    /// `[[plain text]]` doesn't match any link form. Same as above: no panic,
+    /// content preserved, no link registered.
+    #[test]
+    fn test_internal_link_unparseable_contents() {
+        setup();
+        let input = "see [[not a link]]\n";
+        let output = parse(input).expect("parse to work");
+        assert!(output.links.is_empty());
+        assert_eq!(input, output.content);
     }
 }
