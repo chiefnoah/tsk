@@ -14,7 +14,7 @@
 
 use crate::errors::{Error, Result};
 use crate::workspace::{Id, Remote};
-use git2::{ObjectType, Oid, Repository};
+use git2::{ObjectType, Reference, Repository};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -115,13 +115,12 @@ pub struct GitStore {
 
 impl GitStore {
     pub fn open(git_dir: PathBuf) -> Result<Self> {
-        // Validate by opening once.
-        Repository::open(&git_dir).map_err(|e| Error::Parse(format!("git open failed: {e}")))?;
+        Repository::open(&git_dir)?;
         Ok(Self { git_dir })
     }
 
     fn repo(&self) -> Result<Repository> {
-        Repository::open(&self.git_dir).map_err(|e| Error::Parse(format!("git open: {e}")))
+        Ok(Repository::open(&self.git_dir)?)
     }
 
     fn refname(key: &str) -> String {
@@ -129,76 +128,54 @@ impl GitStore {
     }
 }
 
-fn read_blob(repo: &Repository, refname: &str) -> Result<Option<(Oid, Vec<u8>)>> {
-    let r = match repo.find_reference(refname) {
-        Ok(r) => r,
-        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
-        Err(e) => return Err(Error::Parse(format!("find_reference {refname}: {e}"))),
-    };
-    let obj = r
-        .peel(ObjectType::Blob)
-        .map_err(|e| Error::Parse(format!("peel: {e}")))?;
-    let blob = obj
-        .as_blob()
-        .ok_or_else(|| Error::Parse("not a blob".into()))?;
-    Ok(Some((obj.id(), blob.content().to_vec())))
+/// `find_reference` translating NotFound to None.
+fn try_ref<'r>(repo: &'r Repository, name: &str) -> Result<Option<Reference<'r>>> {
+    match repo.find_reference(name) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 impl Store for GitStore {
     fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let repo = self.repo()?;
-        Ok(read_blob(&repo, &Self::refname(key))?.map(|(_, data)| data))
+        let Some(r) = try_ref(&repo, &Self::refname(key))? else {
+            return Ok(None);
+        };
+        let blob = r.peel(ObjectType::Blob)?;
+        Ok(Some(blob.as_blob().ok_or_else(|| Error::Parse("not a blob".into()))?.content().to_vec()))
     }
 
     fn write(&self, key: &str, data: &[u8]) -> Result<()> {
         let repo = self.repo()?;
-        let oid = repo
-            .blob(data)
-            .map_err(|e| Error::Parse(format!("blob write: {e}")))?;
-        repo.reference(&Self::refname(key), oid, true, "tsk write")
-            .map_err(|e| Error::Parse(format!("update ref: {e}")))?;
+        let oid = repo.blob(data)?;
+        repo.reference(&Self::refname(key), oid, true, "tsk write")?;
         Ok(())
     }
 
     fn delete(&self, key: &str) -> Result<()> {
         let repo = self.repo()?;
-        let refname = Self::refname(key);
-        match repo.find_reference(&refname) {
-            Ok(mut r) => {
-                r.delete()
-                    .map_err(|e| Error::Parse(format!("delete ref: {e}")))?;
-                Ok(())
-            }
-            Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(()),
-            Err(e) => Err(Error::Parse(format!("find_reference: {e}"))),
+        if let Some(mut r) = try_ref(&repo, &Self::refname(key))? {
+            r.delete()?;
         }
+        Ok(())
     }
 
     fn exists(&self, key: &str) -> Result<bool> {
-        let repo = self.repo()?;
-        match repo.find_reference(&Self::refname(key)) {
-            Ok(_) => Ok(true),
-            Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(false),
-            Err(e) => Err(Error::Parse(format!("find_reference: {e}"))),
-        }
+        Ok(try_ref(&self.repo()?, &Self::refname(key))?.is_some())
     }
 
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
         let repo = self.repo()?;
-        let glob = format!("{REF_PREFIX}/{prefix}/*");
-        let mut out = Vec::new();
-        let refs = repo
-            .references_glob(&glob)
-            .map_err(|e| Error::Parse(format!("references_glob: {e}")))?;
-        for r in refs {
-            let r = r.map_err(|e| Error::Parse(format!("ref iter: {e}")))?;
-            if let Some(name) = r.name()
-                && let Some(stripped) = name.strip_prefix(&format!("{REF_PREFIX}/"))
-            {
-                out.push(stripped.to_string());
-            }
-        }
-        Ok(out)
+        let strip = format!("{REF_PREFIX}/");
+        repo.references_glob(&format!("{REF_PREFIX}/{prefix}/*"))?
+            .filter_map(|r| {
+                r.ok()
+                    .and_then(|r| r.name().and_then(|n| n.strip_prefix(&strip)).map(str::to_string))
+                    .map(Ok)
+            })
+            .collect()
     }
 }
 

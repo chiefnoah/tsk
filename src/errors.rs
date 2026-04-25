@@ -12,6 +12,8 @@ pub enum Error {
     AlreadyInitialized,
     #[error("Unable to read file: {0}")]
     Io(#[from] std::io::Error),
+    #[error("git error: {0}")]
+    Git(#[from] git2::Error),
     #[error("Unable to parse id: {0}")]
     ParseId(#[from] std::num::ParseIntError),
     #[error("General parsing error: {0}")]

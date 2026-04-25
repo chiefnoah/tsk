@@ -2,7 +2,6 @@
 //! High-level workspace API. The workspace owns a [`Store`](crate::backend::Store)
 //! and exposes typed task / stack / remote operations on top of it.
 
-use crate::attrs::Attrs;
 use crate::backend::{self, Loc, Store};
 use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
@@ -38,12 +37,6 @@ impl Display for Id {
 impl From<u32> for Id {
     fn from(value: u32) -> Self {
         Id(value)
-    }
-}
-
-impl Id {
-    pub fn filename(&self) -> String {
-        format!("tsk-{}.tsk", self.0)
     }
 }
 
@@ -155,12 +148,11 @@ impl Workspace {
         let id = self.resolve(identifier)?;
         let (title, body, _loc) = backend::read_task(self.store(), id)?
             .ok_or_else(|| Error::Parse(format!("Task {id} not found")))?;
-        let attrs_map = backend::read_attrs(self.store(), id)?;
         Ok(Task {
             id,
             title,
             body,
-            attributes: Attrs::from_written(attrs_map),
+            attributes: backend::read_attrs(self.store(), id)?,
         })
     }
 
@@ -170,12 +162,7 @@ impl Workspace {
             None => Loc::Active,
         };
         backend::write_task(self.store(), task.id, &task.title, &task.body, loc)?;
-        // Persist any modified attrs.
-        let mut combined: BTreeMap<String, String> = task.attributes.written.clone();
-        for (k, v) in task.attributes.updated.iter() {
-            combined.insert(k.clone(), v.clone());
-        }
-        backend::write_attrs(self.store(), task.id, &combined)?;
+        backend::write_attrs(self.store(), task.id, &task.attributes)?;
         // After editing, refresh stack title for this id.
         self.update_stack_title(task.id, &task.title)?;
         Ok(())
@@ -228,47 +215,39 @@ impl Workspace {
         TaskStack::load(self.store())
     }
 
-    pub fn push_task(&self, task: Task) -> Result<()> {
+    /// Run `f` on the workspace stack and persist the result.
+    fn mutate_stack<F: FnOnce(&mut TaskStack)>(&self, f: F) -> Result<()> {
         let mut stack = self.read_stack()?;
-        stack.push((&task).into());
+        f(&mut stack);
         stack.save(self.store())
+    }
+
+    pub fn push_task(&self, task: Task) -> Result<()> {
+        self.mutate_stack(|s| s.push((&task).into()))
     }
 
     pub fn append_task(&self, task: Task) -> Result<()> {
-        let mut stack = self.read_stack()?;
-        stack.push_back((&task).into());
-        stack.save(self.store())
+        self.mutate_stack(|s| s.push_back((&task).into()))
     }
 
     pub fn swap_top(&self) -> Result<()> {
-        let mut stack = self.read_stack()?;
-        stack.swap();
-        stack.save(self.store())
+        self.mutate_stack(|s| s.swap())
     }
 
-    pub fn rot(&self) -> Result<()> {
-        let mut stack = self.read_stack()?;
-        let (a, b, c) = (stack.pop(), stack.pop(), stack.pop());
-        if let (Some(a), Some(b), Some(c)) = (a, b, c) {
-            stack.push(b);
-            stack.push(a);
-            stack.push(c);
-            stack.save(self.store())?;
-        }
-        Ok(())
+    fn rotate_top3(&self, swap_third_with_top: bool) -> Result<()> {
+        self.mutate_stack(|stack| {
+            if let (Some(a), Some(b), Some(c)) = (stack.pop(), stack.pop(), stack.pop()) {
+                if swap_third_with_top {
+                    stack.push(b); stack.push(a); stack.push(c);
+                } else {
+                    stack.push(a); stack.push(c); stack.push(b);
+                }
+            }
+        })
     }
 
-    pub fn tor(&self) -> Result<()> {
-        let mut stack = self.read_stack()?;
-        let (a, b, c) = (stack.pop(), stack.pop(), stack.pop());
-        if let (Some(a), Some(b), Some(c)) = (a, b, c) {
-            stack.push(a);
-            stack.push(c);
-            stack.push(b);
-            stack.save(self.store())?;
-        }
-        Ok(())
-    }
+    pub fn rot(&self) -> Result<()> { self.rotate_top3(true) }
+    pub fn tor(&self) -> Result<()> { self.rotate_top3(false) }
 
     pub fn drop(&self, identifier: TaskIdentifier) -> Result<Option<Id>> {
         let id = self.resolve(identifier)?;
@@ -361,26 +340,23 @@ impl Workspace {
         }
     }
 
-    pub fn prioritize(&self, identifier: TaskIdentifier) -> Result<()> {
+    fn move_in_stack(&self, identifier: TaskIdentifier, to_front: bool) -> Result<()> {
         let id = self.resolve(identifier)?;
-        let mut stack = self.read_stack()?;
-        if let Some(idx) = stack.position(id) {
-            let task = stack.remove(idx).unwrap();
-            stack.push(task);
-            stack.save(self.store())?;
-        }
-        Ok(())
+        self.mutate_stack(|stack| {
+            if let Some(idx) = stack.position(id)
+                && let Some(item) = stack.remove(idx)
+            {
+                if to_front { stack.push(item) } else { stack.push_back(item) }
+            }
+        })
+    }
+
+    pub fn prioritize(&self, identifier: TaskIdentifier) -> Result<()> {
+        self.move_in_stack(identifier, true)
     }
 
     pub fn deprioritize(&self, identifier: TaskIdentifier) -> Result<()> {
-        let id = self.resolve(identifier)?;
-        let mut stack = self.read_stack()?;
-        if let Some(idx) = stack.position(id) {
-            let task = stack.remove(idx).unwrap();
-            stack.push_back(task);
-            stack.save(self.store())?;
-        }
-        Ok(())
+        self.move_in_stack(identifier, false)
     }
 
     /// Remove "active" task entries that aren't in the index.
@@ -598,7 +574,7 @@ pub struct Task {
     pub id: Id,
     pub title: String,
     pub body: String,
-    pub attributes: Attrs,
+    pub attributes: BTreeMap<String, String>,
 }
 
 impl Display for Task {

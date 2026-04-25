@@ -38,12 +38,6 @@ impl From<&Task> for StackItem {
     }
 }
 
-impl From<Task> for StackItem {
-    fn from(value: Task) -> Self {
-        Self::from(&value)
-    }
-}
-
 impl FromStr for StackItem {
     type Err = Error;
 
@@ -149,15 +143,6 @@ impl TaskStack {
         self.all.iter().position(|i| i.id == id)
     }
 
-    /// Refresh stack item titles from authoritative task content.
-    pub fn refresh_titles(&mut self, store: &dyn Store) -> Result<()> {
-        for item in self.all.iter_mut() {
-            if let Some((title, _, _)) = crate::backend::read_task(store, item.id)? {
-                item.title = title.replace('\t', " ");
-            }
-        }
-        Ok(())
-    }
 }
 
 impl IntoIterator for TaskStack {

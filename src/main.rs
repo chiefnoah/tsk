@@ -1,4 +1,3 @@
-mod attrs;
 mod backend;
 mod errors;
 mod fzf;
