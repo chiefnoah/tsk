@@ -5,7 +5,7 @@ mod stack;
 mod task;
 mod util;
 mod workspace;
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 use errors::Result;
 use std::io::{self, Write};
 use std::path::PathBuf;

@@ -7,10 +7,10 @@ use crate::errors::{Error, Result};
 use crate::stack::{StackItem, TaskStack};
 use crate::task::parse as parse_task;
 use crate::{fzf, util};
-use std::collections::{vec_deque, BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, vec_deque};
 use std::ffi::OsString;
 use std::fmt::Display;
-use std::fs::{remove_file, File};
+use std::fs::{File, remove_file};
 use std::io::{BufRead as _, BufReader, Read, Seek, SeekFrom};
 use std::ops::Deref;
 use std::os::unix::fs::symlink;
@@ -1013,9 +1013,11 @@ mod test {
         assert!(archive_dir.join(format!("tsk-{}.tsk", task_id.0)).exists());
 
         let archive_tasks_dir = workspace.path.join("tasks");
-        assert!(!archive_tasks_dir
-            .join(format!("tsk-{}.tsk", task_id.0))
-            .exists());
+        assert!(
+            !archive_tasks_dir
+                .join(format!("tsk-{}.tsk", task_id.0))
+                .exists()
+        );
 
         let archived_tasks: Vec<SearchTask> = std::fs::read_dir(&archive_dir)
             .unwrap()

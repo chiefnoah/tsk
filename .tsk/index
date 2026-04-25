@@ -1,5 +1,4 @@
 tsk-32	Use git refs to store tasks	1776481730
-tsk-16	Add ability to search archived tasks with find command	1767466011
 tsk-15	Add link identification to tasks	1732594198
 tsk-9	fix timestamp storage and parsing	1732594198
 tsk-7	allow for creating tasks that don't go to top of stack	1732594198
