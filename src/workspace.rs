@@ -434,6 +434,41 @@ impl Workspace {
         Ok(Some(task))
     }
 
+    /// Write a zip archive containing every blob in the workspace. Layout in the
+    /// zip mirrors the logical key namespace (`tasks/<id>`, `archive/<id>`,
+    /// `attrs/<id>`, `backlinks/<id>`, `index`, `next`, `remotes`).
+    pub fn export_zip(&self, dest: &std::path::Path) -> Result<()> {
+        let file = std::fs::File::create(dest)?;
+        let mut writer = zip::ZipWriter::new(file);
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        let mut keys: Vec<String> = Vec::new();
+        for prefix in ["tasks", "archive", "attrs", "backlinks"] {
+            keys.extend(self.store().list(prefix)?);
+        }
+        for top in ["index", "next", "remotes"] {
+            if self.store().exists(top)? {
+                keys.push(top.to_string());
+            }
+        }
+        keys.sort();
+
+        use std::io::Write as _;
+        for key in keys {
+            if let Some(data) = self.store().read(&key)? {
+                writer
+                    .start_file(&key, opts)
+                    .map_err(|e| Error::Parse(format!("zip start_file: {e}")))?;
+                writer.write_all(&data)?;
+            }
+        }
+        writer
+            .finish()
+            .map_err(|e| Error::Parse(format!("zip finish: {e}")))?;
+        Ok(())
+    }
+
     /// Migrate a file-backed workspace to a git-backed one. Returns Err if the
     /// workspace is already git-backed or if no enclosing git repo is found.
     /// All blobs are copied into refs/tsk/* and the on-disk task data is then
@@ -791,6 +826,38 @@ mod test {
     }
 
     #[test]
+    fn test_export_zip_both_backends() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            let t = ws.new_task("t1".into(), "b1".into()).unwrap();
+            let id = t.id;
+            ws.push_task(t).unwrap();
+            ws.add_remote("up", "/p").unwrap();
+
+            let out = ws.path.join("export.zip");
+            ws.export_zip(&out).unwrap();
+            assert!(out.exists() && std::fs::metadata(&out).unwrap().len() > 0);
+
+            let f = std::fs::File::open(&out).unwrap();
+            let mut zip = zip::ZipArchive::new(f).unwrap();
+            let names: std::collections::HashSet<String> =
+                (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_string()).collect();
+            assert!(names.contains(&format!("tasks/{}", id.0)));
+            assert!(names.contains("index"));
+            assert!(names.contains("next"));
+            assert!(names.contains("remotes"));
+
+            // Round-trip the task content.
+            use std::io::Read as _;
+            let mut entry = zip.by_name(&format!("tasks/{}", id.0)).unwrap();
+            let mut buf = String::new();
+            entry.read_to_string(&mut buf).unwrap();
+            assert!(buf.starts_with("t1"));
+            assert!(buf.contains("b1"));
+        }
+    }
+
+    #[test]
     fn test_migrate_file_to_git() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
@@ -847,7 +914,10 @@ mod test {
         let read = ws2.task(TaskIdentifier::Id(id1)).unwrap();
         assert_eq!(read.title, "Active");
         assert_eq!(read.attributes.get("k"), Some(&"v".to_string()));
-        assert_eq!(backend::task_location(ws2.store(), id2).unwrap(), Some(Loc::Archived));
+        assert_eq!(
+            backend::task_location(ws2.store(), id2).unwrap(),
+            Some(Loc::Archived)
+        );
         let bl = backend::read_backlinks(ws2.store(), id2).unwrap();
         assert!(bl.contains(&id1));
         assert_eq!(ws2.read_remotes().unwrap().len(), 1);
