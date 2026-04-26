@@ -227,10 +227,10 @@ enum Commands {
         remote: String,
     },
 
-    /// Send a task to another namespace's inbox. Defaults to the top-of-stack
-    /// task; use -T to pick a different one. Sets `assigned=[[<ns>/tsk-N]]`
-    /// on the source.
-    Export {
+    /// Assign a task to another namespace by sending it to that namespace's
+    /// inbox. Defaults to the top-of-stack task; use -T to pick a different
+    /// one. Sets `assigned=[[<ns>/tsk-N]]` on the source.
+    Assign {
         /// Target namespace.
         target: String,
         #[command(flatten)]
@@ -482,7 +482,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::GitSetup { gitignore, remote } => command_git_setup(dir, gitignore, remote),
         Commands::GitPush { remote } => command_git_push(dir, remote),
         Commands::GitPull { remote } => command_git_pull(dir, remote),
-        Commands::Export { target, task_id } => command_export_to_ns(dir, target, task_id),
+        Commands::Assign { target, task_id } => command_assign(dir, target, task_id),
         Commands::Inbox => command_inbox(dir),
         Commands::Accept { key } => command_accept(dir, key),
         Commands::Bundle { output } => command_bundle(dir, output),
@@ -882,7 +882,7 @@ fn command_bundle(dir: PathBuf, output: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn command_export_to_ns(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {
+fn command_assign(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let id = ws.task(task_id.into())?.id;
     let key = ws.export_to_namespace(&target, id)?;
