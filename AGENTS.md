@@ -65,6 +65,16 @@ tsk queue switch tsk      # switch back when done
 This keeps the user's `tsk` queue free of agent-internal bookkeeping while
 still surfacing the work for later.
 
+## Migrations
+
+Storage and conventions evolve. A single command runs every known one-shot
+fix-up against the active workspace; safe to re-run (each migration is
+idempotent):
+
+```
+tsk fix-up
+```
+
 ## Sync with the user
 
 Local refs aren't visible to the user until pushed:

@@ -106,9 +106,10 @@ enum Commands {
     },
     /// Drop index entries whose stable ids no longer resolve.
     Clean,
-    /// One-shot: set status=open on every task in the active namespace that
-    /// has no status property yet. Skips tasks already marked done.
-    BackfillStatus,
+    /// Run every known one-shot migration against the active workspace.
+    /// Currently: backfill `status=open` on tasks without a status property.
+    /// New migrations land here as they're added.
+    FixUp,
     /// Print refspec/setup hints for `git push`/`git fetch` to include `refs/tsk/*`.
     GitSetup {
         /// Configure push/fetch refspecs on the named remote (default: origin).
@@ -315,9 +316,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             Workspace::from_path(dir)?.deprioritize(task_id.into())
         }
         Commands::Clean => Workspace::from_path(dir)?.clean(),
-        Commands::BackfillStatus => {
-            let n = Workspace::from_path(dir)?.backfill_status()?;
-            println!("Set status=open on {n} task(s)");
+        Commands::FixUp => {
+            let ws = Workspace::from_path(dir)?;
+            let n = ws.backfill_status()?;
+            println!("backfill-status: set status=open on {n} task(s)");
             Ok(())
         }
         Commands::GitSetup { remote } => {
