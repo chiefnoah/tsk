@@ -1,0 +1,12 @@
+Add namespaces to the git backend
+
+The idea is to have multiple "workspaces" in sub-paths in the git refs. You can switch
+namespaces with a `tsk switch` command or something similar. Namespaces have plaintext
+names and can be referenced from other namespaces using [[namepace/tsk-XX]] links. If no
+namespace is specified in a [[]] link it is assumed to be the current namespace.
+Additionally, you should be able to send tasks from one namespace to another namespace.
+To do so, we need to introduce the concept of an "inbox" which is where tasks that are
+"sent" to another namespace go. Tasks in the inbox can be listed and "accepted", which
+turns them into tasks in the local namespace, assigning them a new ID. As extended
+metadata, tasks that have been accepted from the inbox should have a "source" reference
+linking them to the original task that was "exported" from the source namespace.
