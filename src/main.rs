@@ -267,6 +267,18 @@ enum Commands {
     /// Switch to a different namespace. Shorthand for `tsk namespace switch`.
     Switch { name: String },
 
+    /// List the hyperlinks parsed from a task's body. With -s, pipe the list
+    /// through fzf and open the selected link via the existing follow path:
+    /// URLs go to the system handler, [[tsk-N]] internal links are shown,
+    /// foreign refs resolve through the configured remote.
+    Links {
+        #[command(flatten)]
+        task_id: TaskId,
+        /// Use fzf to select a link, then open it.
+        #[arg(short = 's', default_value_t = false)]
+        select: bool,
+    },
+
     /// Reopens an archived task, recreating the symlink and adding it back to the stack.
     Reopen {
         #[command(flatten)]
@@ -451,6 +463,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Accept { key } => command_accept(dir, key),
         Commands::Bundle { output } => command_bundle(dir, output),
         Commands::Migrate => command_migrate(dir),
+        Commands::Links { task_id, select } => command_links(dir, task_id, select),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
         Commands::Log { tsk_id } => command_log(dir, tsk_id),
         Commands::Prop { action } => command_prop(dir, action),
@@ -983,6 +996,46 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn render_link(link: &ParsedLink) -> String {
+    match link {
+        ParsedLink::External(url) => url.to_string(),
+        ParsedLink::Internal(id) => format!("[[{id}]]"),
+        ParsedLink::Foreign { prefix, id } => format!("[[{prefix}-{id}]]"),
+    }
+}
+
+fn command_links(dir: PathBuf, task_id: TaskId, select: bool) -> Result<()> {
+    let workspace = Workspace::from_path(dir.clone())?;
+    let task = workspace.task(task_id.into())?;
+    let parsed = task::parse(&task.to_string());
+    let links: Vec<ParsedLink> = parsed.map(|p| p.links).unwrap_or_default();
+    if links.is_empty() {
+        eprintln!("No links found in {}.", task.id);
+        return Ok(());
+    }
+
+    if !select {
+        for (i, link) in links.iter().enumerate() {
+            println!("{}\t{}", i + 1, render_link(link));
+        }
+        return Ok(());
+    }
+
+    // -s: pipe through fzf and open the picked link via command_follow.
+    let lines: Vec<String> = links
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("{}\t{}", i + 1, render_link(l)))
+        .collect();
+    let chosen: Option<usize> =
+        fzf::select::<_, usize, _>(lines, ["--delimiter=\t", "--accept-nth=1"])?;
+    let Some(idx) = chosen else {
+        eprintln!("No link selected.");
+        exit(1);
+    };
+    command_follow(dir, taskid_from_tsk_id(task.id), idx, false)
 }
 
 fn command_reopen(dir: PathBuf, task_id: TaskId) -> Result<()> {

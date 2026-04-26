@@ -1998,6 +1998,24 @@ mod test {
     }
 
     #[test]
+    fn test_parsed_links_returns_all_kinds() {
+        // Verifies the data the `tsk links` command consumes: internal,
+        // foreign, raw URL, and labeled markdown link should all surface.
+        let body = "see <https://a.example> and [[tsk-1]] and [b](https://b.example) and [[gh-99]]";
+        let parsed = parse_task(&format!("\n\n{body}")).expect("parse");
+        let kinds: Vec<&str> = parsed
+            .links
+            .iter()
+            .map(|l| match l {
+                crate::task::ParsedLink::External(_) => "ext",
+                crate::task::ParsedLink::Internal(_) => "int",
+                crate::task::ParsedLink::Foreign { .. } => "for",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["ext", "int", "ext", "for"]);
+    }
+
+    #[test]
     fn test_export_and_accept_across_namespaces() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
