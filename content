@@ -1,2 +1,57 @@
 Well defined virtual filesystem representation
 
+The current representation is poorly defined. This task tracks re-implementing the
+virtual filesystem within git for tsk to be well defined.
+
+Each task is a folder represented as a single tree object in the git object store.
+Within that tree are files for the properties and content of the task. The content
+itself is a property, but is typically filtered from property queries. The title may be
+cached as a separate file called `title`, but it is optional, as the canonical title
+should always be the first line of the `content`. Tasks do *not* have IDs at this
+layer, IDs are instead the folder name of the tree object one layer above. The
+`assigned` property is a back-reference to the queue the task is assigned to.
+
+Modifications to a task are shared across all namespaces with each task having a
+distinct linear commit history. Tasks are assigned a stable ID upon creation that is
+shared across all views of that commit and implemented as a ref pointing to the latest
+commit on the task. The format of these IDs does not need to be human readable, but it
+should generally be terse. The SHA hash of the initial value is one possible
+representation of these. Commits are automatically generated detailing the modification
+made to the tasks tree, such as "updated content", "add property", "removed property",
+"updated property value", etc. (these are not necessary the exact messages that should
+be used).
+
+A "namespace" is a collection of zero or more task commit histories unified into a
+single view and represented as a tree with a particular structure. Human readable
+identifiers are mapped to the task tree objects (very similar to how submodules are
+represented). The namespace contains most of the things it does now: the `next` value
+and the set of tasks. Namespaces are basically the same as branches, except they make
+special care to avoid modifications to the task "submodules" within them from affecting
+their history, their primary purpose is to provide a human readable name and a logical
+view over the task set. Note: priorities are not handled here. Most repositories will
+only contain a single namespace. The default namespace is "tsk".
+
+Internal links using the [[tsk-<id>]] syntax are resolved on write to their stable
+identifier, and resolved back to a human readable ID on read (or ignored if the
+identifier is unknown). Namespaces are self-contained and are not intended to reference
+tasks in other namespaces directly.
+
+Queues are the relative representation for priority of tasks. Tasks are generally
+expected to exist in only one queue. Queues are represented as tree objects, with an
+`index` blob containing the ordered list of stable identifiers of tasks in the queue and
+an `inbox` where tasks that are to be assigned to the queue sit. Queues are pointed to
+by human-readable names using refs. Only one queue may be active at a time. Newly
+created tasks follow the push/append semantics on the index of the currently active
+queue. Assigning tasks to another queue removes its ref from the current queues index
+and puts it in the inbox of the destination queue. Tasks that are accepted from the
+inbox are moved into the index of the currently active queue, to the top by default but
+controllable with flags to the accept command. Tasks may be rejected and reassigned to
+the source queue. Queues are represented as commits over their tree objects, but care
+must be taken to keep the history short, as the only reason to have them be
+represented as commits instead of refs pointing to a tree is to allow for conflict
+resolution (I'm open to more ideas here though).
+
+The `tsk` command handles automatically generating commits and pushing/pulling refs in
+most cases. Possible properties are indexed using a tree object pointed to by the
+properties ref. How these indices are represented must be robust to conflicts, so they
+likely need to be their own commit histories as well.
