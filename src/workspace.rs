@@ -2100,7 +2100,7 @@ mod test {
         let (_d, file, git) = setup_dual();
         for ws in [&file, &git] {
             let t1 = ws
-                .new_task("a".into(), "see <https://x.example>".into())
+                .new_task("a".into(), "see <https://x.example> end".into())
                 .unwrap();
             let id1 = t1.id;
             ws.push_task(t1).unwrap();
