@@ -1,0 +1,3 @@
+Implement duplicates property
+
+tsk prop set <id> duplicates [[tsk-X]] should mark the task as a duplicate of another. Should also: prompt before letting both stay open; surface as a synthetic on the original (mark it as 'duplicated-by'). Single-direction duplicates property is fine for v1.
