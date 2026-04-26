@@ -260,6 +260,11 @@ enum Commands {
     /// task data is copied into refs/tsk/* and the on-disk files are removed.
     Migrate,
 
+    /// Convert blob-backed refs/tsk/<ns>/* refs to commit-backed history
+    /// (one commit per past mutation; future writes append commits). Inbox
+    /// blobs are intentionally left blob-backed.
+    MigrateHistory,
+
     /// Print the event log. Without -T, prints every event in the current
     /// namespace, newest first, in git-log style. With -T, scopes to one task.
     Log {
@@ -482,6 +487,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Accept { key } => command_accept(dir, key),
         Commands::Bundle { output } => command_bundle(dir, output),
         Commands::Migrate => command_migrate(dir),
+        Commands::MigrateHistory => command_migrate_history(dir),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
         Commands::Log { tsk_id } => command_log(dir, tsk_id),
         Commands::Prop { action } => command_prop(dir, action),
@@ -917,6 +923,19 @@ fn command_accept(dir: PathBuf, key: Option<String>) -> Result<()> {
     };
     let id = ws.accept_inbox(&key)?;
     eprintln!("Accepted as {id}");
+    Ok(())
+}
+
+fn command_migrate_history(dir: PathBuf) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    if !ws.is_git_backed() {
+        return Err(errors::Error::Parse(
+            "migrate-history only applies to git-backed workspaces".into(),
+        ));
+    }
+    let marker = std::fs::read_to_string(ws.path.join(backend::GIT_BACKED_MARKER))?;
+    let n = backend::migrate_to_commit_history(&PathBuf::from(marker.trim()))?;
+    eprintln!("Converted {n} blob refs to commit-backed history.");
     Ok(())
 }
 

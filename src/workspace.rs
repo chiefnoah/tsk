@@ -125,6 +125,16 @@ struct Renumber {
     local_loses: bool,
 }
 
+/// Author signature for any tsk-generated commit produced from
+/// workspace.rs (merges, etc.). Falls back to a tsk identity if the user's
+/// git config has no `user.name` / `user.email`.
+fn git_sig(repo: &git2::Repository) -> Result<git2::Signature<'static>> {
+    if let Ok(s) = repo.signature() {
+        return Ok(s.to_owned());
+    }
+    Ok(git2::Signature::now("tsk", "tsk@local")?)
+}
+
 enum PullAction {
     /// Local already matches remote — nothing to do.
     Skip,
@@ -370,7 +380,15 @@ impl Workspace {
 
     pub fn new_task(&self, title: String, body: String) -> Result<Task> {
         let id = self.next_id()?;
-        backend::write_task(self.store(), id, &title, &body, Loc::Active)?;
+        backend::write_task_with_event(
+            self.store(),
+            id,
+            &title,
+            &body,
+            Loc::Active,
+            "created",
+            None,
+        )?;
         self.log(id, "created", None)?;
         Ok(Task {
             id,
@@ -431,8 +449,16 @@ impl Workspace {
             Some(l) => l,
             None => Loc::Active,
         };
-        backend::write_task(self.store(), task.id, &task.title, &task.body, loc)?;
-        backend::write_attrs(self.store(), task.id, &task.attributes)?;
+        backend::write_task_with_event(
+            self.store(),
+            task.id,
+            &task.title,
+            &task.body,
+            loc,
+            "edited",
+            None,
+        )?;
+        backend::write_attrs_with_event(self.store(), task.id, &task.attributes, "edited", None)?;
         self.log(task.id, "edited", None)?;
         // After editing, refresh stack title for this id.
         self.update_stack_title(task.id, &task.title)?;
@@ -482,7 +508,7 @@ impl Workspace {
             }
             let mut attrs = backend::read_attrs(self.store(), id)?;
             attrs.insert(key.to_string(), value.to_string());
-            backend::write_attrs(self.store(), id, &attrs)?;
+            backend::write_attrs_with_event(self.store(), id, &attrs, "prop-set", Some(key))?;
             self.log(id, "prop-set", Some(key))?;
             if old_target != new_target {
                 if let Some(t) = old_target {
@@ -496,7 +522,7 @@ impl Workspace {
         } else {
             let mut attrs = backend::read_attrs(self.store(), id)?;
             attrs.insert(key.to_string(), value.to_string());
-            backend::write_attrs(self.store(), id, &attrs)?;
+            backend::write_attrs_with_event(self.store(), id, &attrs, "prop-set", Some(key))?;
             self.log(id, "prop-set", Some(key))
         }
     }
@@ -506,7 +532,7 @@ impl Workspace {
         let mut attrs = backend::read_attrs(self.store(), id)?;
         let removed = attrs.remove(key);
         if let Some(prev) = removed {
-            backend::write_attrs(self.store(), id, &attrs)?;
+            backend::write_attrs_with_event(self.store(), id, &attrs, "prop-unset", Some(key))?;
             self.log(id, "prop-unset", Some(key))?;
             if let Some(pair) = inverse_pair_for(key)
                 && let Some(t) = parse_internal_link(&prev)
@@ -1124,10 +1150,10 @@ impl Workspace {
         Ok(())
     }
 
-    /// Read a blob by its OID.
+    /// Read the content blob given a ref's target OID. Handles both commit-
+    /// backed refs (peeling through tree/content) and legacy blob refs.
     fn read_oid(&self, repo: &git2::Repository, oid: git2::Oid) -> Result<Vec<u8>> {
-        let blob = repo.find_blob(oid)?;
-        Ok(blob.content().to_vec())
+        backend::read_blob_at(repo, oid)
     }
 
     /// Walk the post-fetch shadow looking for ids that exist on both sides
@@ -1431,7 +1457,11 @@ impl Workspace {
         let to_link = format!("[[{our_ns}/tsk-{}]]", new.0);
         let prefix = "refs/tsk/";
         let our_prefix = format!("refs/tsk/{our_ns}/");
-        let mut updates: Vec<(String, Vec<u8>)> = Vec::new();
+        // Per-namespace GitStores so each write goes through the
+        // commit-backed write_with_meta path.
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER))?;
+        let git_dir = PathBuf::from(marker.trim());
+        let mut updates: Vec<(String, String, String, Vec<u8>)> = Vec::new(); // (ns, key, refname, bytes)
         for r in repo.references()? {
             let r = r?;
             let Some(name) = r.name() else { continue };
@@ -1439,18 +1469,32 @@ impl Workspace {
                 continue;
             }
             let Some(oid) = r.target() else { continue };
-            let Ok(blob) = repo.find_blob(oid) else {
-                continue;
-            };
-            let text = String::from_utf8_lossy(blob.content());
+            let bytes = backend::read_blob_at(repo, oid).unwrap_or_default();
+            let text = String::from_utf8_lossy(&bytes);
             let new_text = text.replace(&from_link, &to_link);
             if new_text != text {
-                updates.push((name.to_string(), new_text.into_bytes()));
+                // refs/tsk/<ns>/<key>
+                let rest = name.strip_prefix(prefix).unwrap_or("");
+                let (ns, key) = rest.split_once('/').unwrap_or(("", ""));
+                if !ns.is_empty() && !key.is_empty() {
+                    updates.push((
+                        ns.to_string(),
+                        key.to_string(),
+                        name.to_string(),
+                        new_text.into_bytes(),
+                    ));
+                }
             }
         }
-        for (refname, bytes) in updates {
-            let new_oid = repo.blob(&bytes)?;
-            repo.reference(&refname, new_oid, true, "tsk renumber cross-ns")?;
+        for (ns, key, _refname, bytes) in updates {
+            let store = backend::GitStore::open_namespace(git_dir.clone(), ns)?;
+            <dyn Store>::write_with_meta(
+                &store,
+                &key,
+                &bytes,
+                "renumbered-from",
+                Some(&format!("tsk-{}", old.0)),
+            )?;
         }
         Ok(())
     }
@@ -1514,7 +1558,10 @@ impl Workspace {
         Ok(())
     }
 
-    /// Three-way merge for union-mergeable refs (`log/*` and `index`).
+    /// Three-way merge for union-mergeable refs (`log/*`, `index`, `next`).
+    /// Returns the OID to point the local ref at — a merge commit for
+    /// commit-backed keys (parents = local + remote), or a plain blob OID
+    /// for the legacy/inbox blob-ref case.
     fn merge_blob(
         &self,
         repo: &git2::Repository,
@@ -1532,15 +1579,30 @@ impl Workspace {
         let merged = if rel.starts_with("log/") || rel.ends_with("/log") {
             merge_log(&local_text, &remote_text)
         } else if rel == "next" || rel.ends_with("/next") {
-            // next counter: always take the max so neither clone reissues an id.
             let l: u32 = local_text.trim().parse().unwrap_or(1);
             let r: u32 = remote_text.trim().parse().unwrap_or(1);
             format!("{}\n", l.max(r))
         } else {
-            // index: union of stack item lines, preserving local order then
-            // appending remote-only items in their relative order.
             merge_index(&local_text, &remote_text)
         };
+        // If both sides are commit-backed, write a merge commit; otherwise
+        // fall back to a plain blob (inbox keys, or transitional state).
+        let local_commit = local.and_then(|o| repo.find_commit(o).ok());
+        let remote_commit = repo.find_commit(remote).ok();
+        if local_commit.is_some() || remote_commit.is_some() {
+            let blob_oid = repo.blob(merged.as_bytes())?;
+            let mut tb = repo.treebuilder(None)?;
+            tb.insert("content", blob_oid, 0o100644)?;
+            let tree_oid = tb.write()?;
+            let tree = repo.find_tree(tree_oid)?;
+            let sig = git_sig(repo)?;
+            let parents: Vec<&git2::Commit> = [&local_commit, &remote_commit]
+                .iter()
+                .filter_map(|c| c.as_ref())
+                .collect();
+            let msg = format!("tsk({rel}): merge");
+            return Ok(repo.commit(None, &sig, &sig, &msg, &tree, &parents)?);
+        }
         Ok(repo.blob(merged.as_bytes())?)
     }
 
@@ -2926,6 +2988,101 @@ mod test {
             }
             other => panic!("expected one Namespaced link, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_git_backed_writes_create_commit_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        run_git_init(&root);
+        Workspace::init(root.clone()).unwrap();
+        let ws = Workspace::from_path(root.clone()).unwrap();
+
+        let t = ws.new_task("first".into(), "v0".into()).unwrap();
+        let id = t.id;
+        ws.push_task(t).unwrap();
+        // Edit a few times to build a chain.
+        for body in ["v1", "v2", "v3"] {
+            let mut x = ws.task(TaskIdentifier::Id(id)).unwrap();
+            x.body = body.into();
+            ws.save_task(&x).unwrap();
+        }
+        let repo = git2::Repository::open(root.join(".git")).unwrap();
+        let r = repo
+            .find_reference(&format!("refs/tsk/default/tasks/{}", id.0))
+            .unwrap();
+        let head = r.target().unwrap();
+        let mut commit = repo.find_commit(head).expect("ref points at a commit");
+        let mut chain_len = 1;
+        while let Some(parent) = commit.parents().next() {
+            commit = parent;
+            chain_len += 1;
+        }
+        assert!(
+            chain_len >= 4,
+            "expected at least 4 commits (create + 3 edits), got {chain_len}"
+        );
+        // Inbox refs stay blob-backed.
+        let other = ws.new_task("for-export".into(), "x".into()).unwrap();
+        let other_id = other.id;
+        ws.push_task(other).unwrap();
+        ws.export_to_namespace("alice", other_id).unwrap();
+        ws.switch_namespace("alice").unwrap();
+        let alice = Workspace::from_path(root.clone()).unwrap();
+        let inbox = alice.list_inbox().unwrap();
+        assert_eq!(inbox.len(), 1);
+        let inbox_ref = repo
+            .find_reference(&format!("refs/tsk/alice/{}", inbox[0].inbox_key))
+            .unwrap();
+        assert!(
+            repo.find_commit(inbox_ref.target().unwrap()).is_err(),
+            "inbox refs should remain blob-backed"
+        );
+    }
+
+    #[test]
+    fn test_migrate_to_commit_history_converts_legacy_blob_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        run_git_init(&root);
+        // Hand-write a marker so we can plant blob refs directly via the
+        // GitStore API (which still uses commit history); then we'll undo
+        // the commit wrapping for one ref and run the migration.
+        let tsk_dir = root.join(".tsk");
+        std::fs::create_dir(&tsk_dir).unwrap();
+        std::fs::write(
+            tsk_dir.join(backend::GIT_BACKED_MARKER),
+            root.join(".git").to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        // Plant a legacy blob ref.
+        let repo = git2::Repository::open(root.join(".git")).unwrap();
+        let blob_oid = repo.blob(b"legacy content").unwrap();
+        repo.reference("refs/tsk/default/tasks/1", blob_oid, true, "test setup")
+            .unwrap();
+
+        // Reading still works (auto-fallback).
+        let ws = Workspace::from_path(root.clone()).unwrap();
+        assert_eq!(
+            ws.store().read("tasks/1").unwrap().as_deref(),
+            Some(&b"legacy content"[..])
+        );
+
+        // Run the migration.
+        let n = backend::migrate_to_commit_history(&root.join(".git")).unwrap();
+        assert_eq!(n, 1);
+
+        // Now the ref points at a commit.
+        let r = repo.find_reference("refs/tsk/default/tasks/1").unwrap();
+        assert!(repo.find_commit(r.target().unwrap()).is_ok());
+        // And the content is preserved.
+        assert_eq!(
+            ws.store().read("tasks/1").unwrap().as_deref(),
+            Some(&b"legacy content"[..])
+        );
+        // Idempotent.
+        let n2 = backend::migrate_to_commit_history(&root.join(".git")).unwrap();
+        assert_eq!(n2, 0);
     }
 
     #[test]

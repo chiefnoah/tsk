@@ -14,7 +14,7 @@
 
 use crate::errors::{Error, Result};
 use crate::workspace::{Id, Remote};
-use git2::{ObjectType, Reference, Repository};
+use git2::{Reference, Repository};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -29,11 +29,42 @@ const REF_ROOT: &str = "refs/tsk";
 /// A logical blob store. Keys are forward-slash separated strings.
 pub trait Store: Send + Sync {
     fn read(&self, key: &str) -> Result<Option<Vec<u8>>>;
-    fn write(&self, key: &str, data: &[u8]) -> Result<()>;
+    fn write(&self, key: &str, data: &[u8]) -> Result<()> {
+        self.write_with_meta(key, data, "write", None)
+    }
+    /// Same as [`write`] but with a structured event/detail attached. For
+    /// the commit-backed git store this becomes the commit message; for the
+    /// file store it's discarded.
+    fn write_with_meta(
+        &self,
+        key: &str,
+        data: &[u8],
+        event: &str,
+        detail: Option<&str>,
+    ) -> Result<()>;
     fn delete(&self, key: &str) -> Result<()>;
     fn exists(&self, key: &str) -> Result<bool>;
     /// List all keys with the given prefix (no trailing slash). Returns full keys.
     fn list(&self, prefix: &str) -> Result<Vec<String>>;
+}
+
+/// Format a commit message for a write to `key`. Single function so the layout
+/// is easy to change later (subject + structured trailer for now).
+pub fn format_commit_message(key: &str, event: &str, detail: Option<&str>) -> String {
+    let subject = match detail {
+        Some(d) => format!("tsk({key}): {event} {d}"),
+        None => format!("tsk({key}): {event}"),
+    };
+    format!(
+        "{subject}\n\n# tsk-meta\nkey: {key}\nevent: {event}\ndetail: {}\n",
+        detail.unwrap_or("")
+    )
+}
+
+/// `inbox/<src-ns>-<src-id>` blobs are intentionally not commit-backed — they
+/// are super transient (deleted on accept) and have no useful history.
+fn is_blob_only_key(key: &str) -> bool {
+    key.starts_with("inbox/")
 }
 
 // ─── FileStore ──────────────────────────────────────────────────────────────
@@ -62,7 +93,14 @@ impl Store for FileStore {
         }
     }
 
-    fn write(&self, key: &str, data: &[u8]) -> Result<()> {
+    fn write_with_meta(
+        &self,
+        key: &str,
+        data: &[u8],
+        _event: &str,
+        _detail: Option<&str>,
+    ) -> Result<()> {
+        // Meta is discarded; the file backend has no commit history to attach to.
         let p = self.path(key);
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent)?;
@@ -194,25 +232,121 @@ fn try_ref<'r>(repo: &'r Repository, name: &str) -> Result<Option<Reference<'r>>
     }
 }
 
+/// Read the underlying content blob given a ref's target OID. Handles both
+/// commit-backed refs (peel commit→tree→content file) and legacy blob refs
+/// (return the blob directly), so we keep working through migrations.
+pub fn read_blob_at(repo: &Repository, oid: git2::Oid) -> Result<Vec<u8>> {
+    if let Ok(commit) = repo.find_commit(oid) {
+        let tree = commit.tree()?;
+        let entry = tree
+            .get_name("content")
+            .ok_or_else(|| Error::Parse("commit tree missing 'content'".into()))?;
+        let blob = entry.to_object(repo)?.peel_to_blob()?;
+        return Ok(blob.content().to_vec());
+    }
+    let blob = repo.find_blob(oid)?;
+    Ok(blob.content().to_vec())
+}
+
+/// Author signature for tsk-generated commits. Falls back to a tsk-specific
+/// signature if the user hasn't configured `user.name` / `user.email`.
+fn git_signature(repo: &Repository) -> Result<git2::Signature<'static>> {
+    if let Ok(s) = repo.signature() {
+        return Ok(s.to_owned());
+    }
+    Ok(git2::Signature::now("tsk", "tsk@local")?)
+}
+
+/// One-shot migration: convert every blob-backed ref under `refs/tsk/<ns>/...`
+/// to a single-commit chain, except for inbox/* (intentionally blob-backed).
+/// Idempotent — already-commit refs are skipped.
+pub fn migrate_to_commit_history(git_dir: &Path) -> Result<usize> {
+    let repo = Repository::open(git_dir)?;
+    let prefix = format!("{REF_ROOT}/");
+    let mut converted = 0usize;
+    let names: Vec<String> = repo
+        .references()?
+        .filter_map(|r| r.ok().and_then(|r| r.name().map(str::to_string)))
+        .filter(|n| n.starts_with(&prefix))
+        .collect();
+    let sig = git_signature(&repo)?;
+    for refname in names {
+        let Some(rest) = refname.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some((_ns, key)) = rest.split_once('/') else {
+            continue;
+        };
+        if is_blob_only_key(key) {
+            continue;
+        }
+        let r = repo.find_reference(&refname)?;
+        let Some(target) = r.target() else { continue };
+        // Already a commit? skip.
+        if repo.find_commit(target).is_ok() {
+            continue;
+        }
+        // Build a one-file tree wrapping the existing blob and commit it.
+        let mut tb = repo.treebuilder(None)?;
+        tb.insert("content", target, 0o100644)?;
+        let tree_oid = tb.write()?;
+        let tree = repo.find_tree(tree_oid)?;
+        let msg = format_commit_message(key, "migrated", None);
+        let commit_oid = repo.commit(None, &sig, &sig, &msg, &tree, &[])?;
+        repo.reference(&refname, commit_oid, true, &msg)?;
+        converted += 1;
+    }
+    Ok(converted)
+}
+
 impl Store for GitStore {
     fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let repo = self.repo()?;
         let Some(r) = try_ref(&repo, &self.refname(key))? else {
             return Ok(None);
         };
-        let blob = r.peel(ObjectType::Blob)?;
-        Ok(Some(
-            blob.as_blob()
-                .ok_or_else(|| Error::Parse("not a blob".into()))?
-                .content()
-                .to_vec(),
-        ))
+        let Some(target) = r.target() else {
+            return Ok(None);
+        };
+        Ok(Some(read_blob_at(&repo, target)?))
     }
 
-    fn write(&self, key: &str, data: &[u8]) -> Result<()> {
+    fn write_with_meta(
+        &self,
+        key: &str,
+        data: &[u8],
+        event: &str,
+        detail: Option<&str>,
+    ) -> Result<()> {
         let repo = self.repo()?;
-        let oid = repo.blob(data)?;
-        repo.reference(&self.refname(key), oid, true, "tsk write")?;
+        let refname = self.refname(key);
+        if is_blob_only_key(key) {
+            let oid = repo.blob(data)?;
+            repo.reference(&refname, oid, true, "tsk write")?;
+            return Ok(());
+        }
+        // Build a one-file tree {content: <blob>} and commit it onto the
+        // existing chain (if any) for this ref.
+        let blob_oid = repo.blob(data)?;
+        let mut tb = repo.treebuilder(None)?;
+        tb.insert("content", blob_oid, 0o100644)?;
+        let tree_oid = tb.write()?;
+        let tree = repo.find_tree(tree_oid)?;
+        let sig = git_signature(&repo)?;
+        let parent_commit = match try_ref(&repo, &refname)? {
+            Some(r) => r.target().and_then(|oid| repo.find_commit(oid).ok()),
+            None => None,
+        };
+        // If the parent's tree already matches, skip — don't pile up no-op commits.
+        if let Some(parent) = &parent_commit
+            && parent.tree_id() == tree_oid
+        {
+            return Ok(());
+        }
+        let parents: Vec<&git2::Commit> = parent_commit.iter().collect();
+        let msg = format_commit_message(key, event, detail);
+        let commit_oid = repo.commit(None, &sig, &sig, &msg, &tree, &parents)?;
+        repo.reference(&refname, commit_oid, true, &msg)?;
         Ok(())
     }
 
@@ -292,9 +426,25 @@ pub fn read_task(store: &dyn Store, id: Id) -> Result<Option<(String, String, Lo
 }
 
 pub fn write_task(store: &dyn Store, id: Id, title: &str, body: &str, loc: Loc) -> Result<()> {
+    write_task_with_event(store, id, title, body, loc, "write", None)
+}
+
+pub fn write_task_with_event(
+    store: &dyn Store,
+    id: Id,
+    title: &str,
+    body: &str,
+    loc: Loc,
+    event: &str,
+    detail: Option<&str>,
+) -> Result<()> {
     let payload = format!("{}\n\n{}", title.trim(), body.trim());
-    store.write(&task_key(id, loc == Loc::Archived), payload.as_bytes())?;
-    Ok(())
+    store.write_with_meta(
+        &task_key(id, loc == Loc::Archived),
+        payload.as_bytes(),
+        event,
+        detail,
+    )
 }
 
 pub fn move_task(store: &dyn Store, id: Id, to: Loc) -> Result<()> {
@@ -369,11 +519,25 @@ pub fn read_attrs(store: &dyn Store, id: Id) -> Result<BTreeMap<String, String>>
 }
 
 pub fn write_attrs(store: &dyn Store, id: Id, attrs: &BTreeMap<String, String>) -> Result<()> {
+    write_attrs_with_event(store, id, attrs, "write", None)
+}
+
+pub fn write_attrs_with_event(
+    store: &dyn Store,
+    id: Id,
+    attrs: &BTreeMap<String, String>,
+    event: &str,
+    detail: Option<&str>,
+) -> Result<()> {
     let body = attrs
         .iter()
         .map(|(k, v)| format!("{k}\t{v}\n"))
         .collect::<String>();
-    write_or_delete(store, &format!("attrs/{}", id.0), &body)
+    let key = format!("attrs/{}", id.0);
+    if body.is_empty() {
+        return store.delete(&key);
+    }
+    store.write_with_meta(&key, body.as_bytes(), event, detail)
 }
 
 pub fn read_backlinks(store: &dyn Store, id: Id) -> Result<HashSet<Id>> {
