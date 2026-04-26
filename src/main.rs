@@ -2,6 +2,7 @@ mod errors;
 mod fzf;
 mod namespace;
 mod object;
+mod properties;
 mod queue;
 mod task;
 mod util;
@@ -152,6 +153,12 @@ enum Commands {
         #[arg(short = 'R')]
         remote: Option<String>,
     },
+    /// Get/set/find tasks by property. Properties are zero-or-more text values
+    /// stored as files in the task's tree object; each value is one line.
+    Prop {
+        #[command(subcommand)]
+        action: PropAction,
+    },
     /// Manage namespaces.
     Namespace {
         #[command(subcommand)]
@@ -170,6 +177,46 @@ enum Commands {
     Completion {
         #[arg(short = 's')]
         shell: Shell,
+    },
+}
+
+#[derive(Subcommand)]
+enum PropAction {
+    /// List all values for every property on a task.
+    List {
+        #[command(flatten)]
+        task_id: TaskId,
+    },
+    /// Append a value to a property on a task. Creates the property if absent.
+    Add {
+        #[command(flatten)]
+        task_id: TaskId,
+        key: String,
+        value: String,
+    },
+    /// Replace the entire value list for a property. With no values, removes the property.
+    Set {
+        #[command(flatten)]
+        task_id: TaskId,
+        key: String,
+        values: Vec<String>,
+    },
+    /// Remove a single value (or, with no value, the entire property).
+    Unset {
+        #[command(flatten)]
+        task_id: TaskId,
+        key: String,
+        value: Option<String>,
+    },
+    /// List every property key currently in use across the workspace.
+    Keys,
+    /// List distinct values seen for a property key.
+    Values { key: String },
+    /// Find every task in the active namespace whose `key` is set (and equals
+    /// `value`, if supplied). With both omitted, fzf-picks the key, then value.
+    Find {
+        key: Option<String>,
+        value: Option<String>,
     },
 }
 
@@ -283,6 +330,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Inbox { remote } => command_inbox(dir, remote),
         Commands::Accept { key } => command_accept(dir, key),
         Commands::Reject { key, remote } => command_reject(dir, key, remote),
+        Commands::Prop { action } => command_prop(dir, action),
         Commands::Namespace { action } => command_namespace(dir, action),
         Commands::Queue { action } => command_queue(dir, action),
         Commands::Switch { name } => command_namespace_switch(dir, name),
@@ -383,8 +431,10 @@ fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
     let task = Workspace::from_path(dir)?.task(task_id.into())?;
     if show_attrs && !task.attributes.is_empty() {
         println!("---");
-        for (k, v) in &task.attributes {
-            println!("{k}: \"{v}\"");
+        for (k, vs) in &task.attributes {
+            for v in vs {
+                println!("{k}: \"{v}\"");
+            }
         }
         println!("---");
     }
@@ -496,6 +546,77 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
     println!("Rejected {key}");
     if let Some(r) = effective_remote(remote) {
         let _ = ws.git_push(&r);
+    }
+    Ok(())
+}
+
+fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    match action {
+        PropAction::List { task_id } => {
+            let task = ws.task(task_id.into())?;
+            for (k, vs) in &task.attributes {
+                for v in vs {
+                    println!("{k}\t{v}");
+                }
+            }
+        }
+        PropAction::Add {
+            task_id,
+            key,
+            value,
+        } => ws.add_property_value(task_id.into(), &key, &value)?,
+        PropAction::Set {
+            task_id,
+            key,
+            values,
+        } => ws.set_property(task_id.into(), &key, values)?,
+        PropAction::Unset {
+            task_id,
+            key,
+            value,
+        } => ws.unset_property(task_id.into(), &key, value.as_deref())?,
+        PropAction::Keys => {
+            for k in ws.property_keys()? {
+                println!("{k}");
+            }
+        }
+        PropAction::Values { key } => {
+            for v in ws.property_values(&key)? {
+                println!("{v}");
+            }
+        }
+        PropAction::Find { key, value } => {
+            let key = match key {
+                Some(k) => k,
+                None => fzf::select::<_, String, _>(
+                    ws.property_keys()?,
+                    ["--prompt=key> "],
+                )?
+                .ok_or_else(|| errors::Error::Parse("No key selected".into()))?,
+            };
+            let value = match value {
+                Some(v) if v == "<any>" => None,
+                Some(v) => Some(v),
+                None => {
+                    let mut choices = ws.property_values(&key)?;
+                    choices.insert(0, "<any>".to_string());
+                    let picked = fzf::select::<_, String, _>(
+                        choices,
+                        ["--prompt=value> "],
+                    )?
+                    .ok_or_else(|| errors::Error::Parse("No value selected".into()))?;
+                    if picked == "<any>" {
+                        None
+                    } else {
+                        Some(picked)
+                    }
+                }
+            };
+            for (id, _stable, title) in ws.find_by_property(&key, value.as_deref())? {
+                println!("{id}\t{title}");
+            }
+        }
     }
     Ok(())
 }

@@ -156,6 +156,59 @@ fn concurrent_pushes_dont_clobber() {
 }
 
 #[test]
+fn property_set_find_round_trip_via_binary() {
+    let (_dir, alice, _bob) = setup_two_clones();
+
+    tsk_ok(&alice, &["push", "first"]);
+    tsk_ok(&alice, &["push", "second"]);
+    // Set priority on tsk-1 (the bottom of stack — first pushed).
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "priority", "high"]);
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "tag", "alpha"]);
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "tag", "beta"]);
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-2", "priority", "low"]);
+
+    // List on tsk-1: priority=high, tag=alpha, tag=beta.
+    let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
+    assert!(list.contains("priority\thigh"), "got {list}");
+    assert!(list.contains("tag\talpha"), "got {list}");
+    assert!(list.contains("tag\tbeta"), "got {list}");
+
+    // Keys index has both `priority` and `tag`.
+    let keys = tsk_ok(&alice, &["prop", "keys"]);
+    assert!(keys.contains("priority"), "got {keys}");
+    assert!(keys.contains("tag"), "got {keys}");
+
+    // Find tasks with priority=high.
+    let found = tsk_ok(&alice, &["prop", "find", "priority", "high"]);
+    assert!(found.contains("tsk-1"), "got {found}");
+    assert!(!found.contains("tsk-2"), "got {found}");
+
+    // Unsetting one value on multi-value property.
+    tsk_ok(&alice, &["prop", "unset", "-T", "tsk-1", "tag", "alpha"]);
+    let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
+    assert!(!list.contains("tag\talpha"), "alpha should be gone: {list}");
+    assert!(list.contains("tag\tbeta"), "beta survives: {list}");
+
+    // Replace whole property.
+    tsk_ok(&alice, &["prop", "set", "-T", "tsk-1", "priority", "medium"]);
+    let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
+    assert!(list.contains("priority\tmedium"), "got {list}");
+    assert!(!list.contains("priority\thigh"), "got {list}");
+}
+
+#[test]
+fn property_index_pushed_and_visible_to_other_clone() {
+    let (_dir, alice, bob) = setup_two_clones();
+    tsk_ok(&alice, &["push", "shared task"]);
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "owner", "alice"]);
+    tsk_ok(&alice, &["git-push"]);
+
+    tsk_ok(&bob, &["git-pull"]);
+    let found = tsk_ok(&bob, &["prop", "find", "owner", "alice"]);
+    assert!(found.contains("tsk-1"), "bob sees alice's index: {found}");
+}
+
+#[test]
 fn share_into_namespace_round_trip() {
     let (_dir, alice, _bob) = setup_two_clones();
 

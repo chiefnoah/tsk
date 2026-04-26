@@ -40,7 +40,8 @@ impl Display for StableId {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Task {
     pub content: String,
-    pub properties: BTreeMap<String, String>,
+    /// Each property is zero or more text values (one per line in storage).
+    pub properties: BTreeMap<String, Vec<String>>,
 }
 
 impl Task {
@@ -73,17 +74,18 @@ fn build_tree(
     repo: &Repository,
     content_oid: Oid,
     title: &str,
-    properties: &BTreeMap<String, String>,
+    properties: &BTreeMap<String, Vec<String>>,
 ) -> Result<Oid> {
     let mut tb = repo.treebuilder(None)?;
     tb.insert(CONTENT_FILE, content_oid, 0o100644)?;
     let title_oid = repo.blob(title.as_bytes())?;
     tb.insert(TITLE_FILE, title_oid, 0o100644)?;
-    for (k, v) in properties {
+    for (k, values) in properties {
         if k == CONTENT_FILE || k == TITLE_FILE {
             continue;
         }
-        let oid = repo.blob(v.as_bytes())?;
+        let body: String = values.iter().map(|v| format!("{v}\n")).collect();
+        let oid = repo.blob(body.as_bytes())?;
         tb.insert(k.as_str(), oid, 0o100644)?;
     }
     Ok(tb.write()?)
@@ -154,7 +156,9 @@ pub fn read(repo: &Repository, id: &StableId) -> Result<Option<Task>> {
             CONTENT_FILE => task.content = val,
             TITLE_FILE => {} // cache only; canonical title is content's first line
             _ => {
-                task.properties.insert(name, val);
+                let values: Vec<String> =
+                    val.lines().map(str::to_string).collect();
+                task.properties.insert(name, values);
             }
         }
     }
@@ -201,7 +205,10 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
         let mut t = Task::new("Hello\n\nbody text");
-        t.properties.insert("priority".into(), "high".into());
+        t.properties
+            .insert("priority".into(), vec!["high".into()]);
+        t.properties
+            .insert("tag".into(), vec!["alpha".into(), "beta".into()]);
         let id = create(&repo, &t, "create").unwrap();
         let read_back = read(&repo, &id).unwrap().unwrap();
         assert_eq!(read_back.content, t.content);

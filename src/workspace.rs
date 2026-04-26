@@ -9,7 +9,7 @@
 
 use crate::errors::{Error, Result};
 use crate::object::{self, StableId, Task as TaskObj};
-use crate::{namespace, queue, util};
+use crate::{namespace, properties, queue, util};
 use git2::Repository;
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -69,12 +69,13 @@ pub struct StackEntry {
 }
 
 /// User-facing task: human id (in active namespace) + content + properties.
+/// Each property holds zero or more text values.
 pub struct Task {
     pub id: Id,
     pub stable: StableId,
     pub title: String,
     pub body: String,
-    pub attributes: BTreeMap<String, String>,
+    pub attributes: BTreeMap<String, Vec<String>>,
 }
 
 impl Display for Task {
@@ -247,7 +248,103 @@ impl Workspace {
             content,
             properties: task.attributes.clone(),
         };
-        object::update(&repo, &task.stable, &task_obj, "edit")
+        object::update(&repo, &task.stable, &task_obj, "edit")?;
+        properties::reindex_task(&repo, &task.stable, &task.attributes)?;
+        Ok(())
+    }
+
+    /// Append a value to a property on a task. If the value is already
+    /// present, this is a no-op. Persists both the task tree and the index.
+    pub fn add_property_value(
+        &self,
+        identifier: TaskIdentifier,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        let mut task = self.task(identifier)?;
+        let entry = task.attributes.entry(key.to_string()).or_default();
+        if !entry.iter().any(|v| v == value) {
+            entry.push(value.to_string());
+        }
+        self.save_task(&task)
+    }
+
+    /// Replace the entire value list for a property.
+    pub fn set_property(
+        &self,
+        identifier: TaskIdentifier,
+        key: &str,
+        values: Vec<String>,
+    ) -> Result<()> {
+        let mut task = self.task(identifier)?;
+        if values.is_empty() {
+            task.attributes.remove(key);
+        } else {
+            task.attributes.insert(key.to_string(), values);
+        }
+        self.save_task(&task)
+    }
+
+    /// Remove a single value from a property, or the whole property if
+    /// `value` is None.
+    pub fn unset_property(
+        &self,
+        identifier: TaskIdentifier,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<()> {
+        let mut task = self.task(identifier)?;
+        match value {
+            None => {
+                task.attributes.remove(key);
+            }
+            Some(v) => {
+                if let Some(entry) = task.attributes.get_mut(key) {
+                    entry.retain(|x| x != v);
+                    if entry.is_empty() {
+                        task.attributes.remove(key);
+                    }
+                }
+            }
+        }
+        self.save_task(&task)
+    }
+
+    pub fn property_keys(&self) -> Result<Vec<String>> {
+        properties::list_keys(&self.repo()?)
+    }
+
+    pub fn property_values(&self, key: &str) -> Result<Vec<String>> {
+        properties::values_for(&self.repo()?, key)
+    }
+
+    /// Find tasks (by human id, scoped to active namespace) that have
+    /// `key` set; if `value` is supplied, restricts to entries containing
+    /// that value.
+    pub fn find_by_property(
+        &self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<Vec<(Id, StableId, String)>> {
+        let repo = self.repo()?;
+        let stables = properties::find(&repo, key, value)?;
+        let ns = namespace::read(&repo, &self.namespace())?;
+        let mut by_stable: BTreeMap<&StableId, u32> = BTreeMap::new();
+        for (h, s) in &ns.mapping {
+            by_stable.insert(s, *h);
+        }
+        let mut out = Vec::new();
+        for stable in stables {
+            // Only return tasks visible in the active namespace.
+            let Some(&human) = by_stable.get(&stable) else {
+                continue;
+            };
+            let title = object::read(&repo, &stable)?
+                .map(|t| t.title().to_string())
+                .unwrap_or_default();
+            out.push((Id(human), stable, title));
+        }
+        Ok(out)
     }
 
     pub fn push_task(&self, task: Task) -> Result<()> {
