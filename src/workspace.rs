@@ -1770,6 +1770,40 @@ impl Workspace {
         Ok(new_id)
     }
 
+    /// Reject a pending inbox item: write a `rejected` event to the source's
+    /// event log so the assignor sees it, then delete the inbox blob without
+    /// creating a local task.
+    pub fn reject_inbox(&self, inbox_key: &str) -> Result<(String, u32)> {
+        let key = if inbox_key.starts_with("inbox/") {
+            inbox_key.to_string()
+        } else {
+            format!("inbox/{inbox_key}")
+        };
+        let data = self
+            .store()
+            .read(&key)?
+            .ok_or_else(|| Error::Parse(format!("Inbox item '{inbox_key}' not found")))?;
+        let payload = backend::InboxPayload::parse(&String::from_utf8_lossy(&data))?;
+
+        let cur = self.namespace();
+        let detail = format!("[[{}/inbox]]", cur);
+        let author = self.git_author().unwrap_or_default();
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER))?;
+        let src_store = backend::GitStore::open_namespace(
+            PathBuf::from(marker.trim()),
+            payload.source_namespace.clone(),
+        )?;
+        backend::append_log(
+            &src_store,
+            Id(payload.source_id),
+            "rejected",
+            Some(&detail),
+            &author,
+        )?;
+        self.store().delete(&key)?;
+        Ok((payload.source_namespace, payload.source_id))
+    }
+
     pub fn migrate_to_git(&self) -> Result<PathBuf> {
         if self.is_git_backed() {
             return Err(Error::Parse("Workspace is already git-backed".into()));

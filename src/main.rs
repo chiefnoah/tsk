@@ -277,6 +277,15 @@ enum Commands {
         key: Option<String>,
     },
 
+    /// Reject a pending inbox item, removing it without creating a local task.
+    /// Writes a `rejected` event to the source's event log so the assignor
+    /// sees it.
+    Reject {
+        /// Inbox key (e.g. `alice-3` or `inbox/alice-3`). With no argument,
+        /// rejects the first item in the inbox.
+        key: Option<String>,
+    },
+
     /// Bundle the entire workspace into a zip archive.
     Bundle {
         /// Output path. Defaults to ./tsk.zip.
@@ -521,6 +530,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Assign { target, task_id } => command_assign(dir, target, task_id),
         Commands::Inbox { remote } => command_inbox(dir, remote),
         Commands::Accept { key } => command_accept(dir, key),
+        Commands::Reject { key } => command_reject(dir, key),
         Commands::Bundle { output } => command_bundle(dir, output),
         Commands::Migrate => command_migrate(dir),
         Commands::MigrateHistory => command_migrate_history(dir),
@@ -962,6 +972,23 @@ fn command_accept(dir: PathBuf, key: Option<String>) -> Result<()> {
     };
     let id = ws.accept_inbox(&key)?;
     eprintln!("Accepted as {id}");
+    Ok(())
+}
+
+fn command_reject(dir: PathBuf, key: Option<String>) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let key = match key {
+        Some(k) => k,
+        None => {
+            ws.list_inbox()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| errors::Error::Parse("Inbox is empty".into()))?
+                .inbox_key
+        }
+    };
+    let (src_ns, src_id) = ws.reject_inbox(&key)?;
+    eprintln!("Rejected inbox item from {src_ns}/tsk-{src_id}");
     Ok(())
 }
 
