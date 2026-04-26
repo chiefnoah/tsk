@@ -24,6 +24,17 @@ fn default_dir() -> Result<PathBuf> {
     Ok(current_dir()?)
 }
 
+const NEW_SENTINEL: &str = "<new>";
+
+fn prompt_line(prompt: &str) -> Result<String> {
+    use std::io::Write as _;
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+    let mut s = String::new();
+    io::stdin().read_line(&mut s)?;
+    Ok(s.trim_end_matches(['\n', '\r']).to_string())
+}
+
 fn parse_id(s: &str) -> std::result::Result<Id, &'static str> {
     Id::from_str(s).map_err(|_| "Unable to parse tsk- ID")
 }
@@ -284,12 +295,22 @@ enum PropAction {
         #[command(flatten)]
         task_id: TaskId,
     },
-    /// Set a property. Value may be omitted for unary properties.
+    /// Set a property. With both KEY and VALUE supplied, sets directly.
+    /// With KEY but no VALUE, fzf-picks a value from existing values for
+    /// that key (and, with -l, also from links/URLs in the task body).
+    /// With neither, fzf-picks the key first, then the value. The fzf list
+    /// always includes a `<new>` sentinel for entering a fresh string.
     Set {
         #[command(flatten)]
         task_id: TaskId,
-        key: String,
+        /// Property name. If omitted, the user is prompted via fzf.
+        key: Option<String>,
+        /// New value. If omitted, the user is prompted via fzf.
         value: Option<String>,
+        /// Also include links/URLs parsed from the task body as value
+        /// candidates.
+        #[arg(short = 'l', default_value_t = false)]
+        from_body: bool,
     },
     /// Remove a property from a task. No-op if not set.
     Unset {
@@ -968,9 +989,45 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
             task_id,
             key,
             value,
+            from_body,
         } => {
             let id = ws.task(task_id.into())?.id;
-            ws.set_property(id, &key, value.as_deref().unwrap_or(""))?;
+            let key = match key {
+                Some(k) => k,
+                None => {
+                    let mut candidates = ws.all_property_keys()?;
+                    candidates.push(NEW_SENTINEL.to_string());
+                    let picked = fzf::select::<_, String, _>(candidates, ["--prompt=property> "])?
+                        .ok_or_else(|| errors::Error::Parse("No property selected".into()))?;
+                    if picked == NEW_SENTINEL {
+                        prompt_line("new property name: ")?
+                    } else {
+                        picked
+                    }
+                }
+            };
+            let value = match value {
+                Some(v) => v,
+                None => {
+                    let mut candidates = ws.property_values_for(&key)?;
+                    if from_body {
+                        for c in ws.body_candidates(id)? {
+                            if !candidates.contains(&c) {
+                                candidates.push(c);
+                            }
+                        }
+                    }
+                    candidates.push(NEW_SENTINEL.to_string());
+                    let picked = fzf::select::<_, String, _>(candidates, ["--prompt=value> "])?
+                        .ok_or_else(|| errors::Error::Parse("No value selected".into()))?;
+                    if picked == NEW_SENTINEL {
+                        prompt_line("new value (empty for unary): ")?
+                    } else {
+                        picked
+                    }
+                }
+            };
+            ws.set_property(id, &key, &value)?;
         }
         PropAction::Unset { task_id, key } => {
             let id = ws.task(task_id.into())?.id;

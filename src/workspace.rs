@@ -571,6 +571,52 @@ impl Workspace {
         Ok(out)
     }
 
+    /// Every property key that has ever been set on any task in this
+    /// namespace, sorted alphabetically.
+    pub fn all_property_keys(&self) -> Result<Vec<String>> {
+        let mut seen: std::collections::BTreeSet<String> = Default::default();
+        let mut ids: Vec<Id> = backend::list_active(self.store())?;
+        ids.extend(backend::list_archive(self.store())?);
+        for id in ids {
+            for k in backend::read_attrs(self.store(), id)?.into_keys() {
+                seen.insert(k);
+            }
+        }
+        Ok(seen.into_iter().collect())
+    }
+
+    /// Every distinct value seen for a given property `key` across the
+    /// workspace, sorted alphabetically.
+    pub fn property_values_for(&self, key: &str) -> Result<Vec<String>> {
+        let mut seen: std::collections::BTreeSet<String> = Default::default();
+        let mut ids: Vec<Id> = backend::list_active(self.store())?;
+        ids.extend(backend::list_archive(self.store())?);
+        for id in ids {
+            if let Some(v) = backend::read_attrs(self.store(), id)?.get(key) {
+                seen.insert(v.clone());
+            }
+        }
+        Ok(seen.into_iter().collect())
+    }
+
+    /// Candidate values pulled from a task's body: every link the parser
+    /// found, rendered as `[[tsk-N]]` / `[[ns-N]]` / URL strings.
+    pub fn body_candidates(&self, id: Id) -> Result<Vec<String>> {
+        let task = self.task(TaskIdentifier::Id(id))?;
+        let Some(parsed) = parse_task(&task.to_string()) else {
+            return Ok(Vec::new());
+        };
+        Ok(parsed
+            .links
+            .iter()
+            .map(|l| match l {
+                crate::task::ParsedLink::External(u) => u.to_string(),
+                crate::task::ParsedLink::Internal(i) => format!("[[{i}]]"),
+                crate::task::ParsedLink::Foreign { prefix, id } => format!("[[{prefix}-{id}]]"),
+            })
+            .collect())
+    }
+
     /// Find every task whose property `key` is set (and equals `value`, if
     /// provided). Scans both active and archived. Includes synthetic
     /// properties so `state=archived`, `has-links=true`, etc. work.
@@ -2046,6 +2092,38 @@ mod test {
                 zip.file_names().map(|s| s.to_string()).collect();
             assert!(names.contains(&format!("log/{}", id.0)));
             std::fs::remove_file(&dest).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_property_candidate_queries() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            let t1 = ws
+                .new_task("a".into(), "see <https://x.example>".into())
+                .unwrap();
+            let id1 = t1.id;
+            ws.push_task(t1).unwrap();
+            let t2 = ws.new_task("b".into(), "and [[tsk-1]]".into()).unwrap();
+            let id2 = t2.id;
+            ws.push_task(t2).unwrap();
+            ws.set_property(id1, "priority", "high").unwrap();
+            ws.set_property(id2, "priority", "low").unwrap();
+            ws.set_property(id1, "tag", "urgent").unwrap();
+
+            let mut keys = ws.all_property_keys().unwrap();
+            keys.sort();
+            assert_eq!(keys, vec!["priority".to_string(), "tag".to_string()]);
+
+            let mut vals = ws.property_values_for("priority").unwrap();
+            vals.sort();
+            assert_eq!(vals, vec!["high".to_string(), "low".to_string()]);
+            assert!(ws.property_values_for("missing").unwrap().is_empty());
+
+            let body_cands = ws.body_candidates(id1).unwrap();
+            assert!(body_cands.iter().any(|c| c.contains("x.example")));
+            let body_cands = ws.body_candidates(id2).unwrap();
+            assert!(body_cands.iter().any(|c| c == &format!("[[{id1}]]")));
         }
     }
 
