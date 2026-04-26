@@ -1,0 +1,3 @@
+Merge driver for refs/tsk/queues/*
+
+Concurrent pushes currently force-overwrite (documented in integration test multi_user.rs::concurrent_pushes_dont_clobber). Implement a real 3-way merge for the queue index and inbox trees so two clones can push queue changes without clobbering each other.
