@@ -1,0 +1,7 @@
+Store per-ref mutations as real git commit history
+
+Today refs/tsk/<ns>/<key> points directly at a blob, so there's no parent chain. Reflog gives you local history but cross-clone merges have to be hand-rolled (which we currently do for log/index only).
+
+Idea: behind every blob ref keep a chain of commits (one per mutation) on a parallel ref like refs/tsk/<ns>/<key>.history, and have the working ref point at the latest commit's tree. git merge then gets you proper merging semantics, blame, and reflog/grafts for free; tsk show -log can render git log directly.
+
+Big rewrite vs current append-blob model. Worth doing if cross-clone collaboration becomes a real pain point.
