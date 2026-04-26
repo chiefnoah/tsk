@@ -251,6 +251,9 @@ enum NamespaceAction {
     /// Switch active namespace. With no name, fzf-picks from existing
     /// namespaces (plus a `<new>` sentinel for creating one on the fly).
     Switch { name: Option<String> },
+    /// List every task bound in a namespace (defaults to active),
+    /// regardless of which queue (if any) it's on. One row per id.
+    Tasks { name: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -723,6 +726,12 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
         }
         NamespaceAction::Current => println!("{}", ws.namespace()),
         NamespaceAction::Switch { name } => return resolve_and_switch_namespace(&ws, name),
+        NamespaceAction::Tasks { name } => {
+            let target = name.unwrap_or_else(|| ws.namespace());
+            for entry in ws.list_namespace_tasks(&target)? {
+                println!("{}\t{}", entry.id, entry.title);
+            }
+        }
     }
     Ok(())
 }

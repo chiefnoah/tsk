@@ -412,6 +412,25 @@ impl Workspace {
         Ok(out)
     }
 
+    /// Every (human id, stable id, title) bound in the given namespace,
+    /// sorted by human id ascending. Independent of any queue.
+    pub fn list_namespace_tasks(&self, name: &str) -> Result<Vec<StackEntry>> {
+        let repo = self.repo()?;
+        let ns = namespace::read(&repo, name)?;
+        let mut out = Vec::with_capacity(ns.mapping.len());
+        for (human, stable) in ns.mapping {
+            let title = object::read(&repo, &stable)?
+                .map(|t| t.title().to_string())
+                .unwrap_or_default();
+            out.push(StackEntry {
+                id: Id(human),
+                stable,
+                title,
+            });
+        }
+        Ok(out)
+    }
+
     /// One commit on a tsk ref (task / namespace / queue).
     pub fn log_ref(&self, refname: &str) -> Result<Vec<LogCommit>> {
         let repo = self.repo()?;
@@ -884,6 +903,25 @@ mod test {
         assert_eq!(pulled.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn list_namespace_tasks_shows_all_bindings_including_dropped() {
+        let (_d, ws) = fresh_workspace();
+        let t1 = ws.new_task("alpha".into(), "".into()).unwrap();
+        let id1 = t1.id;
+        ws.push_task(t1).unwrap();
+        let t2 = ws.new_task("beta".into(), "".into()).unwrap();
+        let id2 = t2.id;
+        ws.push_task(t2).unwrap();
+        // Dropped tasks keep their namespace binding (per status property design).
+        ws.drop(TaskIdentifier::Id(id1)).unwrap();
+
+        let listed = ws.list_namespace_tasks("tsk").unwrap();
+        let ids: Vec<_> = listed.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![id1, id2]);
+        let titles: Vec<_> = listed.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, vec!["alpha", "beta"]);
     }
 
     #[test]

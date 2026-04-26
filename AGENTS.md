@@ -45,6 +45,7 @@ The active selection is per-clone (lives in `<git-dir>/tsk/`):
 
 ```
 tsk namespace current     # what you're reading/writing as
+tsk namespace tasks       # every (id, title) bound here, ignoring queue
 tsk queue current         # what your push/list/drop affect
 tsk switch <name>         # switch namespace (no arg = fzf-pick)
 tsk queue switch <name>
