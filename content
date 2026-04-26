@@ -1,0 +1,4 @@
+tsk prop set should use fzf to query exsting props if unspecified
+
+Should also have a flag to query from notes for links or plain values. The fzf options
+should include an option to create a new property
