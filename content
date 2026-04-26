@@ -1,0 +1,3 @@
+tsk bundle for offline transfer
+
+Add export/import of a task subset as a git bundle so users can hand off work without a shared remote. Should bundle refs/tsk/tasks/<sha> plus any namespace/queue/property refs needed to make the subset coherent.
