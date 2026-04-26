@@ -25,7 +25,7 @@ colored = "3"
 open = "5"
 itertools = "0"
 git2 = { version = "0.20", default-features = false }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"
