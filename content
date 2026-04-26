@@ -1,0 +1,4 @@
+Add basic metadata
+
+Currently have basic metadata reading done. There's nothing *writing* metadata, but
+we'll get there next.
