@@ -110,6 +110,11 @@ enum Commands {
     /// Currently: backfill `status=open` on tasks without a status property.
     /// New migrations land here as they're added.
     FixUp,
+    /// Print the commit history of a tsk ref. Newest commit first.
+    Log {
+        #[command(subcommand)]
+        target: LogTarget,
+    },
     /// Print refspec/setup hints for `git push`/`git fetch` to include `refs/tsk/*`.
     GitSetup {
         /// Configure push/fetch refspecs on the named remote (default: origin).
@@ -185,6 +190,18 @@ enum Commands {
         #[arg(short = 's')]
         shell: Shell,
     },
+}
+
+#[derive(Subcommand)]
+enum LogTarget {
+    /// Edit history of a single task.
+    Task {
+        #[command(flatten)]
+        task_id: TaskId,
+    },
+    /// Edit history of a namespace tree (id assignments, drops, shares).
+    /// Defaults to the active namespace.
+    Namespace { name: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -316,6 +333,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             Workspace::from_path(dir)?.deprioritize(task_id.into())
         }
         Commands::Clean => Workspace::from_path(dir)?.clean(),
+        Commands::Log { target } => command_log(dir, target),
         Commands::FixUp => {
             let ws = Workspace::from_path(dir)?;
             let n = ws.backfill_status()?;
@@ -576,6 +594,54 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
     Ok(())
 }
 
+fn command_log(dir: PathBuf, target: LogTarget) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let commits = match target {
+        LogTarget::Task { task_id } => ws.log_task(task_id.into())?,
+        LogTarget::Namespace { name } => {
+            ws.log_namespace(&name.unwrap_or_else(|| ws.namespace()))?
+        }
+    };
+    for c in commits {
+        // git-log --oneline-style: short oid, summary, then author + date below.
+        let short = &c.oid[..c.oid.len().min(8)];
+        println!("{short} {}", c.summary);
+        println!("    {} ({})", c.author, format_unix(c.timestamp));
+    }
+    Ok(())
+}
+
+fn format_unix(ts: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = now - ts;
+    if delta < 0 {
+        return "in the future".to_string();
+    }
+    relative_time(delta as u64)
+}
+
+fn relative_time(secs: u64) -> String {
+    const M: u64 = 60;
+    const H: u64 = 60 * M;
+    const D: u64 = 24 * H;
+    if secs < M {
+        format!("{secs}s ago")
+    } else if secs < H {
+        format!("{}m ago", secs / M)
+    } else if secs < D {
+        format!("{}h ago", secs / H)
+    } else if secs < 30 * D {
+        format!("{}d ago", secs / D)
+    } else if secs < 365 * D {
+        format!("{}mo ago", secs / (30 * D))
+    } else {
+        format!("{}y ago", secs / (365 * D))
+    }
+}
+
 fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
@@ -754,6 +820,19 @@ fn _silence_unused(_w: &dyn Write, _t: Task) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_time_breakpoints() {
+        assert_eq!(relative_time(0), "0s ago");
+        assert_eq!(relative_time(59), "59s ago");
+        assert_eq!(relative_time(60), "1m ago");
+        assert_eq!(relative_time(3599), "59m ago");
+        assert_eq!(relative_time(3600), "1h ago");
+        assert_eq!(relative_time(86_399), "23h ago");
+        assert_eq!(relative_time(86_400), "1d ago");
+        assert_eq!(relative_time(30 * 86_400), "1mo ago");
+        assert_eq!(relative_time(365 * 86_400), "1y ago");
+    }
 
     #[test]
     fn picker_marks_current_and_appends_sentinel() {

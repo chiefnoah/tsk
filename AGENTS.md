@@ -65,6 +65,16 @@ tsk queue switch tsk      # switch back when done
 This keeps the user's `tsk` queue free of agent-internal bookkeeping while
 still surfacing the work for later.
 
+## History
+
+Every task and namespace is a commit chain in git, so edits are
+auditable:
+
+```
+tsk log task -T tsk-N            # all commits on a task's tree
+tsk log namespace [<name>]       # id assignments / drops in a namespace
+```
+
 ## Migrations
 
 Storage and conventions evolve. A single command runs every known one-shot

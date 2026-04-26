@@ -92,6 +92,14 @@ impl Display for Task {
     }
 }
 
+/// One commit on a tsk ref's history.
+pub struct LogCommit {
+    pub oid: String,
+    pub timestamp: i64,
+    pub author: String,
+    pub summary: String,
+}
+
 /// One pending inbox item in the active queue.
 pub struct InboxItem {
     pub key: String,
@@ -402,6 +410,44 @@ impl Workspace {
             });
         }
         Ok(out)
+    }
+
+    /// One commit on a tsk ref (task / namespace / queue).
+    pub fn log_ref(&self, refname: &str) -> Result<Vec<LogCommit>> {
+        let repo = self.repo()?;
+        let Ok(r) = repo.find_reference(refname) else {
+            return Err(Error::Parse(format!("ref {refname} not found")));
+        };
+        let Some(target) = r.target() else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        let mut current = repo.find_commit(target).ok();
+        while let Some(c) = current {
+            out.push(LogCommit {
+                oid: c.id().to_string(),
+                timestamp: c.time().seconds(),
+                author: format!(
+                    "{} <{}>",
+                    c.author().name().unwrap_or(""),
+                    c.author().email().unwrap_or("")
+                ),
+                summary: c.summary().unwrap_or("").to_string(),
+            });
+            current = c.parent(0).ok();
+        }
+        Ok(out)
+    }
+
+    /// History of edits to a single task.
+    pub fn log_task(&self, identifier: TaskIdentifier) -> Result<Vec<LogCommit>> {
+        let (_, stable) = self.resolve(identifier)?;
+        self.log_ref(&stable.refname())
+    }
+
+    /// History of edits to a namespace's tree (id assignments, drops, shares).
+    pub fn log_namespace(&self, name: &str) -> Result<Vec<LogCommit>> {
+        self.log_ref(&namespace::refname(name))
     }
 
     /// Set `status=open` on every task in the active namespace that has no
@@ -838,6 +884,44 @@ mod test {
         assert_eq!(pulled.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn log_task_walks_commit_chain_newest_first() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws.new_task("v1".into(), "".into()).unwrap();
+        let id = t.id;
+        ws.push_task(t).unwrap();
+
+        // Two edits (each appends a commit).
+        let mut t = ws.task(TaskIdentifier::Id(id)).unwrap();
+        t.title = "v2".into();
+        ws.save_task(&t).unwrap();
+        let mut t = ws.task(TaskIdentifier::Id(id)).unwrap();
+        t.title = "v3".into();
+        ws.save_task(&t).unwrap();
+
+        let log = ws.log_task(TaskIdentifier::Id(id)).unwrap();
+        // create + 2 edits = 3 commits.
+        assert_eq!(log.len(), 3);
+        // Newest first.
+        assert_eq!(log[0].summary, "edit");
+        assert_eq!(log[1].summary, "edit");
+        assert_eq!(log[2].summary, "create");
+    }
+
+    #[test]
+    fn log_namespace_walks_id_assignments() {
+        let (_d, ws) = fresh_workspace();
+        let t1 = ws.new_task("a".into(), "".into()).unwrap();
+        ws.push_task(t1).unwrap();
+        let t2 = ws.new_task("b".into(), "".into()).unwrap();
+        ws.push_task(t2).unwrap();
+
+        let log = ws.log_namespace("tsk").unwrap();
+        // Two id-assignments.
+        assert!(log.len() >= 2, "got {}", log.len());
+        assert_eq!(log[0].summary, "assign-id");
     }
 
     #[test]
