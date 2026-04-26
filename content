@@ -1,0 +1,3 @@
+Implement parent/child-of property pair
+
+When a task gets parent=[[tsk-X]], the workspace should automatically maintain child-of=[[tsk-Y]] on the parent (and remove it when the relation goes away). Implement on top of properties so tsk prop set <id> parent <link> wires up the inverse.
