@@ -9,7 +9,7 @@
 
 use crate::errors::{Error, Result};
 use crate::object::{self, StableId, Task as TaskObj};
-use crate::{namespace, properties, queue, util};
+use crate::{namespace, properties, queue};
 use git2::Repository;
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -18,7 +18,10 @@ use std::str::FromStr;
 
 const NAMESPACE_FILE: &str = "namespace";
 const QUEUE_FILE: &str = "queue";
-const GIT_DIR_FILE: &str = "git-dir";
+/// User-local state lives under `<git-dir>/<STATE_DIR>/` so it isn't tracked
+/// by the enclosing repo (the `.git/` directory is by definition not in the
+/// working tree). Each clone gets its own active namespace + queue.
+const STATE_DIR: &str = "tsk";
 
 /// A human-readable task identifier (`tsk-N`). Always namespace-scoped: the
 /// integer N has no meaning without the namespace it was minted in.
@@ -93,48 +96,58 @@ pub struct InboxItem {
 }
 
 pub struct Workspace {
-    /// The `.tsk/` directory.
+    /// The user-local state directory: `<git-dir>/tsk/`. Holds the
+    /// `namespace` and `queue` selectors — both per-clone, not pushed.
     pub path: PathBuf,
-    /// The enclosing git repo's `.git` (or bare) directory.
+    /// The enclosing git repo's `.git` directory.
     pub git_dir: PathBuf,
 }
 
 impl Workspace {
-    /// Initialize a `.tsk/` marker inside an existing git repo. Errors if no
-    /// git repo encloses `path` or if `.tsk/` already exists.
+    /// Bootstrap user-local state in `<git-dir>/tsk/`. Idempotent: existing
+    /// state files are left alone so re-init doesn't reset the active
+    /// namespace/queue. Errors if `path` isn't inside a git repository.
     pub fn init(path: PathBuf) -> Result<()> {
-        let tsk_dir = path.join(".tsk");
-        if tsk_dir.exists() {
-            return Err(Error::AlreadyInitialized);
-        }
         let git_dir = find_git_dir(&path)
             .ok_or_else(|| Error::Parse("tsk requires an enclosing git repository".into()))?;
-        std::fs::create_dir(&tsk_dir)?;
-        std::fs::write(tsk_dir.join(GIT_DIR_FILE), git_dir.to_string_lossy().as_bytes())?;
-        std::fs::write(tsk_dir.join(NAMESPACE_FILE), namespace::DEFAULT_NS.as_bytes())?;
-        std::fs::write(tsk_dir.join(QUEUE_FILE), queue::DEFAULT_QUEUE.as_bytes())?;
+        let state_dir = git_dir.join(STATE_DIR);
+        std::fs::create_dir_all(&state_dir)?;
+        // Lift any pre-existing selectors out of a legacy `.tsk/` directory
+        // *before* writing defaults, so the migrated values win.
+        if let Some(workdir) = git_dir.parent() {
+            let legacy = workdir.join(".tsk");
+            if legacy.is_dir() {
+                for name in [NAMESPACE_FILE, QUEUE_FILE] {
+                    let src = legacy.join(name);
+                    let dst = state_dir.join(name);
+                    if src.exists() && !dst.exists() {
+                        let _ = std::fs::copy(&src, &dst);
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&legacy);
+            }
+        }
+        let ns = state_dir.join(NAMESPACE_FILE);
+        if !ns.exists() {
+            std::fs::write(&ns, namespace::DEFAULT_NS.as_bytes())?;
+        }
+        let q = state_dir.join(QUEUE_FILE);
+        if !q.exists() {
+            std::fs::write(&q, queue::DEFAULT_QUEUE.as_bytes())?;
+        }
         Ok(())
     }
 
     pub fn from_path(path: PathBuf) -> Result<Self> {
-        let tsk_dir = util::find_parent_with_dir(path.clone(), ".tsk")?;
-        let tsk_dir = match tsk_dir {
-            Some(d) => d,
-            None => {
-                // Auto-bootstrap: if we're inside a git repo, behave as if
-                // `tsk init` was run there. This keeps the `git tsk` UX
-                // friction-free — users don't need an explicit init step.
-                let git_dir = find_git_dir(&path).ok_or(Error::Uninitialized)?;
-                let workdir = git_dir.parent().unwrap_or(&path).to_path_buf();
-                Self::init(workdir.clone())?;
-                workdir.join(".tsk")
-            }
-        };
-        let git_dir = std::fs::read_to_string(tsk_dir.join(GIT_DIR_FILE))?
-            .trim()
-            .into();
+        let git_dir = find_git_dir(&path).ok_or(Error::Uninitialized)?;
+        let state_dir = git_dir.join(STATE_DIR);
+        if !state_dir.exists() {
+            // Auto-bootstrap so `git tsk <anything>` works without an
+            // explicit init step.
+            Self::init(path)?;
+        }
         Ok(Self {
-            path: tsk_dir,
+            path: state_dir,
             git_dir,
         })
     }
@@ -790,6 +803,44 @@ mod test {
         assert_eq!(pulled.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn init_does_not_create_files_in_working_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git_init(dir.path());
+        Workspace::init(dir.path().to_path_buf()).unwrap();
+        // The only directory entries in the working tree should be `.git`
+        // (from `git init`) — no `.tsk` and nothing else.
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![".git".to_string()],
+            "no user-local state should land in the working tree"
+        );
+        // The state files should live under <git-dir>/tsk/.
+        assert!(dir.path().join(".git/tsk/namespace").exists());
+        assert!(dir.path().join(".git/tsk/queue").exists());
+    }
+
+    #[test]
+    fn legacy_dot_tsk_directory_is_migrated_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git_init(dir.path());
+        // Simulate an old workspace with a tracked `.tsk/namespace` already.
+        let legacy = dir.path().join(".tsk");
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("namespace"), b"alpha").unwrap();
+        std::fs::write(legacy.join("queue"), b"review").unwrap();
+
+        Workspace::init(dir.path().to_path_buf()).unwrap();
+        let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
+        assert_eq!(ws.namespace(), "alpha", "legacy namespace must migrate");
+        assert_eq!(ws.queue(), "review", "legacy queue must migrate");
+        assert!(!legacy.exists(), "legacy .tsk/ must be removed");
     }
 
     #[test]

@@ -5,7 +5,6 @@ mod object;
 mod properties;
 mod queue;
 mod task;
-mod util;
 mod workspace;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
