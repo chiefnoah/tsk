@@ -290,7 +290,9 @@ enum Commands {
     },
 
     /// Switch to a different namespace. Shorthand for `tsk namespace switch`.
-    Switch { name: String },
+    /// With no name, fzf-picks from existing namespaces (plus a `<new>`
+    /// sentinel for creating one on the fly).
+    Switch { name: Option<String> },
 
     /// Reopens an archived task, recreating the symlink and adding it back to the stack.
     Reopen {
@@ -340,8 +342,9 @@ enum NamespaceAction {
     List,
     /// Print the current namespace name.
     Current,
-    /// Switch to (create on first push of) the given namespace.
-    Switch { name: String },
+    /// Switch to (create on first push of) the given namespace. With no
+    /// name, fzf-picks from existing namespaces.
+    Switch { name: Option<String> },
     /// Create an empty namespace and switch to it.
     Create { name: String },
     /// Delete every ref under the given namespace. Refuses if the namespace is
@@ -492,7 +495,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Log { tsk_id } => command_log(dir, tsk_id),
         Commands::Prop { action } => command_prop(dir, action),
         Commands::Namespace { action } => command_namespace(dir, action),
-        Commands::Switch { name } => command_namespace_switch(dir, &name),
+        Commands::Switch { name } => command_namespace_switch(dir, name),
     }
 }
 
@@ -1106,11 +1109,29 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
     Ok(())
 }
 
-fn command_namespace_switch(dir: PathBuf, name: &str) -> Result<()> {
+fn command_namespace_switch(dir: PathBuf, name: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    ws.switch_namespace(name)?;
-    eprintln!("Switched to namespace '{name}'");
+    let target = match name {
+        Some(n) => n,
+        None => pick_namespace(&ws)?,
+    };
+    ws.switch_namespace(&target)?;
+    eprintln!("Switched to namespace '{target}'");
     Ok(())
+}
+
+/// fzf-pick a namespace from the workspace's existing list, with a `<new>`
+/// sentinel for entering one that doesn't exist yet.
+fn pick_namespace(ws: &Workspace) -> Result<String> {
+    let mut candidates = ws.list_namespaces()?;
+    candidates.push(NEW_SENTINEL.to_string());
+    let picked = fzf::select::<_, String, _>(candidates, ["--prompt=namespace> "])?
+        .ok_or_else(|| errors::Error::Parse("No namespace selected".into()))?;
+    if picked == NEW_SENTINEL {
+        prompt_line("new namespace name: ")
+    } else {
+        Ok(picked)
+    }
 }
 
 fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
@@ -1126,7 +1147,15 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
                 println!("{marker}{ns}");
             }
         }
-        NamespaceAction::Switch { name } | NamespaceAction::Create { name } => {
+        NamespaceAction::Switch { name } => {
+            let target = match name {
+                Some(n) => n,
+                None => pick_namespace(&ws)?,
+            };
+            ws.switch_namespace(&target)?;
+            eprintln!("Switched to namespace '{target}'");
+        }
+        NamespaceAction::Create { name } => {
             ws.switch_namespace(&name)?;
             eprintln!("Switched to namespace '{name}'");
         }
