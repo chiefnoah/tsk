@@ -106,6 +106,9 @@ enum Commands {
     },
     /// Drop index entries whose stable ids no longer resolve.
     Clean,
+    /// One-shot: set status=open on every task in the active namespace that
+    /// has no status property yet. Skips tasks already marked done.
+    BackfillStatus,
     /// Print refspec/setup hints for `git push`/`git fetch` to include `refs/tsk/*`.
     GitSetup {
         /// Configure push/fetch refspecs on the named remote (default: origin).
@@ -312,6 +315,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             Workspace::from_path(dir)?.deprioritize(task_id.into())
         }
         Commands::Clean => Workspace::from_path(dir)?.clean(),
+        Commands::BackfillStatus => {
+            let n = Workspace::from_path(dir)?.backfill_status()?;
+            println!("Set status=open on {n} task(s)");
+            Ok(())
+        }
         Commands::GitSetup { remote } => {
             let r = remote.unwrap_or_else(|| "origin".to_string());
             Workspace::from_path(dir)?.configure_git_remote_refspecs(&r)

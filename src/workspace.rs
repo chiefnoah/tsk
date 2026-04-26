@@ -404,6 +404,27 @@ impl Workspace {
         Ok(out)
     }
 
+    /// Set `status=open` on every task in the active namespace that has no
+    /// status yet. Skips tasks already marked done. Returns the number of
+    /// tasks updated. One-shot migration for tasks created before
+    /// auto-status existed.
+    pub fn backfill_status(&self) -> Result<usize> {
+        let repo = self.repo()?;
+        let ns = namespace::read(&repo, &self.namespace())?;
+        let mut updated = 0usize;
+        for (human, _stable) in ns.mapping.iter() {
+            let mut task = self.task(TaskIdentifier::Id(Id(*human)))?;
+            if task.attributes.contains_key(STATUS_KEY) {
+                continue;
+            }
+            task.attributes
+                .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
+            self.save_task(&task)?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
     /// Drop a task from the active queue and mark it `status=done`. The
     /// namespace binding is kept so the task remains addressable by its
     /// human id (and discoverable via `tsk prop find status done`); the
@@ -817,6 +838,56 @@ mod test {
         assert_eq!(pulled.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn backfill_status_marks_legacy_tasks_open_and_skips_done() {
+        let (_d, ws) = fresh_workspace();
+
+        // Simulate a legacy task: bind a stable id with no status property.
+        let repo = ws.repo().unwrap();
+        let raw = object::Task::new("legacy task");
+        let stable = object::create(&repo, &raw, "create").unwrap();
+        let h_legacy =
+            namespace::assign_id(&repo, &ws.namespace(), stable.clone(), "assign").unwrap();
+        queue::push_top(&repo, &ws.queue(), stable, "push").unwrap();
+
+        // Plus a fresh task that already has status=open and a dropped one.
+        let t_open = ws.new_task("fresh open".into(), "".into()).unwrap();
+        let id_open = t_open.id;
+        ws.push_task(t_open).unwrap();
+        let t_done = ws.new_task("will drop".into(), "".into()).unwrap();
+        let id_done = t_done.id;
+        ws.push_task(t_done).unwrap();
+        ws.drop(TaskIdentifier::Id(id_done)).unwrap();
+
+        // Pre-condition: the legacy task has no status.
+        let read = ws.task(TaskIdentifier::Id(Id(h_legacy))).unwrap();
+        assert!(!read.attributes.contains_key(STATUS_KEY));
+
+        let n = ws.backfill_status().unwrap();
+        assert_eq!(n, 1, "only the legacy task gets backfilled");
+
+        // Legacy is now open, fresh-open stays open, dropped stays done.
+        let read = ws.task(TaskIdentifier::Id(Id(h_legacy))).unwrap();
+        assert_eq!(
+            read.attributes.get(STATUS_KEY),
+            Some(&vec![STATUS_OPEN.to_string()])
+        );
+        let read = ws.task(TaskIdentifier::Id(id_open)).unwrap();
+        assert_eq!(
+            read.attributes.get(STATUS_KEY),
+            Some(&vec![STATUS_OPEN.to_string()])
+        );
+        let read = ws.task(TaskIdentifier::Id(id_done)).unwrap();
+        assert_eq!(
+            read.attributes.get(STATUS_KEY),
+            Some(&vec![STATUS_DONE.to_string()])
+        );
+
+        // Re-running is a no-op.
+        let n = ws.backfill_status().unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]
