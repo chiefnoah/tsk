@@ -1,0 +1,3 @@
+tsk remote for non-origin remotes
+
+git-push and git-pull currently default to origin. Add a tsk remote subcommand (add/list/remove/set-default) so users can sync against multiple or non-origin remotes.
