@@ -1,0 +1,3 @@
+Implement assigned property
+
+Complement to source. On the upstream/source task, assigned=[[<dest-ns>/tsk-X]] points at where it was duplicated/exported to. Should be set automatically by whatever cross-namespace assignment command we end up adding.
