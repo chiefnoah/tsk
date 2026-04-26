@@ -64,6 +64,27 @@ impl Display for Remote {
     }
 }
 
+/// Parse a single `[[tsk-N]]` wiki-style internal link out of a property
+/// value. Whitespace is trimmed; foreign links (`[[ns/tsk-N]]`) are not
+/// matched here because the inverse-relation maintenance is intra-namespace.
+fn parse_internal_link(s: &str) -> Option<Id> {
+    let inner = s.trim().strip_prefix("[[")?.strip_suffix("]]")?;
+    Id::from_str(inner).ok()
+}
+
+/// Parse a comma-separated list of `[[tsk-N]]` links, ignoring entries that
+/// don't parse cleanly.
+fn parse_link_list(s: &str) -> Vec<Id> {
+    s.split(',').filter_map(parse_internal_link).collect()
+}
+
+fn format_link_list(ids: &[Id]) -> String {
+    ids.iter()
+        .map(|i| format!("[[{i}]]"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 enum PullAction {
     /// Local already matches remote — nothing to do.
     Skip,
@@ -390,20 +411,115 @@ impl Workspace {
 
     /// Set a single property (a.k.a attribute) on a task. Empty value is
     /// allowed for unary properties.
+    ///
+    /// Side effect: when `key == "parent"` and the value parses as an
+    /// internal link `[[tsk-N]]`, the inverse entry is added to the parent's
+    /// `children` property (comma-separated link list). A previous parent
+    /// (if any) has the child removed from its `children`. Self-parents and
+    /// cycles are rejected.
     pub fn set_property(&self, id: Id, key: &str, value: &str) -> Result<()> {
-        let mut attrs = backend::read_attrs(self.store(), id)?;
-        attrs.insert(key.to_string(), value.to_string());
-        backend::write_attrs(self.store(), id, &attrs)?;
-        self.log(id, "prop-set", Some(key))
+        let old_value = backend::read_attrs(self.store(), id)?.get(key).cloned();
+        if key == "parent" {
+            let old_parent = old_value.as_deref().and_then(parse_internal_link);
+            let new_parent = parse_internal_link(value);
+            if let Some(p) = new_parent {
+                if p == id {
+                    return Err(Error::Parse("A task cannot be its own parent".into()));
+                }
+                if self.would_form_parent_cycle(id, p)? {
+                    return Err(Error::Parse(format!(
+                        "Refusing to set parent={p}: would form a cycle"
+                    )));
+                }
+            }
+            // Update primary attr first.
+            let mut attrs = backend::read_attrs(self.store(), id)?;
+            attrs.insert(key.to_string(), value.to_string());
+            backend::write_attrs(self.store(), id, &attrs)?;
+            self.log(id, "prop-set", Some(key))?;
+            // Then maintain children list on old/new parents.
+            if old_parent != new_parent {
+                if let Some(p) = old_parent {
+                    self.remove_from_children(p, id)?;
+                }
+                if let Some(p) = new_parent {
+                    self.add_to_children(p, id)?;
+                }
+            }
+            Ok(())
+        } else {
+            let mut attrs = backend::read_attrs(self.store(), id)?;
+            attrs.insert(key.to_string(), value.to_string());
+            backend::write_attrs(self.store(), id, &attrs)?;
+            self.log(id, "prop-set", Some(key))
+        }
     }
 
     /// Remove a property from a task. No-op if not present.
     pub fn unset_property(&self, id: Id, key: &str) -> Result<()> {
         let mut attrs = backend::read_attrs(self.store(), id)?;
-        if attrs.remove(key).is_some() {
+        let removed = attrs.remove(key);
+        if let Some(prev) = removed {
             backend::write_attrs(self.store(), id, &attrs)?;
             self.log(id, "prop-unset", Some(key))?;
+            if key == "parent"
+                && let Some(p) = parse_internal_link(&prev)
+            {
+                self.remove_from_children(p, id)?;
+            }
         }
+        Ok(())
+    }
+
+    /// Walk up the parent chain starting at `start` and return true if `child`
+    /// would appear in it (i.e. setting `child.parent = start` would cycle).
+    fn would_form_parent_cycle(&self, child: Id, start: Id) -> Result<bool> {
+        let mut cur = Some(start);
+        let mut visited: HashSet<Id> = HashSet::new();
+        while let Some(c) = cur {
+            if c == child {
+                return Ok(true);
+            }
+            if !visited.insert(c) {
+                // Pre-existing cycle detected upstream — surface as no-cycle
+                // here so the caller's set still proceeds (we're not making
+                // it worse).
+                return Ok(false);
+            }
+            cur = backend::read_attrs(self.store(), c)?
+                .get("parent")
+                .and_then(|v| parse_internal_link(v));
+        }
+        Ok(false)
+    }
+
+    fn add_to_children(&self, parent: Id, child: Id) -> Result<()> {
+        let mut attrs = backend::read_attrs(self.store(), parent)?;
+        let mut ids = parse_link_list(attrs.get("children").map(String::as_str).unwrap_or(""));
+        if !ids.contains(&child) {
+            ids.push(child);
+        }
+        attrs.insert("children".into(), format_link_list(&ids));
+        backend::write_attrs(self.store(), parent, &attrs)?;
+        self.log(parent, "prop-set", Some("children"))?;
+        Ok(())
+    }
+
+    fn remove_from_children(&self, parent: Id, child: Id) -> Result<()> {
+        let mut attrs = backend::read_attrs(self.store(), parent)?;
+        let mut ids = parse_link_list(attrs.get("children").map(String::as_str).unwrap_or(""));
+        let before = ids.len();
+        ids.retain(|i| *i != child);
+        if ids.len() == before {
+            return Ok(());
+        }
+        if ids.is_empty() {
+            attrs.remove("children");
+        } else {
+            attrs.insert("children".into(), format_link_list(&ids));
+        }
+        backend::write_attrs(self.store(), parent, &attrs)?;
+        self.log(parent, "prop-set", Some("children"))?;
         Ok(())
     }
 
@@ -1930,6 +2046,85 @@ mod test {
                 zip.file_names().map(|s| s.to_string()).collect();
             assert!(names.contains(&format!("log/{}", id.0)));
             std::fs::remove_file(&dest).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_parent_property_maintains_children_inverse() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            let p = ws.new_task("parent".into(), "".into()).unwrap();
+            let parent_id = p.id;
+            ws.push_task(p).unwrap();
+            let c1 = ws.new_task("child1".into(), "".into()).unwrap();
+            let c1_id = c1.id;
+            ws.push_task(c1).unwrap();
+            let c2 = ws.new_task("child2".into(), "".into()).unwrap();
+            let c2_id = c2.id;
+            ws.push_task(c2).unwrap();
+
+            // Set parents on both children → parent gets a children list.
+            ws.set_property(c1_id, "parent", &format!("[[{parent_id}]]"))
+                .unwrap();
+            ws.set_property(c2_id, "parent", &format!("[[{parent_id}]]"))
+                .unwrap();
+            let parent_props = backend::read_attrs(ws.store(), parent_id).unwrap();
+            let children = parent_props.get("children").cloned().unwrap_or_default();
+            assert!(
+                children.contains(&format!("[[{c1_id}]]")),
+                "expected c1 in {children}"
+            );
+            assert!(
+                children.contains(&format!("[[{c2_id}]]")),
+                "expected c2 in {children}"
+            );
+
+            // Unset the parent on c1 → it disappears from parent's children.
+            ws.unset_property(c1_id, "parent").unwrap();
+            let parent_props = backend::read_attrs(ws.store(), parent_id).unwrap();
+            let children = parent_props.get("children").cloned().unwrap_or_default();
+            assert!(
+                !children.contains(&format!("[[{c1_id}]]")),
+                "c1 should be gone: {children}"
+            );
+            assert!(children.contains(&format!("[[{c2_id}]]")));
+
+            // Re-parent c2 to a different parent → c2 leaves old parent's
+            // children list.
+            let p2 = ws.new_task("parent2".into(), "".into()).unwrap();
+            let p2_id = p2.id;
+            ws.push_task(p2).unwrap();
+            ws.set_property(c2_id, "parent", &format!("[[{p2_id}]]"))
+                .unwrap();
+            let old = backend::read_attrs(ws.store(), parent_id).unwrap();
+            assert!(old.get("children").is_none(), "old parent should be empty");
+            let new = backend::read_attrs(ws.store(), p2_id).unwrap();
+            assert!(
+                new.get("children")
+                    .unwrap()
+                    .contains(&format!("[[{c2_id}]]"))
+            );
+
+            // Self-parent is rejected.
+            assert!(
+                ws.set_property(c2_id, "parent", &format!("[[{c2_id}]]"))
+                    .is_err()
+            );
+            // Cycle (p2.parent = c2 — c2's parent is already p2) is rejected.
+            assert!(
+                ws.set_property(p2_id, "parent", &format!("[[{c2_id}]]"))
+                    .is_err()
+            );
+
+            // Non-link values store fine without inverse maintenance.
+            ws.set_property(c2_id, "tag", "important").unwrap();
+            assert_eq!(
+                backend::read_attrs(ws.store(), c2_id)
+                    .unwrap()
+                    .get("tag")
+                    .map(String::as_str),
+                Some("important")
+            );
         }
     }
 
