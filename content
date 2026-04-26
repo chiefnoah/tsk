@@ -1,0 +1,3 @@
+tsk forget / hard-delete command
+
+namespace::unassign_id exists but is marked #[allow(dead_code)]. Wire it up as tsk forget -T tsk-N: drop the namespace binding, delete the task ref, and clean property indices. Distinct from tsk drop which only flips status.
