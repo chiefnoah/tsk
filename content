@@ -1,0 +1,3 @@
+Typed / validated properties
+
+All property values are free-text strings. Add optional schemas per key: enum (constrained value set), date, and task-ref (validates against existing stable id / human id). Surface validation errors at prop set/add time.
