@@ -26,6 +26,30 @@ fn default_dir() -> Result<PathBuf> {
 
 const NEW_SENTINEL: &str = "<new>";
 
+/// Resolve the remote to use for an auto-sync command. If the user supplied
+/// `Some("")`, returns None (explicit skip). If `Some(name)`, returns that
+/// name. If `None`, returns "origin" if that remote is configured in git;
+/// otherwise None (so file-backed workspaces and clones without a configured
+/// origin fall through silently).
+fn effective_remote(ws: &Workspace, supplied: Option<String>) -> Result<Option<String>> {
+    if let Some(s) = supplied {
+        if s.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(s));
+    }
+    if !ws.is_git_backed() {
+        return Ok(None);
+    }
+    let marker = std::fs::read_to_string(ws.path.join(backend::GIT_BACKED_MARKER))?;
+    let repo = git2::Repository::open(PathBuf::from(marker.trim()))?;
+    if repo.find_remote("origin").is_ok() {
+        Ok(Some("origin".to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
 /// `[[tsk-N]]` → Some(Id(N)). Anything else (including foreign links) → None.
 fn parse_internal_link_for_cli(s: &str) -> Option<Id> {
     let inner = s.trim().strip_prefix("[[")?.strip_suffix("]]")?;
@@ -237,8 +261,13 @@ enum Commands {
         task_id: TaskId,
     },
 
-    /// List tasks pending in the current namespace's inbox.
-    Inbox,
+    /// List tasks pending in the current namespace's inbox. Pulls from a
+    /// remote first so the listing reflects what others have sent. Defaults
+    /// to "origin" if that remote exists; pass -r "" to skip the pull.
+    Inbox {
+        #[arg(short = 'r')]
+        remote: Option<String>,
+    },
 
     /// Accept a pending inbox item, creating a new local task with copied
     /// content + properties and `source=[[<src-ns>/tsk-N]]` set.
@@ -490,7 +519,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::GitPush { remote } => command_git_push(dir, remote),
         Commands::GitPull { remote } => command_git_pull(dir, remote),
         Commands::Assign { target, task_id } => command_assign(dir, target, task_id),
-        Commands::Inbox => command_inbox(dir),
+        Commands::Inbox { remote } => command_inbox(dir, remote),
         Commands::Accept { key } => command_accept(dir, key),
         Commands::Bundle { output } => command_bundle(dir, output),
         Commands::Migrate => command_migrate(dir),
@@ -897,8 +926,11 @@ fn command_assign(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {
     Ok(())
 }
 
-fn command_inbox(dir: PathBuf) -> Result<()> {
+fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
+    if let Some(r) = effective_remote(&ws, remote)? {
+        ws.git_pull_refs(&r)?;
+    }
     let items = ws.list_inbox()?;
     if items.is_empty() {
         println!("Inbox is empty.");
