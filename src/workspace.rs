@@ -81,6 +81,14 @@ fn validate_namespace(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Summary of one item in a namespace inbox.
+pub struct InboxItem {
+    pub inbox_key: String,
+    pub source_namespace: String,
+    pub source_id: u32,
+    pub title: String,
+}
+
 pub struct Workspace {
     /// The path to the .tsk marker directory.
     pub path: PathBuf,
@@ -662,7 +670,7 @@ impl Workspace {
     /// Every logical blob key that currently exists in the workspace.
     fn all_keys(&self) -> Result<Vec<String>> {
         let mut keys: Vec<String> = Vec::new();
-        for prefix in ["tasks", "archive", "attrs", "backlinks", "log"] {
+        for prefix in ["tasks", "archive", "attrs", "backlinks", "log", "inbox"] {
             keys.extend(self.store().list(prefix)?);
         }
         for top in ["index", "next", "remotes"] {
@@ -697,6 +705,104 @@ impl Workspace {
 
     /// Migrate a file-backed workspace to a git-backed one. Returns Err if the
     /// workspace is already git-backed or if no enclosing git repo is found.
+    /// Send a task to another namespace's inbox in the same git repo. Sets
+    /// `assigned=[[<target_ns>/tsk-<id>]]` on the source after a successful
+    /// write so it can be tracked. Returns the inbox key used in the target.
+    pub fn export_to_namespace(&self, target_ns: &str, src_id: Id) -> Result<String> {
+        if !self.is_git_backed() {
+            return Err(Error::Parse(
+                "Cross-namespace export only works on git-backed workspaces".into(),
+            ));
+        }
+        validate_namespace(target_ns)?;
+        let cur = self.namespace();
+        if target_ns == cur {
+            return Err(Error::Parse(
+                "Refusing to export a task to its own namespace".into(),
+            ));
+        }
+        let task = self.task(TaskIdentifier::Id(src_id))?;
+        let attrs = backend::read_attrs(self.store(), src_id)?;
+        let payload = backend::InboxPayload {
+            source_namespace: cur,
+            source_id: src_id.0,
+            title: task.title.clone(),
+            body: task.body.clone(),
+            attrs,
+        };
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER))?;
+        let target =
+            backend::GitStore::open_namespace(PathBuf::from(marker.trim()), target_ns.to_string())?;
+        let key = backend::inbox_key(&payload.source_namespace, payload.source_id);
+        <dyn Store>::write(&target, &key, payload.serialize().as_bytes())?;
+
+        // Mark the source with where it was sent.
+        let assigned_link = format!("[[{target_ns}/tsk-{}]]", src_id.0);
+        let mut my_attrs = backend::read_attrs(self.store(), src_id)?;
+        my_attrs.insert("assigned".into(), assigned_link.clone());
+        backend::write_attrs(self.store(), src_id, &my_attrs)?;
+        self.log(src_id, "exported", Some(&assigned_link))?;
+        Ok(key)
+    }
+
+    /// Item pending in the current namespace's inbox.
+    pub fn list_inbox(&self) -> Result<Vec<InboxItem>> {
+        let mut out = Vec::new();
+        for key in self.store().list("inbox")? {
+            if let Some(data) = self.store().read(&key)? {
+                let payload = backend::InboxPayload::parse(&String::from_utf8_lossy(&data))?;
+                out.push(InboxItem {
+                    inbox_key: key,
+                    source_namespace: payload.source_namespace,
+                    source_id: payload.source_id,
+                    title: payload.title,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.inbox_key.cmp(&b.inbox_key));
+        Ok(out)
+    }
+
+    /// Accept a pending inbox item: create a new local task with copied
+    /// title/body/attrs, set `source=[[<src-ns>/tsk-<src-id>]]`, push it on
+    /// the stack, and remove the inbox blob.
+    pub fn accept_inbox(&self, inbox_key: &str) -> Result<Id> {
+        let key = if inbox_key.starts_with("inbox/") {
+            inbox_key.to_string()
+        } else {
+            format!("inbox/{inbox_key}")
+        };
+        let data = self
+            .store()
+            .read(&key)?
+            .ok_or_else(|| Error::Parse(format!("Inbox item '{inbox_key}' not found")))?;
+        let payload = backend::InboxPayload::parse(&String::from_utf8_lossy(&data))?;
+
+        let task = self.new_task(payload.title.clone(), payload.body.clone())?;
+        let new_id = task.id;
+        self.push_task(task)?;
+
+        let mut attrs = payload.attrs;
+        attrs.insert(
+            "source".into(),
+            format!("[[{}/tsk-{}]]", payload.source_namespace, payload.source_id),
+        );
+        // Drop any "assigned" carried over — it was set by the source workspace
+        // before export; the new local copy isn't itself assigned anywhere.
+        attrs.remove("assigned");
+        backend::write_attrs(self.store(), new_id, &attrs)?;
+        self.store().delete(&key)?;
+        self.log(
+            new_id,
+            "accepted",
+            Some(&format!(
+                "[[{}/tsk-{}]]",
+                payload.source_namespace, payload.source_id
+            )),
+        )?;
+        Ok(new_id)
+    }
+
     pub fn migrate_to_git(&self) -> Result<PathBuf> {
         if self.is_git_backed() {
             return Err(Error::Parse("Workspace is already git-backed".into()));
@@ -1540,6 +1646,82 @@ mod test {
             // Unset of non-existent is fine.
             ws.unset_property(id1, "nope").unwrap();
         }
+    }
+
+    #[test]
+    fn test_export_and_accept_across_namespaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        run_git_init(&root);
+        Workspace::init(root.clone()).unwrap();
+        let ws = Workspace::from_path(root.clone()).unwrap();
+
+        // Source task in default namespace.
+        let t = ws
+            .new_task("send me".into(), "see [[tsk-1]]".into())
+            .unwrap();
+        let src_id = t.id;
+        ws.push_task(t).unwrap();
+        ws.set_property(src_id, "priority", "high").unwrap();
+
+        // Export to alice.
+        let key = ws.export_to_namespace("alice", src_id).unwrap();
+        // Source got the assigned property.
+        let src_attrs = ws.properties(src_id).unwrap();
+        assert_eq!(
+            src_attrs.get("assigned").map(String::as_str),
+            Some("[[alice/tsk-1]]")
+        );
+
+        // Switch to alice and inspect the inbox.
+        ws.switch_namespace("alice").unwrap();
+        let alice = Workspace::from_path(root.clone()).unwrap();
+        let items = alice.list_inbox().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].source_namespace, "default");
+        assert_eq!(items[0].source_id, src_id.0);
+        assert_eq!(items[0].title, "send me");
+
+        // Accept it.
+        let new_id = alice.accept_inbox(&key).unwrap();
+        let accepted = alice.task(TaskIdentifier::Id(new_id)).unwrap();
+        assert_eq!(accepted.title, "send me");
+        let accepted_props = alice.properties(new_id).unwrap();
+        assert_eq!(
+            accepted_props.get("source").map(String::as_str),
+            Some(&format!("[[default/tsk-{}]]", src_id.0)[..])
+        );
+        // priority property carried over.
+        assert_eq!(
+            accepted_props.get("priority").map(String::as_str),
+            Some("high")
+        );
+        // 'assigned' should NOT be inherited on the new copy.
+        assert!(!accepted_props.contains_key("assigned"));
+        // Inbox cleared.
+        assert!(alice.list_inbox().unwrap().is_empty());
+
+        // Cannot export to your own namespace.
+        let t2 = alice.new_task("local".into(), "".into()).unwrap();
+        let local_id = t2.id;
+        alice.push_task(t2).unwrap();
+        assert!(alice.export_to_namespace("alice", local_id).is_err());
+
+        // Logs include the cross-namespace events.
+        let src_log_events: Vec<String> = ws
+            .read_log(src_id)
+            .unwrap()
+            .iter()
+            .map(|e| e.event.clone())
+            .collect();
+        assert!(src_log_events.contains(&"exported".to_string()));
+        let dst_log_events: Vec<String> = alice
+            .read_log(new_id)
+            .unwrap()
+            .iter()
+            .map(|e| e.event.clone())
+            .collect();
+        assert!(dst_log_events.contains(&"accepted".to_string()));
     }
 
     #[test]

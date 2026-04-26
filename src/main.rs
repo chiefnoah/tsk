@@ -207,10 +207,29 @@ enum Commands {
         remote: String,
     },
 
-    /// Export the entire workspace (tasks, archive, attrs, backlinks, index,
-    /// next, remotes) into a zip archive. Works for both file-backed and
-    /// git-backed workspaces.
+    /// Send a task to another namespace's inbox. Defaults to the top-of-stack
+    /// task; use -T to pick a different one. Sets `assigned=[[<ns>/tsk-N]]`
+    /// on the source.
     Export {
+        /// Target namespace.
+        target: String,
+        #[command(flatten)]
+        task_id: TaskId,
+    },
+
+    /// List tasks pending in the current namespace's inbox.
+    Inbox,
+
+    /// Accept a pending inbox item, creating a new local task with copied
+    /// content + properties and `source=[[<src-ns>/tsk-N]]` set.
+    Accept {
+        /// Inbox key (e.g. `alice-3` or `inbox/alice-3`). With no argument,
+        /// accepts the first item in the inbox.
+        key: Option<String>,
+    },
+
+    /// Bundle the entire workspace into a zip archive.
+    Bundle {
         /// Output path. Defaults to ./tsk.zip.
         #[arg(short = 'o')]
         output: Option<PathBuf>,
@@ -427,7 +446,10 @@ fn run(cli: Cli) -> Result<()> {
         Commands::GitSetup { gitignore, remote } => command_git_setup(dir, gitignore, remote),
         Commands::GitPush { remote } => command_git_push(dir, remote),
         Commands::GitPull { remote } => command_git_pull(dir, remote),
-        Commands::Export { output } => command_export(dir, output),
+        Commands::Export { target, task_id } => command_export_to_ns(dir, target, task_id),
+        Commands::Inbox => command_inbox(dir),
+        Commands::Accept { key } => command_accept(dir, key),
+        Commands::Bundle { output } => command_bundle(dir, output),
         Commands::Migrate => command_migrate(dir),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
         Commands::Log { tsk_id } => command_log(dir, tsk_id),
@@ -753,11 +775,55 @@ fn command_git_setup(dir: PathBuf, use_gitignore: bool, remote: Option<String>) 
     Ok(())
 }
 
-fn command_export(dir: PathBuf, output: Option<PathBuf>) -> Result<()> {
+fn command_bundle(dir: PathBuf, output: Option<PathBuf>) -> Result<()> {
     let workspace = Workspace::from_path(dir)?;
     let dest = output.unwrap_or_else(|| PathBuf::from("tsk.zip"));
     workspace.export_zip(&dest)?;
     eprintln!("Wrote {}", dest.display());
+    Ok(())
+}
+
+fn command_export_to_ns(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let id = ws.task(task_id.into())?.id;
+    let key = ws.export_to_namespace(&target, id)?;
+    eprintln!("Sent {id} to namespace '{target}' (inbox key: {key})");
+    Ok(())
+}
+
+fn command_inbox(dir: PathBuf) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let items = ws.list_inbox()?;
+    if items.is_empty() {
+        println!("Inbox is empty.");
+        return Ok(());
+    }
+    for item in items {
+        println!(
+            "{}\t{}/tsk-{}\t{}",
+            item.inbox_key.trim_start_matches("inbox/"),
+            item.source_namespace,
+            item.source_id,
+            item.title
+        );
+    }
+    Ok(())
+}
+
+fn command_accept(dir: PathBuf, key: Option<String>) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let key = match key {
+        Some(k) => k,
+        None => {
+            ws.list_inbox()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| errors::Error::Parse("Inbox is empty".into()))?
+                .inbox_key
+        }
+    };
+    let id = ws.accept_inbox(&key)?;
+    eprintln!("Accepted as {id}");
     Ok(())
 }
 

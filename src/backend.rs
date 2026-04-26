@@ -438,6 +438,80 @@ pub fn read_log(store: &dyn Store, id: Id) -> Result<Vec<LogEntry>> {
         .collect())
 }
 
+/// Serialized representation of a task pending in another namespace's inbox.
+///
+/// On-blob format (inbox/<inbox-id>):
+/// ```text
+/// source\t<src-namespace>\t<src-id>
+/// attr\t<key>\t<value>
+/// attr\t<key>\t<value>
+/// ---
+/// <title>
+///
+/// <body>
+/// ```
+pub struct InboxPayload {
+    pub source_namespace: String,
+    pub source_id: u32,
+    pub title: String,
+    pub body: String,
+    pub attrs: BTreeMap<String, String>,
+}
+
+impl InboxPayload {
+    pub fn serialize(&self) -> String {
+        let mut s = format!("source\t{}\t{}\n", self.source_namespace, self.source_id);
+        for (k, v) in &self.attrs {
+            s.push_str(&format!("attr\t{k}\t{v}\n"));
+        }
+        s.push_str("---\n");
+        s.push_str(&format!("{}\n\n{}", self.title.trim(), self.body.trim()));
+        s
+    }
+
+    pub fn parse(text: &str) -> Result<Self> {
+        let mut lines = text.lines();
+        let mut source_namespace = String::new();
+        let mut source_id: u32 = 0;
+        let mut attrs = BTreeMap::new();
+        for line in &mut lines {
+            if line == "---" {
+                break;
+            }
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            match parts.as_slice() {
+                ["source", ns, id] => {
+                    source_namespace = ns.to_string();
+                    source_id = id
+                        .parse()
+                        .map_err(|_| Error::Parse(format!("invalid inbox source id: {id}")))?;
+                }
+                ["attr", k, v] => {
+                    attrs.insert(k.to_string(), v.to_string());
+                }
+                _ => {}
+            }
+        }
+        let rest: String = lines.collect::<Vec<_>>().join("\n");
+        let mut split = rest.splitn(2, "\n\n");
+        let title = split.next().unwrap_or("").trim().to_string();
+        let body = split.next().unwrap_or("").trim().to_string();
+        Ok(Self {
+            source_namespace,
+            source_id,
+            title,
+            body,
+            attrs,
+        })
+    }
+}
+
+/// Stable inbox key for a (namespace, source-id) pair so re-exports overwrite
+/// the same slot rather than piling up.
+pub fn inbox_key(src_namespace: &str, src_id: u32) -> String {
+    format!("inbox/{src_namespace}-{src_id}")
+}
+
 /// Read every per-task log in the workspace and merge into a single feed
 /// sorted by timestamp ascending.
 pub fn read_all_logs(store: &dyn Store) -> Result<Vec<LogEntry>> {
