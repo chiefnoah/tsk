@@ -1,0 +1,2 @@
+tsk switch should use fzf to select namespace if none is provided
+
