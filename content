@@ -1,0 +1,3 @@
+tsk reopen command
+
+No way to flip a done task back to open without manually running prop set status open. Add a top-level reopen subcommand that removes the task from done state and re-adds it to a queue (default: current).
