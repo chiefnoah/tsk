@@ -1,0 +1,3 @@
+Better git-push/git-pull conflict handling
+
+Make push refuse non-fast-forward (already does); make pull stop using +force and instead fetch into refs/remotes-tsk/<remote>/*, then 3-way reconcile each ref. log/<id> and index are union-mergeable; other refs that diverged on both sides become a conflict.
