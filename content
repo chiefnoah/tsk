@@ -1,0 +1,31 @@
+Implement task properties
+
+Tasks can have any number of properties, some of which are synthetic and calculated and
+others that are concrete data. Properties are indexed such that you can search for tasks
+based on property value, ideally with fuzzy-finding using fzf.
+
+Properties can have values, but might also be unary and have no component data
+
+Some example properties that should be implemented in the future:
+
+- state
+  - Whether a task is open or archived
+  - possible values: open, archived
+- source
+  - value: The upstream source for a task (if it is duplicated/referenced from another
+    workspace) as a [[]] link
+- has-links
+  - value: whether the task has links, is boolean true/false
+- parent
+  - value: a link to another task that is a parent
+- child-of
+  - value: the compliment to parent, the parent task of this one
+- duplicates
+  - a task is marked as duplicating another task
+- references
+  - used for forward links to other tasks, both within and outside of the workspace
+- referenced-by
+  - the compliment to references, contains backlinks (tasks that reference this task)
+- assigned
+  - value: on the source task for an exported/assigned task, contains a link to the
+    namespaced task in the destination/imported namespace
