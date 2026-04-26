@@ -130,19 +130,22 @@ enum Commands {
         task_id: TaskId,
     },
 
-    /// Follow a link that is parsed from a task body. It may be an internal or external link (ie.
-    /// a url or a wiki-style link using double square brackets). When using the `tsk show`
-    /// command, links that are successfully parsed get a numeric superscript that may be used to
-    /// address the link. That number should be supplied to the -l/link_index where it will be
-    /// subsequently followed opened or shown.
+    /// List or follow a link parsed from a task's body. Without -l or -s,
+    /// prints the numbered list and exits. With -l N, opens link N; URLs go
+    /// to the system handler, [[tsk-N]] internal links are shown, foreign
+    /// refs resolve through the configured remote. With -s, pipes the list
+    /// through fzf and opens the picked one.
     Follow {
         /// The task whose body will be searched for links.
         #[command(flatten)]
         task_id: TaskId,
-        /// The index of the link to open. Must be supplied.
-        #[arg(short = 'l', default_value_t = 1)]
-        link_index: usize,
-        /// When opening an internal link, whether to show or edit the addressed task.
+        /// The index of the link to open. Omit (along with -s) to just list.
+        #[arg(short = 'l')]
+        link_index: Option<usize>,
+        /// fzf-pick a link to open instead of supplying -l.
+        #[arg(short = 's', default_value_t = false)]
+        select: bool,
+        /// When opening an internal link, edit the addressed task instead of showing.
         #[arg(short = 'e', default_value_t = false)]
         edit: bool,
     },
@@ -266,18 +269,6 @@ enum Commands {
 
     /// Switch to a different namespace. Shorthand for `tsk namespace switch`.
     Switch { name: String },
-
-    /// List the hyperlinks parsed from a task's body. With -s, pipe the list
-    /// through fzf and open the selected link via the existing follow path:
-    /// URLs go to the system handler, [[tsk-N]] internal links are shown,
-    /// foreign refs resolve through the configured remote.
-    Links {
-        #[command(flatten)]
-        task_id: TaskId,
-        /// Use fzf to select a link, then open it.
-        #[arg(short = 's', default_value_t = false)]
-        select: bool,
-    },
 
     /// Reopens an archived task, recreating the symlink and adding it back to the stack.
     Reopen {
@@ -443,8 +434,9 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Follow {
             task_id,
             link_index,
+            select,
             edit,
-        } => command_follow(dir, task_id, link_index, edit),
+        } => command_follow(dir, task_id, link_index, select, edit),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Completion { shell } => command_completion(shell),
         Commands::Drop { task_id } => command_drop(dir, task_id),
@@ -463,7 +455,6 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Accept { key } => command_accept(dir, key),
         Commands::Bundle { output } => command_bundle(dir, output),
         Commands::Migrate => command_migrate(dir),
-        Commands::Links { task_id, select } => command_links(dir, task_id, select),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
         Commands::Log { tsk_id } => command_log(dir, tsk_id),
         Commands::Prop { action } => command_prop(dir, action),
@@ -669,46 +660,90 @@ fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool, raw: bool) -> R
     Ok(())
 }
 
-fn command_follow(dir: PathBuf, task_id: TaskId, link_index: usize, edit: bool) -> Result<()> {
+fn render_link(link: &ParsedLink) -> String {
+    match link {
+        ParsedLink::External(url) => url.to_string(),
+        ParsedLink::Internal(id) => format!("[[{id}]]"),
+        ParsedLink::Foreign { prefix, id } => format!("[[{prefix}-{id}]]"),
+    }
+}
+
+fn command_follow(
+    dir: PathBuf,
+    task_id: TaskId,
+    link_index: Option<usize>,
+    select: bool,
+    edit: bool,
+) -> Result<()> {
     let task = Workspace::from_path(dir.clone())?.task(task_id.into())?;
-    if let Some(parsed_task) = task::parse(&task.to_string()) {
-        if link_index == 0 || link_index > parsed_task.links.len() {
-            eprintln!("Link index out of bounds.");
-            exit(1);
-        }
-        let link = &parsed_task.links[link_index - 1];
-        match link {
-            ParsedLink::External(url) => {
-                open::that_detached(url.as_str())?;
-                Ok(())
-            }
-            ParsedLink::Internal(id) => {
-                let taskid = taskid_from_tsk_id(*id);
-                if edit {
-                    command_edit(dir, taskid)
-                } else {
-                    command_show(dir, taskid, false, false)
-                }
-            }
-            ParsedLink::Foreign { prefix, id } => {
-                let workspace = Workspace::from_path(dir.clone())?;
-                if let Some(task) = workspace.resolve_foreign_link(prefix, *id)? {
-                    if edit {
-                        eprintln!("Editing foreign tasks is not supported.");
-                        exit(1);
-                    } else {
-                        println!("{task}");
-                    }
-                } else {
-                    eprintln!("Task {prefix}-{id} not found in remote workspace.");
-                    exit(1);
-                }
-                Ok(())
-            }
-        }
-    } else {
+    let Some(parsed_task) = task::parse(&task.to_string()) else {
         eprintln!("Unable to parse any links from body.");
         exit(1);
+    };
+    if parsed_task.links.is_empty() {
+        eprintln!("No links found in {}.", task.id);
+        return Ok(());
+    }
+
+    // Resolve which link index to act on, or fall through to listing.
+    let idx = match (link_index, select) {
+        (Some(n), _) => n,
+        (None, true) => {
+            let lines: Vec<String> = parsed_task
+                .links
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("{}\t{}", i + 1, render_link(l)))
+                .collect();
+            match fzf::select::<_, usize, _>(lines, ["--delimiter=\t", "--accept-nth=1"])? {
+                Some(n) => n,
+                None => {
+                    eprintln!("No link selected.");
+                    exit(1);
+                }
+            }
+        }
+        (None, false) => {
+            // Just list.
+            for (i, link) in parsed_task.links.iter().enumerate() {
+                println!("{}\t{}", i + 1, render_link(link));
+            }
+            return Ok(());
+        }
+    };
+
+    if idx == 0 || idx > parsed_task.links.len() {
+        eprintln!("Link index out of bounds.");
+        exit(1);
+    }
+    match &parsed_task.links[idx - 1] {
+        ParsedLink::External(url) => {
+            open::that_detached(url.as_str())?;
+            Ok(())
+        }
+        ParsedLink::Internal(id) => {
+            let taskid = taskid_from_tsk_id(*id);
+            if edit {
+                command_edit(dir, taskid)
+            } else {
+                command_show(dir, taskid, false, false)
+            }
+        }
+        ParsedLink::Foreign { prefix, id } => {
+            let workspace = Workspace::from_path(dir.clone())?;
+            if let Some(task) = workspace.resolve_foreign_link(prefix, *id)? {
+                if edit {
+                    eprintln!("Editing foreign tasks is not supported.");
+                    exit(1);
+                } else {
+                    println!("{task}");
+                }
+            } else {
+                eprintln!("Task {prefix}-{id} not found in remote workspace.");
+                exit(1);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -996,46 +1031,6 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn render_link(link: &ParsedLink) -> String {
-    match link {
-        ParsedLink::External(url) => url.to_string(),
-        ParsedLink::Internal(id) => format!("[[{id}]]"),
-        ParsedLink::Foreign { prefix, id } => format!("[[{prefix}-{id}]]"),
-    }
-}
-
-fn command_links(dir: PathBuf, task_id: TaskId, select: bool) -> Result<()> {
-    let workspace = Workspace::from_path(dir.clone())?;
-    let task = workspace.task(task_id.into())?;
-    let parsed = task::parse(&task.to_string());
-    let links: Vec<ParsedLink> = parsed.map(|p| p.links).unwrap_or_default();
-    if links.is_empty() {
-        eprintln!("No links found in {}.", task.id);
-        return Ok(());
-    }
-
-    if !select {
-        for (i, link) in links.iter().enumerate() {
-            println!("{}\t{}", i + 1, render_link(link));
-        }
-        return Ok(());
-    }
-
-    // -s: pipe through fzf and open the picked link via command_follow.
-    let lines: Vec<String> = links
-        .iter()
-        .enumerate()
-        .map(|(i, l)| format!("{}\t{}", i + 1, render_link(l)))
-        .collect();
-    let chosen: Option<usize> =
-        fzf::select::<_, usize, _>(lines, ["--delimiter=\t", "--accept-nth=1"])?;
-    let Some(idx) = chosen else {
-        eprintln!("No link selected.");
-        exit(1);
-    };
-    command_follow(dir, taskid_from_tsk_id(task.id), idx, false)
 }
 
 fn command_reopen(dir: PathBuf, task_id: TaskId) -> Result<()> {
