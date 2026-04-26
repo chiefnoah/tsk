@@ -149,6 +149,7 @@ pub fn assign_id(
     Ok(human)
 }
 
+#[allow(dead_code)] // kept for future "tsk forget" / hard-delete command
 pub fn unassign_id(repo: &Repository, name: &str, human: u32, message: &str) -> Result<()> {
     let mut ns = read(repo, name)?;
     if ns.mapping.remove(&human).is_some() {

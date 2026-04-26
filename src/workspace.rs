@@ -18,6 +18,11 @@ use std::str::FromStr;
 
 const NAMESPACE_FILE: &str = "namespace";
 const QUEUE_FILE: &str = "queue";
+/// Auto-managed property holding the task's lifecycle state. Set to
+/// `STATUS_OPEN` on creation and flipped to `STATUS_DONE` by [`Workspace::drop`].
+pub const STATUS_KEY: &str = "status";
+pub const STATUS_OPEN: &str = "open";
+pub const STATUS_DONE: &str = "done";
 /// User-local state lives under `<git-dir>/<STATE_DIR>/` so it isn't tracked
 /// by the enclosing repo (the `.git/` directory is by definition not in the
 /// working tree). Each clone gets its own active namespace + queue.
@@ -224,15 +229,19 @@ impl Workspace {
         } else {
             format!("{}\n\n{}", title.trim(), body.trim())
         };
-        let task_obj = TaskObj::new(content);
+        let mut task_obj = TaskObj::new(content);
+        task_obj
+            .properties
+            .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
         let stable = object::create(&repo, &task_obj, "create")?;
+        properties::reindex_task(&repo, &stable, &task_obj.properties)?;
         let human = namespace::assign_id(&repo, &self.namespace(), stable.clone(), "assign-id")?;
         Ok(Task {
             id: Id(human),
             stable,
             title: task_obj.title().to_string(),
             body: task_obj.body().to_string(),
-            attributes: BTreeMap::new(),
+            attributes: task_obj.properties,
         })
     }
 
@@ -395,14 +404,19 @@ impl Workspace {
         Ok(out)
     }
 
-    /// Drop a task from the active queue and unbind its human id in the
-    /// active namespace. The task object's commit history at
-    /// `refs/tsk/tasks/<stable>` is preserved.
+    /// Drop a task from the active queue and mark it `status=done`. The
+    /// namespace binding is kept so the task remains addressable by its
+    /// human id (and discoverable via `tsk prop find status done`); the
+    /// task object's commit history is preserved either way.
     pub fn drop(&self, identifier: TaskIdentifier) -> Result<Option<Id>> {
         let (id, stable) = self.resolve(identifier)?;
         let repo = self.repo()?;
         queue::remove(&repo, &self.queue(), &stable, "drop")?;
-        namespace::unassign_id(&repo, &self.namespace(), id.0, "drop")?;
+        // Flip status=done in the task's tree + index.
+        let mut task = self.task(TaskIdentifier::Id(id))?;
+        task.attributes
+            .insert(STATUS_KEY.into(), vec![STATUS_DONE.into()]);
+        self.save_task(&task)?;
         Ok(Some(id))
     }
 
@@ -803,6 +817,40 @@ mod test {
         assert_eq!(pulled.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn new_task_starts_open_drop_marks_done() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws.new_task("a".into(), "".into()).unwrap();
+        assert_eq!(
+            t.attributes.get(STATUS_KEY),
+            Some(&vec![STATUS_OPEN.to_string()])
+        );
+        let id = t.id;
+        ws.push_task(t).unwrap();
+
+        // Index reflects the new open task.
+        let opens = ws
+            .find_by_property(STATUS_KEY, Some(STATUS_OPEN))
+            .unwrap();
+        assert_eq!(opens.len(), 1);
+        assert_eq!(opens[0].0, id);
+
+        ws.drop(TaskIdentifier::Id(id)).unwrap();
+
+        // Status flipped, queue empty, namespace binding kept.
+        let read = ws.task(TaskIdentifier::Id(id)).unwrap();
+        assert_eq!(
+            read.attributes.get(STATUS_KEY),
+            Some(&vec![STATUS_DONE.to_string()])
+        );
+        assert!(ws.read_stack().unwrap().is_empty());
+        let dones = ws
+            .find_by_property(STATUS_KEY, Some(STATUS_DONE))
+            .unwrap();
+        assert_eq!(dones.len(), 1);
+        assert_eq!(dones[0].0, id);
     }
 
     #[test]
