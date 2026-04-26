@@ -34,6 +34,9 @@ where
     if output.stdout.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(String::from_utf8(output.stdout)?.parse()?))
+        // fzf appends a trailing newline; strip it so the FromStr impls
+        // (Id, String, usize, etc.) all work.
+        let raw = String::from_utf8(output.stdout)?;
+        Ok(Some(raw.trim().parse()?))
     }
 }
