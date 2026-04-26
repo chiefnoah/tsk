@@ -1,0 +1,3 @@
+Implement source property for cross-workspace tasks
+
+When a task is imported/copied from another workspace (across namespaces or repos), set source=[[<ns>/tsk-X]] so the original is recoverable. Pair with assigned (below) and tsk export-to-namespace plumbing.
