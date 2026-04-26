@@ -1,0 +1,4 @@
+add reject command
+
+Reject a task in the inbox, removing it without creating a local task. Write an event to
+the source's event log that tells the assignor it was rejected
