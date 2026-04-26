@@ -380,7 +380,7 @@ impl Workspace {
 
     pub fn new_task(&self, title: String, body: String) -> Result<Task> {
         let id = self.next_id()?;
-        backend::write_task_with_event(
+        backend::write_task(
             self.store(),
             id,
             &title,
@@ -449,7 +449,7 @@ impl Workspace {
             Some(l) => l,
             None => Loc::Active,
         };
-        backend::write_task_with_event(
+        backend::write_task(
             self.store(),
             task.id,
             &task.title,
@@ -458,7 +458,7 @@ impl Workspace {
             "edited",
             None,
         )?;
-        backend::write_attrs_with_event(self.store(), task.id, &task.attributes, "edited", None)?;
+        backend::write_attrs(self.store(), task.id, &task.attributes, "edited", None)?;
         self.log(task.id, "edited", None)?;
         // After editing, refresh stack title for this id.
         self.update_stack_title(task.id, &task.title)?;
@@ -508,7 +508,7 @@ impl Workspace {
             }
             let mut attrs = backend::read_attrs(self.store(), id)?;
             attrs.insert(key.to_string(), value.to_string());
-            backend::write_attrs_with_event(self.store(), id, &attrs, "prop-set", Some(key))?;
+            backend::write_attrs(self.store(), id, &attrs, "prop-set", Some(key))?;
             self.log(id, "prop-set", Some(key))?;
             if old_target != new_target {
                 if let Some(t) = old_target {
@@ -522,7 +522,7 @@ impl Workspace {
         } else {
             let mut attrs = backend::read_attrs(self.store(), id)?;
             attrs.insert(key.to_string(), value.to_string());
-            backend::write_attrs_with_event(self.store(), id, &attrs, "prop-set", Some(key))?;
+            backend::write_attrs(self.store(), id, &attrs, "prop-set", Some(key))?;
             self.log(id, "prop-set", Some(key))
         }
     }
@@ -532,7 +532,7 @@ impl Workspace {
         let mut attrs = backend::read_attrs(self.store(), id)?;
         let removed = attrs.remove(key);
         if let Some(prev) = removed {
-            backend::write_attrs_with_event(self.store(), id, &attrs, "prop-unset", Some(key))?;
+            backend::write_attrs(self.store(), id, &attrs, "prop-unset", Some(key))?;
             self.log(id, "prop-unset", Some(key))?;
             if let Some(pair) = inverse_pair_for(key)
                 && let Some(t) = parse_internal_link(&prev)
@@ -593,7 +593,7 @@ impl Workspace {
         } else {
             attrs.insert(inverse_key.to_string(), format_link_list(&ids));
         }
-        backend::write_attrs(self.store(), target, &attrs)?;
+        backend::write_attrs(self.store(), target, &attrs, "prop-set", Some(inverse_key))?;
         self.log(target, "prop-set", Some(inverse_key))?;
         Ok(())
     }
@@ -1701,7 +1701,13 @@ impl Workspace {
         let assigned_link = format!("[[{target_ns}/tsk-{}]]", src_id.0);
         let mut my_attrs = backend::read_attrs(self.store(), src_id)?;
         my_attrs.insert("assigned".into(), assigned_link.clone());
-        backend::write_attrs(self.store(), src_id, &my_attrs)?;
+        backend::write_attrs(
+            self.store(),
+            src_id,
+            &my_attrs,
+            "assigned",
+            Some(&assigned_link),
+        )?;
         self.log(src_id, "assigned", Some(&assigned_link))?;
         Ok(key)
     }
@@ -1751,7 +1757,7 @@ impl Workspace {
         // Drop any "assigned" carried over — it was set by the source workspace
         // before export; the new local copy isn't itself assigned anywhere.
         attrs.remove("assigned");
-        backend::write_attrs(self.store(), new_id, &attrs)?;
+        backend::write_attrs(self.store(), new_id, &attrs, "accepted", None)?;
         self.store().delete(&key)?;
         self.log(
             new_id,
@@ -1991,7 +1997,16 @@ mod test {
             let t = ws.new_task("Indexed".into(), "ok".into()).unwrap();
             ws.push_task(t).unwrap();
             // Write an unindexed task directly to the store.
-            backend::write_task(ws.store(), Id(999), "orphan", "", Loc::Active).unwrap();
+            backend::write_task(
+                ws.store(),
+                Id(999),
+                "orphan",
+                "",
+                Loc::Active,
+                "write",
+                None,
+            )
+            .unwrap();
 
             let active_before = backend::list_active(ws.store()).unwrap();
             assert!(active_before.contains(&Id(999)));
@@ -2313,7 +2328,16 @@ mod test {
         );
 
         // command_clean: orphan a task in active that isn't on the stack
-        backend::write_task(ws.store(), Id(99_999), "orphan", "", Loc::Active).unwrap();
+        backend::write_task(
+            ws.store(),
+            Id(99_999),
+            "orphan",
+            "",
+            Loc::Active,
+            "write",
+            None,
+        )
+        .unwrap();
         assert!(
             backend::list_active(ws.store())
                 .unwrap()
@@ -2863,7 +2887,7 @@ mod test {
             ws.set_property(c2_id, "parent", &format!("[[{p2_id}]]"))
                 .unwrap();
             let old = backend::read_attrs(ws.store(), parent_id).unwrap();
-            assert!(old.get("children").is_none(), "old parent should be empty");
+            assert!(!old.contains_key("children"), "old parent should be empty");
             let new = backend::read_attrs(ws.store(), p2_id).unwrap();
             assert!(
                 new.get("children")
@@ -2952,7 +2976,7 @@ mod test {
 
             // Unset removes the property.
             ws.unset_property(id1, "priority").unwrap();
-            assert!(ws.properties(id1).unwrap().get("priority").is_none());
+            assert!(!ws.properties(id1).unwrap().contains_key("priority"));
             // Unset of non-existent is fine.
             ws.unset_property(id1, "nope").unwrap();
         }

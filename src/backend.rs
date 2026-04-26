@@ -425,11 +425,7 @@ pub fn read_task(store: &dyn Store, id: Id) -> Result<Option<(String, String, Lo
     Ok(None)
 }
 
-pub fn write_task(store: &dyn Store, id: Id, title: &str, body: &str, loc: Loc) -> Result<()> {
-    write_task_with_event(store, id, title, body, loc, "write", None)
-}
-
-pub fn write_task_with_event(
+pub fn write_task(
     store: &dyn Store,
     id: Id,
     title: &str,
@@ -518,11 +514,7 @@ pub fn read_attrs(store: &dyn Store, id: Id) -> Result<BTreeMap<String, String>>
         .collect())
 }
 
-pub fn write_attrs(store: &dyn Store, id: Id, attrs: &BTreeMap<String, String>) -> Result<()> {
-    write_attrs_with_event(store, id, attrs, "write", None)
-}
-
-pub fn write_attrs_with_event(
+pub fn write_attrs(
     store: &dyn Store,
     id: Id,
     attrs: &BTreeMap<String, String>,
@@ -892,7 +884,7 @@ mod test {
             let id2 = next_id(s).unwrap();
             assert_eq!(id2, Id(2));
 
-            write_task(s, id, "title", "body", Loc::Active).unwrap();
+            write_task(s, id, "title", "body", Loc::Active, "write", None).unwrap();
             let (t, b, loc) = read_task(s, id).unwrap().unwrap();
             assert_eq!(t, "title");
             assert_eq!(b, "body");
@@ -905,7 +897,7 @@ mod test {
 
             let mut attrs = BTreeMap::new();
             attrs.insert("foo".to_string(), "bar".to_string());
-            write_attrs(s, id, &attrs).unwrap();
+            write_attrs(s, id, &attrs, "write", None).unwrap();
             assert_eq!(read_attrs(s, id).unwrap(), attrs);
 
             let mut bl = HashSet::new();
@@ -915,7 +907,7 @@ mod test {
             assert_eq!(read_backlinks(s, id).unwrap(), bl);
 
             // Empty attrs/backlinks delete the blob.
-            write_attrs(s, id, &BTreeMap::new()).unwrap();
+            write_attrs(s, id, &BTreeMap::new(), "write", None).unwrap();
             assert!(read_attrs(s, id).unwrap().is_empty());
             write_backlinks(s, id, &HashSet::new()).unwrap();
             assert!(read_backlinks(s, id).unwrap().is_empty());
@@ -1000,9 +992,9 @@ mod test {
     fn test_list_active_archive_helpers() {
         let (_d, file, git) = store_pair();
         for s in [file.as_ref(), git.as_ref()] {
-            write_task(s, Id(1), "t1", "", Loc::Active).unwrap();
-            write_task(s, Id(2), "t2", "", Loc::Archived).unwrap();
-            write_task(s, Id(3), "t3", "", Loc::Active).unwrap();
+            write_task(s, Id(1), "t1", "", Loc::Active, "write", None).unwrap();
+            write_task(s, Id(2), "t2", "", Loc::Archived, "write", None).unwrap();
+            write_task(s, Id(3), "t3", "", Loc::Active, "write", None).unwrap();
             assert_eq!(list_active(s).unwrap(), vec![Id(1), Id(3)]);
             assert_eq!(list_archive(s).unwrap(), vec![Id(2)]);
         }
