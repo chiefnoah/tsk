@@ -211,12 +211,47 @@ impl Workspace {
     pub fn new_task(&self, title: String, body: String) -> Result<Task> {
         let id = self.next_id()?;
         backend::write_task(self.store(), id, &title, &body, Loc::Active)?;
+        self.log(id, "created", None)?;
         Ok(Task {
             id,
             title,
             body,
             attributes: Default::default(),
         })
+    }
+
+    /// Per-task event log, oldest first.
+    pub fn read_log(&self, id: Id) -> Result<Vec<backend::LogEntry>> {
+        backend::read_log(self.store(), id)
+    }
+
+    /// Every event in this namespace, merged and sorted by timestamp ascending.
+    pub fn read_namespace_log(&self) -> Result<Vec<backend::LogEntry>> {
+        backend::read_all_logs(self.store())
+    }
+
+    fn log(&self, id: Id, event: &str, detail: Option<&str>) -> Result<()> {
+        let author = self.git_author().unwrap_or_default();
+        backend::append_log(self.store(), id, event, detail, &author)
+    }
+
+    /// `Name <email>` from the user's git config, if available. Falls back to
+    /// just one of the two if only one is set, or `None` otherwise.
+    pub fn git_author(&self) -> Option<String> {
+        if !self.is_git_backed() {
+            return None;
+        }
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER)).ok()?;
+        let repo = git2::Repository::open(PathBuf::from(marker.trim())).ok()?;
+        let cfg = repo.config().ok()?.snapshot().ok()?;
+        let name = cfg.get_string("user.name").ok();
+        let email = cfg.get_string("user.email").ok();
+        match (name, email) {
+            (Some(n), Some(e)) => Some(format!("{n} <{e}>")),
+            (Some(n), None) => Some(n),
+            (None, Some(e)) => Some(e),
+            (None, None) => None,
+        }
     }
 
     pub fn task(&self, identifier: TaskIdentifier) -> Result<Task> {
@@ -238,6 +273,7 @@ impl Workspace {
         };
         backend::write_task(self.store(), task.id, &task.title, &task.body, loc)?;
         backend::write_attrs(self.store(), task.id, &task.attributes)?;
+        self.log(task.id, "edited", None)?;
         // After editing, refresh stack title for this id.
         self.update_stack_title(task.id, &task.title)?;
         Ok(())
@@ -263,7 +299,8 @@ impl Workspace {
     pub fn set_property(&self, id: Id, key: &str, value: &str) -> Result<()> {
         let mut attrs = backend::read_attrs(self.store(), id)?;
         attrs.insert(key.to_string(), value.to_string());
-        backend::write_attrs(self.store(), id, &attrs)
+        backend::write_attrs(self.store(), id, &attrs)?;
+        self.log(id, "prop-set", Some(key))
     }
 
     /// Remove a property from a task. No-op if not present.
@@ -271,6 +308,7 @@ impl Workspace {
         let mut attrs = backend::read_attrs(self.store(), id)?;
         if attrs.remove(key).is_some() {
             backend::write_attrs(self.store(), id, &attrs)?;
+            self.log(id, "prop-unset", Some(key))?;
         }
         Ok(())
     }
@@ -348,14 +386,22 @@ impl Workspace {
     pub fn handle_metadata(&self, tsk: &Task, pre_links: Option<HashSet<Id>>) -> Result<()> {
         if let Some(parsed_task) = parse_task(&tsk.to_string()) {
             let internal_links = parsed_task.intenal_links();
-            for link in &internal_links {
+            let added: HashSet<Id> = match &pre_links {
+                Some(pre) => internal_links.difference(pre).copied().collect(),
+                None => internal_links.clone(),
+            };
+            for link in &added {
                 self.add_backlink(*link, tsk.id)?;
             }
+            let mut removed_count = 0;
             if let Some(pre_links) = pre_links {
-                let removed_links = pre_links.difference(&internal_links);
-                for link in removed_links {
+                for link in pre_links.difference(&internal_links) {
                     self.remove_backlink(*link, tsk.id)?;
+                    removed_count += 1;
                 }
+            }
+            if !added.is_empty() || removed_count > 0 {
+                self.log(tsk.id, "links-changed", None)?;
             }
         }
         Ok(())
@@ -433,6 +479,7 @@ impl Workspace {
         if backend::task_location(self.store(), id)? == Some(Loc::Active) {
             backend::move_task(self.store(), id, Loc::Archived)?;
         }
+        self.log(id, "archived", None)?;
         Ok(removed)
     }
 
@@ -615,7 +662,7 @@ impl Workspace {
     /// Every logical blob key that currently exists in the workspace.
     fn all_keys(&self) -> Result<Vec<String>> {
         let mut keys: Vec<String> = Vec::new();
-        for prefix in ["tasks", "archive", "attrs", "backlinks"] {
+        for prefix in ["tasks", "archive", "attrs", "backlinks", "log"] {
             keys.extend(self.store().list(prefix)?);
         }
         for top in ["index", "next", "remotes"] {
@@ -694,6 +741,7 @@ impl Workspace {
             modify_time: std::time::SystemTime::now(),
         });
         stack.save(self.store())?;
+        self.log(id, "reopened", None)?;
         Ok(id)
     }
 }
@@ -1366,6 +1414,68 @@ mod test {
         assert!(fws.git_push_refs("origin").is_err());
         assert!(fws.git_pull_refs("origin").is_err());
         assert!(fws.configure_git_remote_refspecs("origin").is_err());
+    }
+
+    #[test]
+    fn test_edit_log_records_mutations() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            let t = ws.new_task("first".into(), "body".into()).unwrap();
+            let id = t.id;
+            ws.push_task(t).unwrap();
+
+            ws.set_property(id, "priority", "high").unwrap();
+            ws.unset_property(id, "priority").unwrap();
+            // Edit via the same path command_edit uses.
+            let mut reread = ws.task(TaskIdentifier::Id(id)).unwrap();
+            reread.title = "edited".into();
+            ws.save_task(&reread).unwrap();
+
+            // Trigger handle_metadata so links-changed fires.
+            let other = ws.new_task("other".into(), "".into()).unwrap();
+            let other_id = other.id;
+            ws.push_task(other).unwrap();
+            let linker = Task {
+                id,
+                title: "edited".into(),
+                body: format!("see [[{other_id}]]"),
+                attributes: Default::default(),
+            };
+            ws.handle_metadata(&linker, Some(HashSet::new())).unwrap();
+            // Same links as before → no log entry added.
+            let mut same_links = HashSet::new();
+            same_links.insert(other_id);
+            ws.handle_metadata(&linker, Some(same_links)).unwrap();
+
+            ws.drop(TaskIdentifier::Id(id)).unwrap();
+            ws.reopen(TaskIdentifier::Id(id)).unwrap();
+
+            let log = ws.read_log(id).unwrap();
+            let events: Vec<&str> = log.iter().map(|e| e.event.as_str()).collect();
+            assert_eq!(
+                events,
+                vec![
+                    "created",
+                    "prop-set",
+                    "prop-unset",
+                    "edited",
+                    "links-changed",
+                    "archived",
+                    "reopened",
+                ],
+                "got: {events:?}"
+            );
+
+            // Logs are included in export.
+            let dest = ws.path.join("export.zip");
+            ws.export_zip(&dest).unwrap();
+            let f = std::fs::File::open(&dest).unwrap();
+            let zip = zip::ZipArchive::new(f).unwrap();
+            let names: std::collections::HashSet<String> =
+                zip.file_names().map(|s| s.to_string()).collect();
+            assert!(names.contains(&format!("log/{}", id.0)));
+            std::fs::remove_file(&dest).unwrap();
+        }
     }
 
     #[test]

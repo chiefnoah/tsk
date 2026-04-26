@@ -387,6 +387,72 @@ pub fn write_backlinks(store: &dyn Store, id: Id, links: &HashSet<Id>) -> Result
     )
 }
 
+/// One line of a task's edit log. Lines are tab-separated:
+/// `<unix-ts>\t<event>\t<detail>\t<author>` — empty fields allowed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogEntry {
+    pub id: Id,
+    pub timestamp: u64,
+    pub event: String,
+    pub detail: String,
+    pub author: String,
+}
+
+impl LogEntry {
+    fn parse(id: Id, line: &str) -> Option<Self> {
+        let mut p = line.splitn(4, '\t');
+        let timestamp = p.next()?.parse().ok()?;
+        Some(Self {
+            id,
+            timestamp,
+            event: p.next().unwrap_or("").to_string(),
+            detail: p.next().unwrap_or("").to_string(),
+            author: p.next().unwrap_or("").to_string(),
+        })
+    }
+}
+
+/// Append a single log entry for a task. The blob `log/<id>` grows over time;
+/// it is never rewritten.
+pub fn append_log(
+    store: &dyn Store,
+    id: Id,
+    event: &str,
+    detail: Option<&str>,
+    author: &str,
+) -> Result<()> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("{ts}\t{event}\t{}\t{author}\n", detail.unwrap_or(""));
+    let key = format!("log/{}", id.0);
+    let existing = read_text(store, &key)?;
+    store.write(&key, format!("{existing}{line}").as_bytes())
+}
+
+pub fn read_log(store: &dyn Store, id: Id) -> Result<Vec<LogEntry>> {
+    Ok(read_text(store, &format!("log/{}", id.0))?
+        .lines()
+        .filter_map(|l| LogEntry::parse(id, l))
+        .collect())
+}
+
+/// Read every per-task log in the workspace and merge into a single feed
+/// sorted by timestamp ascending.
+pub fn read_all_logs(store: &dyn Store) -> Result<Vec<LogEntry>> {
+    let mut all = Vec::new();
+    for key in store.list("log")? {
+        if let Some(idstr) = key.strip_prefix("log/")
+            && let Ok(n) = idstr.parse::<u32>()
+        {
+            all.extend(read_log(store, Id(n))?);
+        }
+    }
+    all.sort_by_key(|e| e.timestamp);
+    Ok(all)
+}
+
 pub fn read_remotes(store: &dyn Store) -> Result<Vec<Remote>> {
     Ok(read_text(store, "remotes")?
         .lines()

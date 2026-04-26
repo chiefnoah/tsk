@@ -221,6 +221,14 @@ enum Commands {
     /// task data is copied into refs/tsk/* and the on-disk files are removed.
     Migrate,
 
+    /// Print the event log. Without -T, prints every event in the current
+    /// namespace, newest first, in git-log style. With -T, scopes to one task.
+    Log {
+        /// Optionally scope to a single task by tsk-ID.
+        #[arg(short = 'T', value_name = "TSK-ID", value_parser = parse_id)]
+        tsk_id: Option<Id>,
+    },
+
     /// Get/set/find tasks by property. Properties are arbitrary key/value
     /// pairs stored alongside a task; some are synthetic (state, has-links,
     /// references, referenced-by) and computed on read.
@@ -422,6 +430,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Export { output } => command_export(dir, output),
         Commands::Migrate => command_migrate(dir),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
+        Commands::Log { tsk_id } => command_log(dir, tsk_id),
         Commands::Prop { action } => command_prop(dir, action),
         Commands::Namespace { action } => command_namespace(dir, action),
         Commands::Switch { name } => command_namespace_switch(dir, &name),
@@ -760,6 +769,72 @@ fn command_migrate(dir: PathBuf) -> Result<()> {
         git_dir.display()
     );
     Ok(())
+}
+
+fn command_log(dir: PathBuf, tsk_id: Option<Id>) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let mut entries = match tsk_id {
+        Some(id) => ws.read_log(id)?,
+        None => ws.read_namespace_log()?,
+    };
+    if entries.is_empty() {
+        eprintln!("No log entries.");
+        return Ok(());
+    }
+    // Newest first, git-log style.
+    entries.reverse();
+    for (i, e) in entries.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let header = if tsk_id.is_some() {
+            format!("event {}", e.event)
+        } else {
+            format!("event {} {}", e.id, e.event)
+        };
+        println!("{header}");
+        if !e.author.is_empty() {
+            println!("Author: {}", e.author);
+        }
+        let ts = std::time::UNIX_EPOCH + std::time::Duration::from_secs(e.timestamp);
+        println!("Date:   {}", format_systemtime(ts));
+        if !e.detail.is_empty() {
+            println!();
+            println!("    {}", e.detail);
+        }
+    }
+    Ok(())
+}
+
+fn format_systemtime(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Lightweight RFC3339-ish formatter: split into Y-m-d H:M:S UTC. Avoids
+    // pulling in chrono just for this.
+    let (y, mo, d, h, mi, s) = ymd_hms_utc(secs);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+fn ymd_hms_utc(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
+    let day = secs / 86_400;
+    let rem = secs % 86_400;
+    let h = (rem / 3600) as u32;
+    let mi = ((rem % 3600) / 60) as u32;
+    let s = (rem % 60) as u32;
+    // Civil-from-days (Howard Hinnant). Stable for all valid u64 epoch days.
+    let z = day as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let mo = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = if mo <= 2 { y + 1 } else { y };
+    (y as u64, mo, d, h, mi, s)
 }
 
 fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
