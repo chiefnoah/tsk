@@ -26,6 +26,12 @@ fn default_dir() -> Result<PathBuf> {
 
 const NEW_SENTINEL: &str = "<new>";
 
+/// `[[tsk-N]]` → Some(Id(N)). Anything else (including foreign links) → None.
+fn parse_internal_link_for_cli(s: &str) -> Option<Id> {
+    let inner = s.trim().strip_prefix("[[")?.strip_suffix("]]")?;
+    Id::from_str(inner).ok()
+}
+
 fn prompt_line(prompt: &str) -> Result<String> {
     use std::io::Write as _;
     eprint!("{prompt}");
@@ -1028,6 +1034,27 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
                 }
             };
             ws.set_property(id, &key, &value)?;
+            // For duplicates: if the duplicate and original are both still on
+            // the stack, prompt to drop the duplicate so they don't both keep
+            // showing up in tsk list.
+            if key == "duplicates"
+                && let Some(target) = parse_internal_link_for_cli(&value)
+            {
+                let stack = ws.read_stack()?;
+                let dup_open = stack.iter().any(|i| i.id == id);
+                let orig_open = stack.iter().any(|i| i.id == target);
+                if dup_open && orig_open {
+                    eprint!("{id} duplicates {target} and both are open. Drop {id}? [y/N] ");
+                    use std::io::Write as _;
+                    io::stderr().flush()?;
+                    let mut answer = String::new();
+                    io::stdin().read_line(&mut answer)?;
+                    if matches!(answer.trim(), "y" | "Y" | "yes") {
+                        ws.drop(workspace::TaskIdentifier::Id(id))?;
+                        eprintln!("Dropped {id}");
+                    }
+                }
+            }
         }
         PropAction::Unset { task_id, key } => {
             let id = ws.task(task_id.into())?.id;

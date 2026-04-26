@@ -64,6 +64,35 @@ impl Display for Remote {
     }
 }
 
+/// A property whose value is a `[[tsk-N]]` link maintains an inverse
+/// link-list property on the target task. `forward` is the singular property
+/// the user sets; `inverse` is the multi-value list maintained on the target.
+struct InversePair {
+    forward: &'static str,
+    inverse: &'static str,
+    cycle_check: bool,
+    action: &'static str,
+}
+
+const INVERSE_PAIRS: &[InversePair] = &[
+    InversePair {
+        forward: "parent",
+        inverse: "children",
+        cycle_check: true,
+        action: "parent",
+    },
+    InversePair {
+        forward: "duplicates",
+        inverse: "duplicated-by",
+        cycle_check: true,
+        action: "duplicate",
+    },
+];
+
+fn inverse_pair_for(key: &str) -> Option<&'static InversePair> {
+    INVERSE_PAIRS.iter().find(|p| p.forward == key)
+}
+
 /// Parse a single `[[tsk-N]]` wiki-style internal link out of a property
 /// value. Whitespace is trimmed; foreign links (`[[ns/tsk-N]]`) are not
 /// matched here because the inverse-relation maintenance is intra-namespace.
@@ -419,31 +448,32 @@ impl Workspace {
     /// cycles are rejected.
     pub fn set_property(&self, id: Id, key: &str, value: &str) -> Result<()> {
         let old_value = backend::read_attrs(self.store(), id)?.get(key).cloned();
-        if key == "parent" {
-            let old_parent = old_value.as_deref().and_then(parse_internal_link);
-            let new_parent = parse_internal_link(value);
-            if let Some(p) = new_parent {
-                if p == id {
-                    return Err(Error::Parse("A task cannot be its own parent".into()));
-                }
-                if self.would_form_parent_cycle(id, p)? {
+        if let Some(pair) = inverse_pair_for(key) {
+            let old_target = old_value.as_deref().and_then(parse_internal_link);
+            let new_target = parse_internal_link(value);
+            if let Some(t) = new_target {
+                if t == id {
                     return Err(Error::Parse(format!(
-                        "Refusing to set parent={p}: would form a cycle"
+                        "Refusing to set {key}={t}: a task cannot {} itself",
+                        pair.action
+                    )));
+                }
+                if pair.cycle_check && self.would_form_chain_cycle(id, t, pair.forward)? {
+                    return Err(Error::Parse(format!(
+                        "Refusing to set {key}={t}: would form a cycle"
                     )));
                 }
             }
-            // Update primary attr first.
             let mut attrs = backend::read_attrs(self.store(), id)?;
             attrs.insert(key.to_string(), value.to_string());
             backend::write_attrs(self.store(), id, &attrs)?;
             self.log(id, "prop-set", Some(key))?;
-            // Then maintain children list on old/new parents.
-            if old_parent != new_parent {
-                if let Some(p) = old_parent {
-                    self.remove_from_children(p, id)?;
+            if old_target != new_target {
+                if let Some(t) = old_target {
+                    self.update_inverse_list(t, id, pair.inverse, /* add */ false)?;
                 }
-                if let Some(p) = new_parent {
-                    self.add_to_children(p, id)?;
+                if let Some(t) = new_target {
+                    self.update_inverse_list(t, id, pair.inverse, /* add */ true)?;
                 }
             }
             Ok(())
@@ -462,64 +492,67 @@ impl Workspace {
         if let Some(prev) = removed {
             backend::write_attrs(self.store(), id, &attrs)?;
             self.log(id, "prop-unset", Some(key))?;
-            if key == "parent"
-                && let Some(p) = parse_internal_link(&prev)
+            if let Some(pair) = inverse_pair_for(key)
+                && let Some(t) = parse_internal_link(&prev)
             {
-                self.remove_from_children(p, id)?;
+                self.update_inverse_list(t, id, pair.inverse, /* add */ false)?;
             }
         }
         Ok(())
     }
 
-    /// Walk up the parent chain starting at `start` and return true if `child`
-    /// would appear in it (i.e. setting `child.parent = start` would cycle).
-    fn would_form_parent_cycle(&self, child: Id, start: Id) -> Result<bool> {
+    /// Walk up `start`'s `forward_key` chain and return true if `subject`
+    /// would appear in it (i.e. setting `subject.<forward_key> = start` would
+    /// cycle).
+    fn would_form_chain_cycle(&self, subject: Id, start: Id, forward_key: &str) -> Result<bool> {
         let mut cur = Some(start);
         let mut visited: HashSet<Id> = HashSet::new();
         while let Some(c) = cur {
-            if c == child {
+            if c == subject {
                 return Ok(true);
             }
             if !visited.insert(c) {
-                // Pre-existing cycle detected upstream — surface as no-cycle
-                // here so the caller's set still proceeds (we're not making
-                // it worse).
+                // Pre-existing cycle upstream; not our problem to enforce.
                 return Ok(false);
             }
             cur = backend::read_attrs(self.store(), c)?
-                .get("parent")
+                .get(forward_key)
                 .and_then(|v| parse_internal_link(v));
         }
         Ok(false)
     }
 
-    fn add_to_children(&self, parent: Id, child: Id) -> Result<()> {
-        let mut attrs = backend::read_attrs(self.store(), parent)?;
-        let mut ids = parse_link_list(attrs.get("children").map(String::as_str).unwrap_or(""));
-        if !ids.contains(&child) {
-            ids.push(child);
-        }
-        attrs.insert("children".into(), format_link_list(&ids));
-        backend::write_attrs(self.store(), parent, &attrs)?;
-        self.log(parent, "prop-set", Some("children"))?;
-        Ok(())
-    }
-
-    fn remove_from_children(&self, parent: Id, child: Id) -> Result<()> {
-        let mut attrs = backend::read_attrs(self.store(), parent)?;
-        let mut ids = parse_link_list(attrs.get("children").map(String::as_str).unwrap_or(""));
+    /// Add or remove `subject` in the `inverse_key` link list on `target`.
+    fn update_inverse_list(
+        &self,
+        target: Id,
+        subject: Id,
+        inverse_key: &str,
+        add: bool,
+    ) -> Result<()> {
+        let mut attrs = backend::read_attrs(self.store(), target)?;
+        let mut ids = parse_link_list(attrs.get(inverse_key).map(String::as_str).unwrap_or(""));
         let before = ids.len();
-        ids.retain(|i| *i != child);
-        if ids.len() == before {
+        if add {
+            if !ids.contains(&subject) {
+                ids.push(subject);
+            }
+        } else {
+            ids.retain(|i| *i != subject);
+        }
+        if ids.len() == before && add {
+            return Ok(());
+        }
+        if ids.len() == before && !add {
             return Ok(());
         }
         if ids.is_empty() {
-            attrs.remove("children");
+            attrs.remove(inverse_key);
         } else {
-            attrs.insert("children".into(), format_link_list(&ids));
+            attrs.insert(inverse_key.to_string(), format_link_list(&ids));
         }
-        backend::write_attrs(self.store(), parent, &attrs)?;
-        self.log(parent, "prop-set", Some("children"))?;
+        backend::write_attrs(self.store(), target, &attrs)?;
+        self.log(target, "prop-set", Some(inverse_key))?;
         Ok(())
     }
 
@@ -2124,6 +2157,56 @@ mod test {
             assert!(body_cands.iter().any(|c| c.contains("x.example")));
             let body_cands = ws.body_candidates(id2).unwrap();
             assert!(body_cands.iter().any(|c| c == &format!("[[{id1}]]")));
+        }
+    }
+
+    #[test]
+    fn test_duplicates_property_maintains_duplicated_by_inverse() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            let orig = ws.new_task("orig".into(), "".into()).unwrap();
+            let orig_id = orig.id;
+            ws.push_task(orig).unwrap();
+            let dup1 = ws.new_task("dup1".into(), "".into()).unwrap();
+            let dup1_id = dup1.id;
+            ws.push_task(dup1).unwrap();
+            let dup2 = ws.new_task("dup2".into(), "".into()).unwrap();
+            let dup2_id = dup2.id;
+            ws.push_task(dup2).unwrap();
+
+            ws.set_property(dup1_id, "duplicates", &format!("[[{orig_id}]]"))
+                .unwrap();
+            ws.set_property(dup2_id, "duplicates", &format!("[[{orig_id}]]"))
+                .unwrap();
+            let dby = backend::read_attrs(ws.store(), orig_id)
+                .unwrap()
+                .get("duplicated-by")
+                .cloned()
+                .unwrap_or_default();
+            assert!(dby.contains(&format!("[[{dup1_id}]]")), "{dby}");
+            assert!(dby.contains(&format!("[[{dup2_id}]]")), "{dby}");
+
+            // Unset removes from inverse list.
+            ws.unset_property(dup1_id, "duplicates").unwrap();
+            let dby = backend::read_attrs(ws.store(), orig_id)
+                .unwrap()
+                .get("duplicated-by")
+                .cloned()
+                .unwrap_or_default();
+            assert!(!dby.contains(&format!("[[{dup1_id}]]")));
+            assert!(dby.contains(&format!("[[{dup2_id}]]")));
+
+            // Self-reference rejected.
+            assert!(
+                ws.set_property(dup2_id, "duplicates", &format!("[[{dup2_id}]]"))
+                    .is_err()
+            );
+            // Cycle rejected (orig.duplicates = dup2 but dup2 already
+            // duplicates orig).
+            assert!(
+                ws.set_property(orig_id, "duplicates", &format!("[[{dup2_id}]]"))
+                    .is_err()
+            );
         }
     }
 
