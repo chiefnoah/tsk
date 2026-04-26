@@ -253,12 +253,16 @@ enum Commands {
 
     /// Assign a task to another namespace by sending it to that namespace's
     /// inbox. Defaults to the top-of-stack task; use -T to pick a different
-    /// one. Sets `assigned=[[<ns>/tsk-N]]` on the source.
+    /// one. Sets `assigned=[[<ns>/tsk-N]]` on the source. Auto-pushes refs
+    /// to "origin" when configured; pass -r NAME to use a different remote
+    /// or -r "" to skip the push.
     Assign {
         /// Target namespace.
         target: String,
         #[command(flatten)]
         task_id: TaskId,
+        #[arg(short = 'r')]
+        remote: Option<String>,
     },
 
     /// List tasks pending in the current namespace's inbox. Pulls from a
@@ -527,7 +531,11 @@ fn run(cli: Cli) -> Result<()> {
         Commands::GitSetup { gitignore, remote } => command_git_setup(dir, gitignore, remote),
         Commands::GitPush { remote } => command_git_push(dir, remote),
         Commands::GitPull { remote } => command_git_pull(dir, remote),
-        Commands::Assign { target, task_id } => command_assign(dir, target, task_id),
+        Commands::Assign {
+            target,
+            task_id,
+            remote,
+        } => command_assign(dir, target, task_id, remote),
         Commands::Inbox { remote } => command_inbox(dir, remote),
         Commands::Accept { key } => command_accept(dir, key),
         Commands::Reject { key } => command_reject(dir, key),
@@ -928,11 +936,19 @@ fn command_bundle(dir: PathBuf, output: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn command_assign(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {
+fn command_assign(
+    dir: PathBuf,
+    target: String,
+    task_id: TaskId,
+    remote: Option<String>,
+) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let id = ws.task(task_id.into())?.id;
     let key = ws.export_to_namespace(&target, id)?;
     eprintln!("Sent {id} to namespace '{target}' (inbox key: {key})");
+    if let Some(r) = effective_remote(&ws, remote)? {
+        ws.git_push_refs(&r)?;
+    }
     Ok(())
 }
 
