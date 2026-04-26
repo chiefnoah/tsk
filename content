@@ -1,0 +1,25 @@
+Avoid task id collisions across offline clones
+
+Two clones working offline both pick the same next id and then both write their own tasks/<id> blob. Whoever pushes first wins; the other clone's task gets clobbered or fails the push lease and is stuck.
+
+Approach: rebase-style id reassignment driven by creation timestamp.
+
+Each task already has a `created` log entry with a unix timestamp. On `tsk git-pull`, after the existing reconciliation pass, scan for id collisions:
+- For each colliding id N, compare local and remote `created` timestamps.
+- The earlier task keeps id N. The later task gets reassigned to a new id allocated past the merged `next` counter.
+- For each reassigned task, rewrite every reference to its old id:
+  - body text containing `[[tsk-N]]`
+  - attrs whose value matches the link form (source, assigned, parent, child-of, references, referenced-by, etc)
+  - backlinks blobs of other tasks that referenced it
+  - log entries (the `accepted`/`exported`/`links-changed` details)
+  - the index ref's per-row id
+- Append a `renumbered\t<old-id>\t<new-id>` log entry on the moved task so history is recoverable.
+
+Push side: after the rebase, push proceeds normally (force-with-lease holds, our shadow now matches what we just pulled).
+
+Edge cases to design for:
+- Identical creation timestamps (resolution race): break ties by clone identity (could be `user.email` from git config) or by source ref OID lexicographic order.
+- A reassigned task that someone has already accepted in another namespace: the `source` link in the destination namespace becomes stale. Could log a warning, or push an explicit rename event into the destination's inbox.
+- External tools (other workspaces, foreign-link consumers) holding stale `[[ns/tsk-N]]` references — out of scope; document the renumber.
+
+This integrates with the existing `tsk git-pull` reconciliation pass; should run as a final step after blob merges, before the local refs are advertised as the "new state".
