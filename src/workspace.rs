@@ -1006,6 +1006,7 @@ impl Workspace {
         let repo = git2::Repository::open(self.require_git_dir()?)?;
         let mut leases: Vec<String> = Vec::new();
         let mut refspecs: Vec<String> = Vec::new();
+        let mut local_rests: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for r in repo.references()? {
             let r = r?;
             let Some(name) = r.name() else { continue };
@@ -1015,6 +1016,7 @@ impl Workspace {
             let Some(local_oid) = r.target() else {
                 continue;
             };
+            local_rests.insert(rest.to_string());
             if shadow.get(rest) == Some(&local_oid) {
                 continue; // up to date
             }
@@ -1022,6 +1024,15 @@ impl Workspace {
                 leases.push(format!("--force-with-lease=refs/tsk/{rest}:{expected}"));
             }
             refspecs.push(format!("refs/tsk/{rest}:refs/tsk/{rest}"));
+        }
+        // Refs that exist on the remote (per shadow) but no longer locally:
+        // push as deletions so the remote stays in sync with local removals
+        // (e.g. `tsk reject` / `tsk accept` consuming an inbox blob).
+        for (rest, expected) in &shadow {
+            if !local_rests.contains(rest) {
+                leases.push(format!("--force-with-lease=refs/tsk/{rest}:{expected}"));
+                refspecs.push(format!(":refs/tsk/{rest}"));
+            }
         }
         if refspecs.is_empty() {
             return Ok(());
@@ -1051,9 +1062,12 @@ impl Workspace {
         // Snapshot pre-fetch shadow so we know the previous remote position.
         let pre_fetch: BTreeMap<String, git2::Oid> =
             self.read_shadow(remote)?.into_iter().collect();
-        // Fetch (force, into our private shadow only).
+        // Fetch (force, into our private shadow only). --prune so that refs
+        // deleted on the remote are removed from the shadow too — otherwise
+        // a stale shadow entry will be re-applied to the local ref below.
         self.run_git(&[
             "fetch",
+            "--prune",
             remote,
             &format!("+refs/tsk/*:refs/remotes-tsk/{remote}/*"),
         ])?;
@@ -1091,6 +1105,32 @@ impl Workspace {
                     repo.reference(&local_refname, merged, true, "tsk pull merge")?;
                 }
                 PullAction::Conflict => conflicts.push(rel.clone()),
+            }
+        }
+        // Apply remote deletions: refs that were in pre_fetch but vanished
+        // post_fetch (remote dropped them, e.g. via inbox accept/reject on
+        // another clone). If the local ref hasn't moved since the last sync
+        // we delete it; if it diverged, treat as a conflict.
+        for (rel, &old_remote) in &pre_fetch {
+            if post_fetch.contains_key(rel) {
+                continue;
+            }
+            if rebased_handled.contains(rel) {
+                continue;
+            }
+            let local_refname = format!("refs/tsk/{rel}");
+            let local_oid = repo
+                .find_reference(&local_refname)
+                .ok()
+                .and_then(|r| r.target());
+            match local_oid {
+                None => {} // already gone
+                Some(l) if l == old_remote => {
+                    if let Ok(mut r) = repo.find_reference(&local_refname) {
+                        r.delete()?;
+                    }
+                }
+                Some(_) => conflicts.push(rel.clone()),
             }
         }
         if !conflicts.is_empty() {
@@ -1139,6 +1179,8 @@ impl Workspace {
                 Some((rest, oid))
             })
             .collect();
+        let local_rests: std::collections::BTreeSet<String> =
+            updates.iter().map(|(r, _)| r.clone()).collect();
         for (rest, oid) in updates {
             repo.reference(
                 &format!("{dest_prefix}{rest}"),
@@ -1146,6 +1188,28 @@ impl Workspace {
                 true,
                 "tsk push shadow",
             )?;
+        }
+        // Prune shadow entries for refs that no longer exist locally — after a
+        // successful push the remote also dropped them, so the shadow must too
+        // or a future pull will see them as "remote still has it" and recreate
+        // the local ref.
+        let stale: Vec<String> = repo
+            .references()?
+            .filter_map(|r| {
+                let r = r.ok()?;
+                let name = r.name()?.to_string();
+                let rest = name.strip_prefix(&dest_prefix)?.to_string();
+                if local_rests.contains(&rest) {
+                    None
+                } else {
+                    Some(name)
+                }
+            })
+            .collect();
+        for name in stale {
+            if let Ok(mut r) = repo.find_reference(&name) {
+                r.delete()?;
+            }
         }
         Ok(())
     }
