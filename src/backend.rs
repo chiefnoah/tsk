@@ -338,6 +338,10 @@ fn list_bucket(store: &dyn Store, bucket: &str) -> Result<Vec<Id>> {
 }
 
 /// Read+lossy-decode a blob, returning empty string when absent.
+pub fn read_text_blob(store: &dyn Store, key: &str) -> Result<String> {
+    read_text(store, key)
+}
+
 fn read_text(store: &dyn Store, key: &str) -> Result<String> {
     Ok(store
         .read(key)?

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 /// A unique identifier for a task. When referenced in text, it is prefixed with `tsk-`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Id(pub u32);
 
 impl FromStr for Id {
@@ -114,6 +114,17 @@ fn format_link_list(ids: &[Id]) -> String {
         .join(",")
 }
 
+/// One id-collision resolution decision computed during `tsk git-pull`.
+/// `local_loses` true means we vacate `old_id` locally (renumbering our
+/// content to `new_id`) so the remote's blob can take `old_id` cleanly.
+/// false means the remote's blob is the loser; we import it at `new_id`
+/// while keeping our local `old_id` intact.
+struct Renumber {
+    old_id: Id,
+    new_id: Id,
+    local_loses: bool,
+}
+
 enum PullAction {
     /// Local already matches remote — nothing to do.
     Skip,
@@ -126,7 +137,12 @@ enum PullAction {
 }
 
 fn is_mergeable_key(rel: &str) -> bool {
-    rel.starts_with("log/") || rel.ends_with("/log") || rel == "index" || rel.ends_with("/index")
+    rel.starts_with("log/")
+        || rel.ends_with("/log")
+        || rel == "index"
+        || rel.ends_with("/index")
+        || rel == "next"
+        || rel.ends_with("/next")
 }
 
 fn resolve_pull(
@@ -1020,7 +1036,19 @@ impl Workspace {
 
         let repo = git2::Repository::open(self.require_git_dir()?)?;
         let mut conflicts: Vec<String> = Vec::new();
+        // Refs marked "handled" by the rebase pass below — the per-ref
+        // reconcile skips these because they don't represent a real conflict.
+        let mut rebased_handled: HashSet<String> = HashSet::new();
+        // First pass: detect id collisions in our current namespace and
+        // resolve them by renumbering the loser locally.
+        let renames = self.detect_id_collisions(&repo, &post_fetch)?;
+        for r in &renames {
+            self.apply_renumber(&repo, r, &post_fetch, &mut rebased_handled)?;
+        }
         for (rel, &new_remote) in &post_fetch {
+            if rebased_handled.contains(rel) {
+                continue;
+            }
             let local_refname = format!("refs/tsk/{rel}");
             let local_oid = repo
                 .find_reference(&local_refname)
@@ -1102,6 +1130,390 @@ impl Workspace {
         Ok(blob.content().to_vec())
     }
 
+    /// Walk the post-fetch shadow looking for ids that exist on both sides
+    /// with different content. For each such id, decide which side keeps the
+    /// id (winner = earlier `created` timestamp; tie-break = lexicographically
+    /// smaller blob OID) and queue a [`Renumber`] for the loser. Renumbered
+    /// ids are allocated past the highest known id on either side.
+    fn detect_id_collisions(
+        &self,
+        repo: &git2::Repository,
+        post_fetch: &BTreeMap<String, git2::Oid>,
+    ) -> Result<Vec<Renumber>> {
+        let our_ns = self.namespace();
+        // Candidate ids: any tasks/<id> or archive/<id> in the shadow under
+        // our namespace.
+        let mut candidates: std::collections::BTreeSet<Id> = Default::default();
+        for bucket in ["tasks", "archive"] {
+            let prefix = format!("{our_ns}/{bucket}/");
+            for rel in post_fetch.keys() {
+                if let Some(rest) = rel.strip_prefix(&prefix)
+                    && let Ok(n) = rest.parse::<u32>()
+                {
+                    candidates.insert(Id(n));
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Allocate fresh ids past the highest known on either side.
+        let mut next_free = self.highest_known_id(post_fetch)? + 1;
+        let local_next: u32 = backend::read_text_blob(self.store(), "next")?
+            .trim()
+            .parse()
+            .unwrap_or(1);
+        next_free = next_free.max(local_next);
+
+        let mut out = Vec::new();
+        for id in candidates {
+            let local_oid = self.local_task_oid(id)?;
+            let remote_oid = self.remote_task_oid(post_fetch, &our_ns, id);
+            let (Some(local_oid), Some(remote_oid)) = (local_oid, remote_oid) else {
+                continue;
+            };
+            if local_oid == remote_oid {
+                continue;
+            }
+            let local_create = self.read_local_create_line(id)?;
+            let remote_create = self.read_remote_create_line(repo, post_fetch, &our_ns, id)?;
+            let (Some(lc), Some(rc)) = (local_create, remote_create) else {
+                continue;
+            };
+            // Same `created` line on both sides means it's the same logical
+            // task being edited in two places — not an id collision. Let the
+            // regular reconcile pass handle it.
+            if lc == rc {
+                continue;
+            }
+            // Pull out the timestamp from the `created` line for ordering.
+            let lc_ts: u64 = lc
+                .split('\t')
+                .next()
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(0);
+            let rc_ts: u64 = rc
+                .split('\t')
+                .next()
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(0);
+            let local_loses = match lc_ts.cmp(&rc_ts) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => local_oid > remote_oid,
+            };
+            out.push(Renumber {
+                old_id: id,
+                new_id: Id(next_free),
+                local_loses,
+            });
+            next_free += 1;
+        }
+        Ok(out)
+    }
+
+    fn highest_known_id(&self, post_fetch: &BTreeMap<String, git2::Oid>) -> Result<u32> {
+        let our_ns = self.namespace();
+        let mut max_id = 0u32;
+        for id in backend::list_active(self.store())? {
+            max_id = max_id.max(id.0);
+        }
+        for id in backend::list_archive(self.store())? {
+            max_id = max_id.max(id.0);
+        }
+        for bucket in ["tasks", "archive"] {
+            let prefix = format!("{our_ns}/{bucket}/");
+            for rel in post_fetch.keys() {
+                if let Some(rest) = rel.strip_prefix(&prefix)
+                    && let Ok(n) = rest.parse::<u32>()
+                {
+                    max_id = max_id.max(n);
+                }
+            }
+        }
+        Ok(max_id)
+    }
+
+    fn local_task_oid(&self, id: Id) -> Result<Option<git2::Oid>> {
+        let repo = git2::Repository::open(self.require_git_dir()?)?;
+        for bucket in ["tasks", "archive"] {
+            let refname = format!("refs/tsk/{}/{bucket}/{}", self.namespace(), id.0);
+            if let Ok(r) = repo.find_reference(&refname)
+                && let Some(oid) = r.target()
+            {
+                return Ok(Some(oid));
+            }
+        }
+        Ok(None)
+    }
+
+    fn remote_task_oid(
+        &self,
+        post_fetch: &BTreeMap<String, git2::Oid>,
+        our_ns: &str,
+        id: Id,
+    ) -> Option<git2::Oid> {
+        for bucket in ["tasks", "archive"] {
+            if let Some(&oid) = post_fetch.get(&format!("{our_ns}/{bucket}/{}", id.0)) {
+                return Some(oid);
+            }
+        }
+        None
+    }
+
+    fn read_local_create_line(&self, id: Id) -> Result<Option<String>> {
+        let raw = backend::read_text_blob(self.store(), &format!("log/{}", id.0))?;
+        Ok(raw
+            .lines()
+            .find(|l| l.split('\t').nth(1) == Some("created"))
+            .map(str::to_string))
+    }
+
+    fn read_remote_create_line(
+        &self,
+        repo: &git2::Repository,
+        post_fetch: &BTreeMap<String, git2::Oid>,
+        our_ns: &str,
+        id: Id,
+    ) -> Result<Option<String>> {
+        let Some(&oid) = post_fetch.get(&format!("{our_ns}/log/{}", id.0)) else {
+            return Ok(None);
+        };
+        let bytes = self.read_oid(repo, oid)?;
+        Ok(String::from_utf8_lossy(&bytes)
+            .lines()
+            .find(|l| l.split('\t').nth(1) == Some("created"))
+            .map(str::to_string))
+    }
+
+    /// Apply one renumber decision. See [`Renumber`] for the two flavours.
+    fn apply_renumber(
+        &self,
+        repo: &git2::Repository,
+        r: &Renumber,
+        post_fetch: &BTreeMap<String, git2::Oid>,
+        handled: &mut HashSet<String>,
+    ) -> Result<()> {
+        let our_ns = self.namespace();
+        if r.local_loses {
+            self.rename_local(r.old_id, r.new_id)?;
+            self.rewrite_intra_ns_links(r.old_id, r.new_id)?;
+            self.rewrite_cross_ns_links(repo, &our_ns, r.old_id, r.new_id)?;
+            self.bump_next_past(r.new_id)?;
+            // Don't mark anything handled — reconcile should now Take remote's
+            // <old> blobs (we vacated those keys) and merge log/<old>.
+        } else {
+            self.import_remote_at_new_id(repo, post_fetch, r.old_id, r.new_id, &our_ns)?;
+            self.bump_next_past(r.new_id)?;
+            // Suppress reconcile for the remote's loser blobs at <old>; we
+            // keep our local <old> intact.
+            for kind in ["tasks", "archive", "attrs", "backlinks", "log"] {
+                handled.insert(format!("{our_ns}/{kind}/{}", r.old_id.0));
+            }
+        }
+        // Either way, append a renumbered event to the new id's log so the
+        // history is recoverable.
+        backend::append_log(
+            self.store(),
+            r.new_id,
+            "renumbered",
+            Some(&format!("from tsk-{} (collision rebase)", r.old_id.0)),
+            &self.git_author().unwrap_or_default(),
+        )?;
+        Ok(())
+    }
+
+    /// Rename local blobs from `old` → `new` within our namespace.
+    fn rename_local(&self, old: Id, new: Id) -> Result<()> {
+        for kind in ["tasks", "archive", "attrs", "backlinks", "log"] {
+            let from = format!("{kind}/{}", old.0);
+            let to = format!("{kind}/{}", new.0);
+            if let Some(data) = self.store().read(&from)? {
+                self.store().write(&to, &data)?;
+                self.store().delete(&from)?;
+            }
+        }
+        // Index: rewrite the row for old → new.
+        let raw = backend::read_text_blob(self.store(), "index")?;
+        let mut out = String::with_capacity(raw.len());
+        for line in raw.lines() {
+            let mut parts = line.splitn(2, '\t');
+            let id_field = parts.next().unwrap_or("");
+            let rest = parts.next().unwrap_or("");
+            if id_field.parse::<Id>().ok() == Some(old) {
+                out.push_str(&format!("{new}\t{rest}\n"));
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        if !raw.is_empty() {
+            self.store().write("index", out.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// Rewrite every reference to `[[tsk-<old>]]` in our namespace to
+    /// `[[tsk-<new>]]` across task content, attrs values, log details,
+    /// backlinks, and index titles.
+    fn rewrite_intra_ns_links(&self, old: Id, new: Id) -> Result<()> {
+        let from_link = format!("[[tsk-{}]]", old.0);
+        let to_link = format!("[[tsk-{}]]", new.0);
+        for bucket in ["tasks", "archive"] {
+            for key in self.store().list(bucket)? {
+                if let Some(data) = self.store().read(&key)? {
+                    let text = String::from_utf8_lossy(&data);
+                    let new_text = text.replace(&from_link, &to_link);
+                    if new_text != text {
+                        self.store().write(&key, new_text.as_bytes())?;
+                    }
+                }
+            }
+        }
+        for key in self.store().list("attrs")? {
+            if let Some(data) = self.store().read(&key)? {
+                let text = String::from_utf8_lossy(&data);
+                let new_text = text.replace(&from_link, &to_link);
+                if new_text != text {
+                    self.store().write(&key, new_text.as_bytes())?;
+                }
+            }
+        }
+        for key in self.store().list("log")? {
+            if let Some(data) = self.store().read(&key)? {
+                let text = String::from_utf8_lossy(&data);
+                let new_text = text.replace(&from_link, &to_link);
+                if new_text != text {
+                    self.store().write(&key, new_text.as_bytes())?;
+                }
+            }
+        }
+        // Backlinks: stored as comma-separated `tsk-N` (no brackets).
+        for key in self.store().list("backlinks")? {
+            if let Some(data) = self.store().read(&key)? {
+                let text = String::from_utf8_lossy(&data);
+                let mapped: Vec<String> = text
+                    .split(',')
+                    .map(|t| {
+                        if t.trim().parse::<Id>().ok() == Some(old) {
+                            format!("{new}")
+                        } else {
+                            t.to_string()
+                        }
+                    })
+                    .collect();
+                let new_text = mapped.join(",");
+                if new_text != text {
+                    self.store().write(&key, new_text.as_bytes())?;
+                }
+            }
+        }
+        // Index titles can also contain links.
+        let raw = backend::read_text_blob(self.store(), "index")?;
+        let new_index = raw.replace(&from_link, &to_link);
+        if new_index != raw {
+            self.store().write("index", new_index.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// Rewrite cross-namespace references `[[<our_ns>/tsk-<old>]]` →
+    /// `[[<our_ns>/tsk-<new>]]` in every other namespace's blobs.
+    fn rewrite_cross_ns_links(
+        &self,
+        repo: &git2::Repository,
+        our_ns: &str,
+        old: Id,
+        new: Id,
+    ) -> Result<()> {
+        let from_link = format!("[[{our_ns}/tsk-{}]]", old.0);
+        let to_link = format!("[[{our_ns}/tsk-{}]]", new.0);
+        let prefix = "refs/tsk/";
+        let our_prefix = format!("refs/tsk/{our_ns}/");
+        let mut updates: Vec<(String, Vec<u8>)> = Vec::new();
+        for r in repo.references()? {
+            let r = r?;
+            let Some(name) = r.name() else { continue };
+            if !name.starts_with(prefix) || name.starts_with(&our_prefix) {
+                continue;
+            }
+            let Some(oid) = r.target() else { continue };
+            let Ok(blob) = repo.find_blob(oid) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(blob.content());
+            let new_text = text.replace(&from_link, &to_link);
+            if new_text != text {
+                updates.push((name.to_string(), new_text.into_bytes()));
+            }
+        }
+        for (refname, bytes) in updates {
+            let new_oid = repo.blob(&bytes)?;
+            repo.reference(&refname, new_oid, true, "tsk renumber cross-ns")?;
+        }
+        Ok(())
+    }
+
+    /// Import remote's <old> blobs (winner stays at <old> locally; remote's
+    /// loser content lands at <new>).
+    fn import_remote_at_new_id(
+        &self,
+        repo: &git2::Repository,
+        post_fetch: &BTreeMap<String, git2::Oid>,
+        old: Id,
+        new: Id,
+        our_ns: &str,
+    ) -> Result<()> {
+        // Determine which bucket the remote had it in.
+        let bucket = if post_fetch.contains_key(&format!("{our_ns}/tasks/{}", old.0)) {
+            "tasks"
+        } else if post_fetch.contains_key(&format!("{our_ns}/archive/{}", old.0)) {
+            "archive"
+        } else {
+            return Ok(());
+        };
+        for kind in ["tasks", "archive", "attrs", "backlinks", "log"] {
+            let key = format!("{our_ns}/{kind}/{}", old.0);
+            if let Some(&oid) = post_fetch.get(&key) {
+                let bytes = self.read_oid(repo, oid)?;
+                let local_kind = if kind == "tasks" || kind == "archive" {
+                    bucket
+                } else {
+                    kind
+                };
+                self.store()
+                    .write(&format!("{local_kind}/{}", new.0), &bytes)?;
+            }
+        }
+        // If the imported task was active on remote, add it to our index too.
+        if bucket == "tasks"
+            && let Some((title, _, _)) = backend::read_task(self.store(), new)?
+        {
+            let mut stack = self.read_stack()?;
+            stack.push(StackItem {
+                id: new,
+                title: title.replace('\t', " "),
+                modify_time: std::time::SystemTime::now(),
+            });
+            stack.save(self.store())?;
+        }
+        Ok(())
+    }
+
+    fn bump_next_past(&self, id: Id) -> Result<()> {
+        let cur: u32 = backend::read_text_blob(self.store(), "next")?
+            .trim()
+            .parse()
+            .unwrap_or(1);
+        let target = id.0 + 1;
+        if target > cur {
+            self.store()
+                .write("next", format!("{target}\n").as_bytes())?;
+        }
+        Ok(())
+    }
+
     /// Three-way merge for union-mergeable refs (`log/*` and `index`).
     fn merge_blob(
         &self,
@@ -1119,6 +1531,11 @@ impl Workspace {
         let remote_text = String::from_utf8_lossy(&remote_bytes);
         let merged = if rel.starts_with("log/") || rel.ends_with("/log") {
             merge_log(&local_text, &remote_text)
+        } else if rel == "next" || rel.ends_with("/next") {
+            // next counter: always take the max so neither clone reissues an id.
+            let l: u32 = local_text.trim().parse().unwrap_or(1);
+            let r: u32 = remote_text.trim().parse().unwrap_or(1);
+            format!("{}\n", l.max(r))
         } else {
             // index: union of stack item lines, preserving local order then
             // appending remote-only items in their relative order.
@@ -1886,6 +2303,106 @@ mod test {
         Workspace::init(dir.path().to_path_buf()).unwrap();
         let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
         run_every_command(&ws);
+    }
+
+    /// Two clones independently create tsk-1 offline. After B pulls, the
+    /// later-created (B's) is renumbered locally; A's content takes tsk-1,
+    /// and B's body link to tsk-1 from another task is rewritten to the new
+    /// id.
+    #[test]
+    fn test_pull_rebases_id_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote_dir = dir.path().join("remote.git");
+        let a_dir = dir.path().join("a");
+        let b_dir = dir.path().join("b");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&a_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--bare", "-q"])
+                .current_dir(&remote_dir)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let init_clone = |path: &std::path::Path| {
+            run_git_init(path);
+            std::process::Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(&remote_dir)
+                .current_dir(path)
+                .status()
+                .unwrap();
+            Workspace::init(path.to_path_buf()).unwrap();
+            Workspace::from_path(path.to_path_buf()).unwrap()
+        };
+        let a = init_clone(&a_dir);
+        let b = init_clone(&b_dir);
+
+        // A creates tsk-1 first.
+        let ta = a.new_task("a-task".into(), "from A".into()).unwrap();
+        let id_a = ta.id;
+        a.push_task(ta).unwrap();
+        // Sleep so B's created timestamp is strictly later. The rebase keys
+        // off seconds-resolution unix timestamps in the log.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        // B creates tsk-1 too (offline; doesn't see A's push). B also has
+        // another task (tsk-2) whose body links to tsk-1 — that link must be
+        // rewritten to the new id post-rebase.
+        let tb = b.new_task("b-task".into(), "from B".into()).unwrap();
+        let id_b = tb.id;
+        b.push_task(tb).unwrap();
+        assert_eq!(id_a.0, 1);
+        assert_eq!(id_b.0, 1);
+        let tb2 = b
+            .new_task("b-other".into(), format!("see [[tsk-{}]]", id_b.0))
+            .unwrap();
+        let id_b2 = tb2.id;
+        b.handle_metadata(&tb2, None).unwrap();
+        b.push_task(tb2).unwrap();
+
+        // A pushes; B pulls.
+        a.git_push_refs("origin").unwrap();
+        b.git_pull_refs("origin").unwrap();
+
+        // Tsk-1 should now contain A's content.
+        let one = b.task(TaskIdentifier::Id(id_a)).unwrap();
+        assert_eq!(one.title, "a-task", "tsk-1 should be A's after rebase");
+
+        // B's original tsk-1 should have been moved to a fresh id past 2.
+        let stack = b.read_stack().unwrap();
+        let renumbered_id = stack
+            .iter()
+            .map(|i| i.id)
+            .find(|id| {
+                id.0 != id_a.0
+                    && id.0 != id_b2.0
+                    && b.task(TaskIdentifier::Id(*id))
+                        .map(|t| t.title == "b-task")
+                        .unwrap_or(false)
+            })
+            .expect("renumbered b-task in stack");
+        assert!(
+            renumbered_id.0 >= 3,
+            "renumbered past collisions: {renumbered_id}"
+        );
+
+        // B's other task's body link should now point at the renumbered id.
+        let other = b.task(TaskIdentifier::Id(id_b2)).unwrap();
+        assert!(
+            other.body.contains(&format!("[[tsk-{}]]", renumbered_id.0)),
+            "expected body to reference new id, got: {}",
+            other.body
+        );
+
+        // A `renumbered` log entry should exist on the new id.
+        let log = b.read_log(renumbered_id).unwrap();
+        assert!(
+            log.iter().any(|e| e.event == "renumbered"),
+            "renumbered event missing: {:?}",
+            log
+        );
     }
 
     /// Two clones diverge: clone A pushes, clone B edits locally, then B
