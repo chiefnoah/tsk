@@ -1,1 +1,4 @@
 figure out how to tell agents how to use tsk
+
+There's `AGENTS.md` and some MCP stuff. There's no web server in `tsk`, so I think just
+documenting it with a README is sufficient.
