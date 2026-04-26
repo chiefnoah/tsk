@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 pub const GIT_BACKED_MARKER: &str = "git-backed";
-const REF_PREFIX: &str = "refs/tsk";
+pub const NAMESPACE_FILE: &str = "namespace";
+pub const DEFAULT_NAMESPACE: &str = "default";
+const REF_ROOT: &str = "refs/tsk";
 
 /// A logical blob store. Keys are forward-slash separated strings.
 pub trait Store: Send + Sync {
@@ -111,20 +113,75 @@ impl Store for FileStore {
 
 pub struct GitStore {
     git_dir: PathBuf,
+    namespace: String,
 }
 
 impl GitStore {
     pub fn open(git_dir: PathBuf) -> Result<Self> {
+        Self::open_namespace(git_dir, DEFAULT_NAMESPACE.to_string())
+    }
+
+    pub fn open_namespace(git_dir: PathBuf, namespace: String) -> Result<Self> {
         Repository::open(&git_dir)?;
-        Ok(Self { git_dir })
+        Ok(Self { git_dir, namespace })
     }
 
     fn repo(&self) -> Result<Repository> {
         Ok(Repository::open(&self.git_dir)?)
     }
 
-    fn refname(key: &str) -> String {
-        format!("{REF_PREFIX}/{key}")
+    /// Prefix every namespace's refs share, e.g. `refs/tsk/<ns>`.
+    fn ns_prefix(&self) -> String {
+        format!("{REF_ROOT}/{}", self.namespace)
+    }
+
+    fn refname(&self, key: &str) -> String {
+        format!("{}/{}", self.ns_prefix(), key)
+    }
+
+    /// Names of every ref starting with the given prefix.
+    fn refs_starting_with(&self, prefix: &str) -> Result<Vec<String>> {
+        Ok(self
+            .repo()?
+            .references()?
+            .filter_map(|r| r.ok().and_then(|r| r.name().map(str::to_string)))
+            .filter(|n| n.starts_with(prefix))
+            .collect())
+    }
+
+    /// Number of refs currently under this store's namespace.
+    pub fn namespace_ref_count(&self) -> Result<usize> {
+        Ok(self
+            .refs_starting_with(&format!("{}/", self.ns_prefix()))?
+            .len())
+    }
+
+    /// Delete every ref under this store's namespace. Returns the count.
+    pub fn delete_namespace_refs(&self) -> Result<usize> {
+        let repo = self.repo()?;
+        let names = self.refs_starting_with(&format!("{}/", self.ns_prefix()))?;
+        let count = names.len();
+        for n in names {
+            if let Some(mut r) = try_ref(&repo, &n)? {
+                r.delete()?;
+            }
+        }
+        Ok(count)
+    }
+
+    /// List the namespaces present in this repo (any directory under refs/tsk/
+    /// containing at least one ref).
+    pub fn list_namespaces(&self) -> Result<Vec<String>> {
+        let strip = format!("{REF_ROOT}/");
+        let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for name in self.refs_starting_with(&strip)? {
+            if let Some(rest) = name.strip_prefix(&strip)
+                && let Some((ns, _)) = rest.split_once('/')
+            {
+                out.insert(ns.to_string());
+            }
+        }
+        Ok(out.into_iter().collect())
     }
 }
 
@@ -140,7 +197,7 @@ fn try_ref<'r>(repo: &'r Repository, name: &str) -> Result<Option<Reference<'r>>
 impl Store for GitStore {
     fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let repo = self.repo()?;
-        let Some(r) = try_ref(&repo, &Self::refname(key))? else {
+        let Some(r) = try_ref(&repo, &self.refname(key))? else {
             return Ok(None);
         };
         let blob = r.peel(ObjectType::Blob)?;
@@ -155,26 +212,26 @@ impl Store for GitStore {
     fn write(&self, key: &str, data: &[u8]) -> Result<()> {
         let repo = self.repo()?;
         let oid = repo.blob(data)?;
-        repo.reference(&Self::refname(key), oid, true, "tsk write")?;
+        repo.reference(&self.refname(key), oid, true, "tsk write")?;
         Ok(())
     }
 
     fn delete(&self, key: &str) -> Result<()> {
         let repo = self.repo()?;
-        if let Some(mut r) = try_ref(&repo, &Self::refname(key))? {
+        if let Some(mut r) = try_ref(&repo, &self.refname(key))? {
             r.delete()?;
         }
         Ok(())
     }
 
     fn exists(&self, key: &str) -> Result<bool> {
-        Ok(try_ref(&self.repo()?, &Self::refname(key))?.is_some())
+        Ok(try_ref(&self.repo()?, &self.refname(key))?.is_some())
     }
 
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
         let repo = self.repo()?;
-        let strip = format!("{REF_PREFIX}/");
-        repo.references_glob(&format!("{REF_PREFIX}/{prefix}/*"))?
+        let strip = format!("{}/", self.ns_prefix());
+        repo.references_glob(&format!("{}/{}/*", self.ns_prefix(), prefix))?
             .filter_map(|r| {
                 r.ok()
                     .and_then(|r| {
@@ -359,16 +416,73 @@ pub fn detect_git_dir(start: &Path) -> Option<PathBuf> {
         .flatten()
 }
 
+pub fn read_namespace(tsk_dir: &Path) -> String {
+    fs::read_to_string(tsk_dir.join(NAMESPACE_FILE))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string())
+}
+
+pub fn write_namespace(tsk_dir: &Path, namespace: &str) -> Result<()> {
+    fs::write(tsk_dir.join(NAMESPACE_FILE), namespace.as_bytes())?;
+    Ok(())
+}
+
 pub fn store_for(tsk_dir: &Path) -> Result<Box<dyn Store>> {
     let marker = tsk_dir.join(GIT_BACKED_MARKER);
     if marker.exists() {
-        let git_dir = fs::read_to_string(&marker)?.trim().to_string();
-        let store = GitStore::open(PathBuf::from(git_dir))?;
+        let git_dir = PathBuf::from(fs::read_to_string(&marker)?.trim());
+        // First: rename any non-namespaced refs into the default namespace, so
+        // workspaces created before namespacing keep working seamlessly.
+        let probe = GitStore::open(git_dir.clone())?;
+        upgrade_to_namespaced(&probe)?;
+        let ns = read_namespace(tsk_dir);
+        let store = GitStore::open_namespace(git_dir, ns)?;
         upgrade_legacy_keys(&store)?;
         Ok(Box::new(store))
     } else {
         Ok(Box::new(FileStore::new(tsk_dir.to_path_buf())))
     }
+}
+
+/// Move any non-namespaced refs (`refs/tsk/<key>`, `refs/tsk/<bucket>/<id>`)
+/// into the `default` namespace (`refs/tsk/default/...`). Idempotent.
+fn upgrade_to_namespaced(probe: &GitStore) -> Result<()> {
+    let repo = probe.repo()?;
+    let strip = format!("{REF_ROOT}/");
+    let mut moves: Vec<(String, String)> = Vec::new();
+    for r in repo.references_glob(&format!("{REF_ROOT}/*"))? {
+        let r = r?;
+        let Some(name) = r.name() else { continue };
+        let Some(rest) = name.strip_prefix(&strip) else {
+            continue;
+        };
+        // Skip already-namespaced refs: first segment is a known top-level key,
+        // any other first segment is treated as a namespace.
+        let first = rest.split('/').next().unwrap_or("");
+        let is_legacy = matches!(
+            first,
+            "tasks" | "archive" | "attrs" | "backlinks" | "index" | "next" | "remotes"
+        );
+        if is_legacy {
+            moves.push((
+                name.to_string(),
+                format!("{REF_ROOT}/{DEFAULT_NAMESPACE}/{rest}"),
+            ));
+        }
+    }
+    for (old, new) in moves {
+        if let Some(r) = try_ref(&repo, &old)?
+            && let Some(oid) = r.target()
+        {
+            repo.reference(&new, oid, true, "tsk namespace upgrade")?;
+            if let Some(mut r) = try_ref(&repo, &old)? {
+                r.delete()?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Rename legacy-scheme refs (`tasks/tsk-N.tsk`) to the current scheme

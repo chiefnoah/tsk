@@ -221,10 +221,41 @@ enum Commands {
     /// task data is copied into refs/tsk/* and the on-disk files are removed.
     Migrate,
 
+    /// Manage namespaces within a git-backed workspace. Namespaces let multiple
+    /// people share the same git repo without sharing tasks; refs live under
+    /// refs/tsk/<namespace>/.
+    Namespace {
+        #[command(subcommand)]
+        action: NamespaceAction,
+    },
+
+    /// Switch to a different namespace. Shorthand for `tsk namespace switch`.
+    Switch { name: String },
+
     /// Reopens an archived task, recreating the symlink and adding it back to the stack.
     Reopen {
         #[command(flatten)]
         task_id: TaskId,
+    },
+}
+
+#[derive(Subcommand)]
+enum NamespaceAction {
+    /// List all namespaces with refs in this repo.
+    List,
+    /// Print the current namespace name.
+    Current,
+    /// Switch to (create on first push of) the given namespace.
+    Switch { name: String },
+    /// Create an empty namespace and switch to it.
+    Create { name: String },
+    /// Delete every ref under the given namespace. Refuses if the namespace is
+    /// the active one. Prompts for confirmation when it has tasks unless -y.
+    Delete {
+        name: String,
+        /// Skip the confirmation prompt.
+        #[arg(short = 'y', default_value_t = false)]
+        yes: bool,
     },
 }
 
@@ -358,6 +389,8 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Export { output } => command_export(dir, output),
         Commands::Migrate => command_migrate(dir),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
+        Commands::Namespace { action } => command_namespace(dir, action),
+        Commands::Switch { name } => command_namespace_switch(dir, &name),
     }
 }
 
@@ -692,6 +725,54 @@ fn command_migrate(dir: PathBuf) -> Result<()> {
         "Migrated workspace to git refs (git dir: {})",
         git_dir.display()
     );
+    Ok(())
+}
+
+fn command_namespace_switch(dir: PathBuf, name: &str) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    ws.switch_namespace(name)?;
+    eprintln!("Switched to namespace '{name}'");
+    Ok(())
+}
+
+fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    match action {
+        NamespaceAction::Current => {
+            println!("{}", ws.namespace());
+        }
+        NamespaceAction::List => {
+            let cur = ws.namespace();
+            for ns in ws.list_namespaces()? {
+                let marker = if ns == cur { "* " } else { "  " };
+                println!("{marker}{ns}");
+            }
+        }
+        NamespaceAction::Switch { name } | NamespaceAction::Create { name } => {
+            ws.switch_namespace(&name)?;
+            eprintln!("Switched to namespace '{name}'");
+        }
+        NamespaceAction::Delete { name, yes } => {
+            let count = ws.namespace_ref_count(&name)?;
+            if count == 0 {
+                eprintln!("Namespace '{name}' has no refs.");
+                return Ok(());
+            }
+            if !yes {
+                eprint!("Namespace '{name}' has {count} refs. Delete? [y/N] ");
+                use std::io::Write as _;
+                io::stderr().flush()?;
+                let mut answer = String::new();
+                io::stdin().read_line(&mut answer)?;
+                if !matches!(answer.trim(), "y" | "Y" | "yes") {
+                    eprintln!("Aborted.");
+                    return Ok(());
+                }
+            }
+            let n = ws.delete_namespace(&name)?;
+            eprintln!("Deleted {n} refs from namespace '{name}'");
+        }
+    }
     Ok(())
 }
 

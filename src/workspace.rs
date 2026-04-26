@@ -64,6 +64,23 @@ impl Display for Remote {
     }
 }
 
+/// Reject namespace names that contain `/` or other characters problematic in
+/// a git ref path.
+fn validate_namespace(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::Parse("Namespace name cannot be empty".into()));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(Error::Parse(format!(
+            "Namespace '{name}' must contain only alphanumerics, '-', or '_'"
+        )));
+    }
+    Ok(())
+}
+
 pub struct Workspace {
     /// The path to the .tsk marker directory.
     pub path: PathBuf,
@@ -110,6 +127,64 @@ impl Workspace {
 
     pub fn is_git_backed(&self) -> bool {
         self.path.join(backend::GIT_BACKED_MARKER).exists()
+    }
+
+    /// Name of the namespace this workspace is currently using. Always
+    /// `"default"` for file-backed workspaces.
+    pub fn namespace(&self) -> String {
+        backend::read_namespace(&self.path)
+    }
+
+    /// List the namespaces present in the underlying git repo. Errors for
+    /// file-backed workspaces.
+    pub fn list_namespaces(&self) -> Result<Vec<String>> {
+        if !self.is_git_backed() {
+            return Err(Error::Parse("Workspace is not git-backed".into()));
+        }
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER))?;
+        let store = backend::GitStore::open(PathBuf::from(marker.trim()))?;
+        store.list_namespaces()
+    }
+
+    /// Switch the workspace to a different namespace by writing the namespace
+    /// marker file. The namespace need not exist yet — the next mutation
+    /// creates refs under it.
+    pub fn switch_namespace(&self, name: &str) -> Result<()> {
+        if !self.is_git_backed() {
+            return Err(Error::Parse("Workspace is not git-backed".into()));
+        }
+        validate_namespace(name)?;
+        backend::write_namespace(&self.path, name)
+    }
+
+    /// Delete every ref belonging to the given namespace. Errors if the
+    /// namespace is the currently active one. Returns the number of refs
+    /// deleted (caller can prompt before invoking if non-zero).
+    pub fn delete_namespace(&self, name: &str) -> Result<usize> {
+        if !self.is_git_backed() {
+            return Err(Error::Parse("Workspace is not git-backed".into()));
+        }
+        if name == self.namespace() {
+            return Err(Error::Parse(
+                "Cannot delete the currently active namespace; switch first".into(),
+            ));
+        }
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER))?;
+        let store =
+            backend::GitStore::open_namespace(PathBuf::from(marker.trim()), name.to_string())?;
+        store.delete_namespace_refs()
+    }
+
+    /// Number of refs currently in the given namespace; useful for prompting
+    /// before deletion.
+    pub fn namespace_ref_count(&self, name: &str) -> Result<usize> {
+        if !self.is_git_backed() {
+            return Err(Error::Parse("Workspace is not git-backed".into()));
+        }
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER))?;
+        let store =
+            backend::GitStore::open_namespace(PathBuf::from(marker.trim()), name.to_string())?;
+        store.namespace_ref_count()
     }
 
     fn resolve(&self, identifier: TaskIdentifier) -> Result<Id> {
@@ -1138,10 +1213,10 @@ mod test {
             .unwrap();
         let names = String::from_utf8_lossy(&out.stdout);
         assert!(
-            names.contains(&format!("refs/tsk/tasks/{}", id.0)),
+            names.contains(&format!("refs/tsk/default/tasks/{}", id.0)),
             "{names}"
         );
-        assert!(names.contains("refs/tsk/index"));
+        assert!(names.contains("refs/tsk/default/index"));
 
         // Now configure refspecs on the working repo and confirm `git push origin`
         // (with no refspec) sends refs/tsk/*.
@@ -1204,6 +1279,88 @@ mod test {
         assert!(fws.git_push_refs("origin").is_err());
         assert!(fws.git_pull_refs("origin").is_err());
         assert!(fws.configure_git_remote_refspecs("origin").is_err());
+    }
+
+    #[test]
+    fn test_namespaces_isolate_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        run_git_init(&root);
+        Workspace::init(root.clone()).unwrap();
+        let ws = Workspace::from_path(root.clone()).unwrap();
+        assert_eq!(ws.namespace(), "default");
+
+        // Push a task in the default namespace.
+        let t = ws.new_task("default-task".into(), "x".into()).unwrap();
+        let default_id = t.id;
+        ws.push_task(t).unwrap();
+
+        // Switch to a new namespace; stack should appear empty.
+        ws.switch_namespace("alice").unwrap();
+        let ws2 = Workspace::from_path(root.clone()).unwrap();
+        assert_eq!(ws2.namespace(), "alice");
+        assert_eq!(ws2.read_stack().unwrap().iter().count(), 0);
+        // ID counter resets per-namespace because `next` is namespaced.
+        let alice_t = ws2.new_task("alice-task".into(), "y".into()).unwrap();
+        assert_eq!(alice_t.id, Id(1));
+        ws2.push_task(alice_t).unwrap();
+
+        // Switch back; the original task is still there.
+        ws2.switch_namespace("default").unwrap();
+        let ws3 = Workspace::from_path(root.clone()).unwrap();
+        let stack = ws3.read_stack().unwrap();
+        assert_eq!(stack.iter().count(), 1);
+        assert_eq!(stack.iter().next().unwrap().id, default_id);
+
+        // Both namespaces appear in the listing.
+        let mut nss = ws3.list_namespaces().unwrap();
+        nss.sort();
+        assert_eq!(nss, vec!["alice".to_string(), "default".to_string()]);
+
+        // Cannot delete the active namespace.
+        assert!(ws3.delete_namespace("default").is_err());
+
+        // Deleting alice succeeds and reduces the namespace list.
+        let n = ws3.delete_namespace("alice").unwrap();
+        assert!(n > 0);
+        assert_eq!(ws3.list_namespaces().unwrap(), vec!["default".to_string()]);
+
+        // Invalid namespace names rejected.
+        assert!(ws3.switch_namespace("").is_err());
+        assert!(ws3.switch_namespace("a/b").is_err());
+        assert!(ws3.switch_namespace("a b").is_err());
+    }
+
+    #[test]
+    fn test_legacy_non_namespaced_refs_upgraded() {
+        // A repo whose refs were created before namespacing should get its
+        // refs/tsk/<key>/* moved under refs/tsk/default/ on first open.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        run_git_init(&root);
+        // Manually init only the tsk marker (skip Workspace::init's namespace
+        // logic) so we can plant legacy refs.
+        let tsk_dir = root.join(".tsk");
+        std::fs::create_dir(&tsk_dir).unwrap();
+        std::fs::write(
+            tsk_dir.join(backend::GIT_BACKED_MARKER),
+            root.join(".git").to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        // Plant a legacy ref directly via the bare GitStore.
+        let bare = backend::GitStore::open(root.join(".git")).unwrap();
+        <dyn Store>::write(&bare, "tasks/1", b"legacy\n\nbody").unwrap();
+
+        // Open via Workspace — should auto-migrate.
+        let ws = Workspace::from_path(root.clone()).unwrap();
+        assert_eq!(ws.namespace(), "default");
+        let t = ws.task(TaskIdentifier::Id(Id(1))).unwrap();
+        assert_eq!(t.title, "legacy");
+        // Confirm at the git ref level: refs/tsk/tasks/1 is gone, the
+        // namespaced refs/tsk/default/tasks/1 is present.
+        let repo = git2::Repository::open(root.join(".git")).unwrap();
+        assert!(repo.find_reference("refs/tsk/tasks/1").is_err());
+        assert!(repo.find_reference("refs/tsk/default/tasks/1").is_ok());
     }
 
     #[test]
