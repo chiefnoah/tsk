@@ -1,0 +1,3 @@
+Add per-task edit log
+
+Append-only log/<id> blob recording every mutation with a unix timestamp: created, edited, prop-set <key>, prop-unset <key>, archived, reopened, links-changed. Surfaced via tsk log <id>. Hook from new_task, save_task, set_property, unset_property, drop, reopen, handle_metadata.
