@@ -108,17 +108,6 @@ pub fn set(
     write_index(repo, key, &entries, message)
 }
 
-/// Replace the entire index for `key` with the given map. Useful when a
-/// task is fully rewritten and we sync many keys at once.
-pub fn replace_all(
-    repo: &Repository,
-    key: &str,
-    entries: &BTreeMap<StableId, Vec<String>>,
-    message: &str,
-) -> Result<()> {
-    write_index(repo, key, entries, message)
-}
-
 /// Every property key currently indexed in this repo.
 pub fn list_keys(repo: &Repository) -> Result<Vec<String>> {
     let mut out = Vec::new();

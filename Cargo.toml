@@ -10,13 +10,12 @@ homepage = "https://tsk.ngp.computer/"
 readme = "readme"
 authors = ["Noah Pederson <noah@packetlost.dev>"]
 
-[[bin]]
-name = "tsk"
-path = "src/main.rs"
+[lib]
+name = "tsk_cli"
+path = "src/lib.rs"
 
-[[bin]]
-name = "git-tsk"
-path = "src/main.rs"
+# Both bins are thin shims around `tsk_cli::run`. Cargo auto-discovers them
+# from `src/bin/`, so no explicit [[bin]] entries are needed.
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }

@@ -1,4 +1,4 @@
-mod errors;
+pub mod errors;
 mod fzf;
 mod namespace;
 mod object;
@@ -278,7 +278,7 @@ fn effective_remote(supplied: Option<String>) -> Option<String> {
         .unwrap_or_else(|| Some("origin".to_string()))
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn dispatch(cli: Cli) -> Result<()> {
     let dir = match cli.dir {
         Some(d) => d,
         None => default_dir()?,
@@ -341,12 +341,15 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn main() {
-    match run(Cli::parse()) {
-        Ok(()) => exit(0),
+/// Parse the CLI from `std::env::args()` and execute. Returns the process
+/// exit code so callers (the `tsk` and `git-tsk` bins) can hand it to
+/// `std::process::exit`.
+pub fn run() -> i32 {
+    match dispatch(Cli::parse()) {
+        Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");
-            exit(2);
+            2
         }
     }
 }

@@ -22,8 +22,6 @@ pub enum Error {
     FromUtf8(#[from] FromUtf8Error),
     #[error("No tasks on stack")]
     NoTasks,
-    #[error("No task selected.")]
-    NotSelected,
     #[allow(dead_code)]
     #[error("An unexpected error occurred: {0}")]
     Oops(Box<dyn std::error::Error>),
