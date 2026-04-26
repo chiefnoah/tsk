@@ -64,6 +64,92 @@ impl Display for Remote {
     }
 }
 
+enum PullAction {
+    /// Local already matches remote — nothing to do.
+    Skip,
+    /// Take the remote OID verbatim (local missing or unchanged since last sync).
+    Take,
+    /// Both sides moved; the ref is union-mergeable, do a 3-way merge.
+    Merge,
+    /// Both sides moved and the ref is not auto-mergeable.
+    Conflict,
+}
+
+fn is_mergeable_key(rel: &str) -> bool {
+    rel.starts_with("log/") || rel.ends_with("/log") || rel == "index" || rel.ends_with("/index")
+}
+
+fn resolve_pull(
+    local: Option<git2::Oid>,
+    old_remote: Option<git2::Oid>,
+    new_remote: git2::Oid,
+    rel: &str,
+) -> PullAction {
+    match local {
+        None => PullAction::Take,
+        Some(l) if l == new_remote => PullAction::Skip,
+        Some(l) => match old_remote {
+            // Local hasn't moved since last sync; remote did → take remote.
+            Some(o) if o == l => PullAction::Take,
+            // Remote hasn't moved since last sync; local did → keep local.
+            Some(o) if o == new_remote => PullAction::Skip,
+            // Either no shared base, or both moved.
+            _ => {
+                if is_mergeable_key(rel) {
+                    PullAction::Merge
+                } else {
+                    PullAction::Conflict
+                }
+            }
+        },
+    }
+}
+
+/// Union of two append-only logs, sorted by the leading unix timestamp on
+/// each line. Duplicate lines collapse.
+fn merge_log(local: &str, remote: &str) -> String {
+    let mut all: Vec<&str> = local.lines().chain(remote.lines()).collect();
+    all.sort_by_key(|l| {
+        l.split('\t')
+            .next()
+            .and_then(|t| t.parse::<u64>().ok())
+            .unwrap_or(0)
+    });
+    all.dedup();
+    let mut out = all.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+/// Union of two stack indexes preserving local order; remote-only items get
+/// appended in their relative order. Items are identified by their leading
+/// `tsk-N` field.
+fn merge_index(local: &str, remote: &str) -> String {
+    let key = |line: &str| line.split('\t').next().unwrap_or("").to_string();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = String::new();
+    for line in local.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        seen.insert(key(line));
+        out.push_str(line);
+        out.push('\n');
+    }
+    for line in remote.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if seen.insert(key(line)) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Reject namespace names that contain `/` or other characters problematic in
 /// a git ref path.
 fn validate_namespace(name: &str) -> Result<()> {
@@ -635,14 +721,189 @@ impl Workspace {
         Ok(())
     }
 
-    /// Push every refs/tsk/* ref to the given remote.
+    /// Push every refs/tsk/* ref to the given remote, using the per-ref
+    /// `--force-with-lease=<ref>:<expected>` so a concurrent push on the
+    /// remote causes our push to fail rather than silently overwrite.
+    /// The expected OID is taken from the local
+    /// `refs/remotes-tsk/<remote>/*` shadow, which is refreshed first.
+    /// After a successful push, the shadow is updated to match the new state.
     pub fn git_push_refs(&self, remote: &str) -> Result<()> {
-        self.run_git(&["push", remote, "refs/tsk/*:refs/tsk/*"])
+        let _ = self.require_git_dir()?;
+        // Refresh the shadow so leases match the remote's current state.
+        let _ = self
+            .git_cmd()?
+            .args([
+                "fetch",
+                remote,
+                &format!("+refs/tsk/*:refs/remotes-tsk/{remote}/*"),
+            ])
+            .status()?;
+        let shadow: BTreeMap<String, git2::Oid> = self.read_shadow(remote)?.into_iter().collect();
+
+        let repo = git2::Repository::open(self.require_git_dir()?)?;
+        let mut leases: Vec<String> = Vec::new();
+        let mut refspecs: Vec<String> = Vec::new();
+        for r in repo.references()? {
+            let r = r?;
+            let Some(name) = r.name() else { continue };
+            let Some(rest) = name.strip_prefix("refs/tsk/") else {
+                continue;
+            };
+            let Some(local_oid) = r.target() else {
+                continue;
+            };
+            if shadow.get(rest) == Some(&local_oid) {
+                continue; // up to date
+            }
+            if let Some(expected) = shadow.get(rest) {
+                leases.push(format!("--force-with-lease=refs/tsk/{rest}:{expected}"));
+            }
+            refspecs.push(format!("refs/tsk/{rest}:refs/tsk/{rest}"));
+        }
+        if refspecs.is_empty() {
+            return Ok(());
+        }
+        let mut args: Vec<String> = vec!["push".to_string(), remote.to_string()];
+        args.extend(leases);
+        args.extend(refspecs);
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.run_git(&argv)?;
+        self.update_remote_shadow(remote)?;
+        Ok(())
     }
 
-    /// Fetch every refs/tsk/* ref from the given remote, overwriting locally.
+    /// Reconcile every refs/tsk/* ref with the remote. Fetch lands in
+    /// `refs/remotes-tsk/<remote>/*` (force, since it's our private mirror);
+    /// then for each ref we look at three OIDs — local, the previous
+    /// fetched-from-remote (the merge base), and the new remote — and pick:
+    ///
+    ///  - local untouched since last sync → take remote
+    ///  - remote untouched since last sync → keep local
+    ///  - both moved, ref is union-mergeable (`log/*`, `index`) → 3-way merge
+    ///  - both moved, ref is not union-mergeable → conflict; abort with a
+    ///    list of the offending refs. The fetch shadow is updated either way
+    ///    so a re-run after manual resolution sees the right base.
     pub fn git_pull_refs(&self, remote: &str) -> Result<()> {
-        self.run_git(&["fetch", remote, "+refs/tsk/*:refs/tsk/*"])
+        let _ = self.require_git_dir()?;
+        // Snapshot pre-fetch shadow so we know the previous remote position.
+        let pre_fetch: BTreeMap<String, git2::Oid> =
+            self.read_shadow(remote)?.into_iter().collect();
+        // Fetch (force, into our private shadow only).
+        self.run_git(&[
+            "fetch",
+            remote,
+            &format!("+refs/tsk/*:refs/remotes-tsk/{remote}/*"),
+        ])?;
+        let post_fetch: BTreeMap<String, git2::Oid> =
+            self.read_shadow(remote)?.into_iter().collect();
+
+        let repo = git2::Repository::open(self.require_git_dir()?)?;
+        let mut conflicts: Vec<String> = Vec::new();
+        for (rel, &new_remote) in &post_fetch {
+            let local_refname = format!("refs/tsk/{rel}");
+            let local_oid = repo
+                .find_reference(&local_refname)
+                .ok()
+                .and_then(|r| r.target());
+            let old_remote = pre_fetch.get(rel).copied();
+            match resolve_pull(local_oid, old_remote, new_remote, rel) {
+                PullAction::Skip => {}
+                PullAction::Take => {
+                    repo.reference(&local_refname, new_remote, true, "tsk pull")?;
+                }
+                PullAction::Merge => {
+                    let merged = self.merge_blob(&repo, rel, local_oid, new_remote)?;
+                    repo.reference(&local_refname, merged, true, "tsk pull merge")?;
+                }
+                PullAction::Conflict => conflicts.push(rel.clone()),
+            }
+        }
+        if !conflicts.is_empty() {
+            return Err(Error::Parse(format!(
+                "pull conflicts on: {}\n(local and remote both diverged from the last sync; \
+                 these refs aren't auto-mergeable. Resolve manually with `git update-ref` \
+                 or by editing the corresponding tsk objects.)",
+                conflicts.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// Read every `refs/remotes-tsk/<remote>/*` and return `(rel, oid)` where
+    /// `rel` is the path under that prefix (matches the local-side `rel` used
+    /// against `refs/tsk/`).
+    fn read_shadow(&self, remote: &str) -> Result<Vec<(String, git2::Oid)>> {
+        let repo = git2::Repository::open(self.require_git_dir()?)?;
+        let prefix = format!("refs/remotes-tsk/{remote}/");
+        let mut out = Vec::new();
+        for r in repo.references()? {
+            let r = r?;
+            if let Some(name) = r.name()
+                && let Some(rest) = name.strip_prefix(&prefix)
+                && let Some(oid) = r.target()
+            {
+                out.push((rest.to_string(), oid));
+            }
+        }
+        Ok(out)
+    }
+
+    /// After a successful push, copy current local `refs/tsk/*` OIDs into
+    /// `refs/remotes-tsk/<remote>/*` so the next pull's merge base is correct.
+    fn update_remote_shadow(&self, remote: &str) -> Result<()> {
+        let repo = git2::Repository::open(self.require_git_dir()?)?;
+        let prefix = "refs/tsk/";
+        let dest_prefix = format!("refs/remotes-tsk/{remote}/");
+        let updates: Vec<(String, git2::Oid)> = repo
+            .references()?
+            .filter_map(|r| {
+                let r = r.ok()?;
+                let name = r.name()?.to_string();
+                let oid = r.target()?;
+                let rest = name.strip_prefix(prefix)?.to_string();
+                Some((rest, oid))
+            })
+            .collect();
+        for (rest, oid) in updates {
+            repo.reference(
+                &format!("{dest_prefix}{rest}"),
+                oid,
+                true,
+                "tsk push shadow",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Read a blob by its OID.
+    fn read_oid(&self, repo: &git2::Repository, oid: git2::Oid) -> Result<Vec<u8>> {
+        let blob = repo.find_blob(oid)?;
+        Ok(blob.content().to_vec())
+    }
+
+    /// Three-way merge for union-mergeable refs (`log/*` and `index`).
+    fn merge_blob(
+        &self,
+        repo: &git2::Repository,
+        rel: &str,
+        local: Option<git2::Oid>,
+        remote: git2::Oid,
+    ) -> Result<git2::Oid> {
+        let local_bytes = match local {
+            Some(o) => self.read_oid(repo, o)?,
+            None => Vec::new(),
+        };
+        let remote_bytes = self.read_oid(repo, remote)?;
+        let local_text = String::from_utf8_lossy(&local_bytes);
+        let remote_text = String::from_utf8_lossy(&remote_bytes);
+        let merged = if rel.starts_with("log/") || rel.ends_with("/log") {
+            merge_log(&local_text, &remote_text)
+        } else {
+            // index: union of stack item lines, preserving local order then
+            // appending remote-only items in their relative order.
+            merge_index(&local_text, &remote_text)
+        };
+        Ok(repo.blob(merged.as_bytes())?)
     }
 
     /// Configure git so future `git push <remote>` / `git fetch <remote>`
@@ -1404,6 +1665,94 @@ mod test {
         Workspace::init(dir.path().to_path_buf()).unwrap();
         let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
         run_every_command(&ws);
+    }
+
+    /// Two clones diverge: clone A pushes, clone B edits locally, then B
+    /// pulls. Mergeable refs (index, log) auto-merge; a divergent task body
+    /// is reported as a conflict.
+    #[test]
+    fn test_pull_resolves_or_reports_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote_dir = dir.path().join("remote.git");
+        let a_dir = dir.path().join("a");
+        let b_dir = dir.path().join("b");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&a_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
+
+        let s = std::process::Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .current_dir(&remote_dir)
+            .status()
+            .unwrap();
+        assert!(s.success());
+
+        let init_clone = |path: &std::path::Path| {
+            run_git_init(path);
+            std::process::Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(&remote_dir)
+                .current_dir(path)
+                .status()
+                .unwrap();
+            Workspace::init(path.to_path_buf()).unwrap();
+            Workspace::from_path(path.to_path_buf()).unwrap()
+        };
+        let a = init_clone(&a_dir);
+        let b = init_clone(&b_dir);
+
+        // A pushes a task that B will start from.
+        let t = a.new_task("shared".into(), "v0".into()).unwrap();
+        let id = t.id;
+        a.push_task(t).unwrap();
+        a.git_push_refs("origin").unwrap();
+        b.git_pull_refs("origin").unwrap();
+        assert_eq!(b.task(TaskIdentifier::Id(id)).unwrap().title, "shared");
+
+        // Both diverge:
+        // - A pushes a second task (touches index + new tasks/2 + log/2).
+        // - B edits the original task body locally (touches tasks/1 + log/1).
+        let t2 = a.new_task("a-only".into(), "v1".into()).unwrap();
+        let a2_id = t2.id;
+        a.push_task(t2).unwrap();
+        a.git_push_refs("origin").unwrap();
+
+        let mut local = b.task(TaskIdentifier::Id(id)).unwrap();
+        local.body = "v0-edit".into();
+        b.save_task(&local).unwrap();
+
+        // B pulls: tasks/<a2_id> is new → take. index moved both sides → merge.
+        // log/<id> moved both sides → merge. tasks/1 moved on B only → keep
+        // local. So no conflicts.
+        b.git_pull_refs("origin").unwrap();
+        // B's edit survived…
+        assert_eq!(b.task(TaskIdentifier::Id(id)).unwrap().body, "v0-edit");
+        // …and A's new task arrived.
+        assert_eq!(b.task(TaskIdentifier::Id(a2_id)).unwrap().title, "a-only");
+        // Stack contains both ids.
+        let ids: HashSet<Id> = b.read_stack().unwrap().iter().map(|i| i.id).collect();
+        assert!(ids.contains(&id));
+        assert!(ids.contains(&a2_id));
+
+        // Now both edit the same task body, then B pulls → conflict.
+        let mut on_a = a.task(TaskIdentifier::Id(id)).unwrap();
+        on_a.body = "a-edit".into();
+        a.save_task(&on_a).unwrap();
+        a.git_push_refs("origin").unwrap();
+
+        let mut on_b = b.task(TaskIdentifier::Id(id)).unwrap();
+        on_b.body = "b-edit".into();
+        b.save_task(&on_b).unwrap();
+
+        let err = b.git_pull_refs("origin").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("conflicts on"), "{msg}");
+        assert!(
+            msg.contains(&format!("default/tasks/{}", id.0)),
+            "expected the diverged task ref in error: {msg}"
+        );
+        // B's local edit is preserved through the failed pull.
+        assert_eq!(b.task(TaskIdentifier::Id(id)).unwrap().body, "b-edit");
     }
 
     #[test]
