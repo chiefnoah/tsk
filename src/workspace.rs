@@ -258,6 +258,93 @@ impl Workspace {
         Ok(())
     }
 
+    /// Set a single property (a.k.a attribute) on a task. Empty value is
+    /// allowed for unary properties.
+    pub fn set_property(&self, id: Id, key: &str, value: &str) -> Result<()> {
+        let mut attrs = backend::read_attrs(self.store(), id)?;
+        attrs.insert(key.to_string(), value.to_string());
+        backend::write_attrs(self.store(), id, &attrs)
+    }
+
+    /// Remove a property from a task. No-op if not present.
+    pub fn unset_property(&self, id: Id, key: &str) -> Result<()> {
+        let mut attrs = backend::read_attrs(self.store(), id)?;
+        if attrs.remove(key).is_some() {
+            backend::write_attrs(self.store(), id, &attrs)?;
+        }
+        Ok(())
+    }
+
+    /// All properties on a task, both stored and synthetic (state, has-links,
+    /// references, referenced-by).
+    pub fn properties(&self, id: Id) -> Result<BTreeMap<String, String>> {
+        let mut props = backend::read_attrs(self.store(), id)?;
+        let synth = self.synthetic_properties(id)?;
+        for (k, v) in synth {
+            props.entry(k).or_insert(v);
+        }
+        Ok(props)
+    }
+
+    fn synthetic_properties(&self, id: Id) -> Result<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        let Some((_, body, loc)) = backend::read_task(self.store(), id)? else {
+            return Ok(out);
+        };
+        out.insert(
+            "state".into(),
+            match loc {
+                Loc::Active => "open".into(),
+                Loc::Archived => "archived".into(),
+            },
+        );
+        let parsed = parse_task(&format!("\n\n{body}"));
+        let refs: Vec<String> = parsed
+            .as_ref()
+            .map(|p| {
+                p.intenal_links()
+                    .iter()
+                    .map(|i| format!("[[{i}]]"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.insert(
+            "has-links".into(),
+            if refs.is_empty() { "false" } else { "true" }.into(),
+        );
+        if !refs.is_empty() {
+            out.insert("references".into(), refs.join(","));
+        }
+        let backrefs = backend::read_backlinks(self.store(), id)?;
+        if !backrefs.is_empty() {
+            let joined: Vec<String> = backrefs.iter().map(|i| format!("[[{i}]]")).collect();
+            out.insert("referenced-by".into(), joined.join(","));
+        }
+        Ok(out)
+    }
+
+    /// Find every task whose property `key` is set (and equals `value`, if
+    /// provided). Scans both active and archived. Includes synthetic
+    /// properties so `state=archived`, `has-links=true`, etc. work.
+    pub fn find_by_property(&self, key: &str, value: Option<&str>) -> Result<Vec<Id>> {
+        let mut ids: Vec<Id> = backend::list_active(self.store())?;
+        ids.extend(backend::list_archive(self.store())?);
+        ids.sort_by_key(|i| i.0);
+        ids.dedup();
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| {
+                let props = self.properties(id).ok()?;
+                let v = props.get(key)?;
+                if value.is_none_or(|target| v == target) {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
     pub fn handle_metadata(&self, tsk: &Task, pre_links: Option<HashSet<Id>>) -> Result<()> {
         if let Some(parsed_task) = parse_task(&tsk.to_string()) {
             let internal_links = parsed_task.intenal_links();
@@ -1279,6 +1366,70 @@ mod test {
         assert!(fws.git_push_refs("origin").is_err());
         assert!(fws.git_pull_refs("origin").is_err());
         assert!(fws.configure_git_remote_refspecs("origin").is_err());
+    }
+
+    #[test]
+    fn test_properties_set_unset_list_find() {
+        let (_d, file, git) = setup_dual();
+        for ws in [&file, &git] {
+            // Push two tasks; mark one with priority=high.
+            let t1 = ws.new_task("first".into(), "body".into()).unwrap();
+            let id1 = t1.id;
+            ws.push_task(t1).unwrap();
+            let t2 = ws
+                .new_task("second".into(), "see [[tsk-1]]".into())
+                .unwrap();
+            let id2 = t2.id;
+            ws.handle_metadata(&t2, None).unwrap();
+            ws.push_task(t2).unwrap();
+
+            ws.set_property(id1, "priority", "high").unwrap();
+            ws.set_property(id1, "tag", "").unwrap();
+
+            // Stored properties round-trip.
+            let props = ws.properties(id1).unwrap();
+            assert_eq!(props.get("priority").map(String::as_str), Some("high"));
+            assert_eq!(props.get("tag").map(String::as_str), Some(""));
+
+            // Synthetic properties present.
+            assert_eq!(props.get("state").map(String::as_str), Some("open"));
+            assert_eq!(props.get("has-links").map(String::as_str), Some("false"));
+            // referenced-by on id1 contains id2 (the linker).
+            assert!(
+                props
+                    .get("referenced-by")
+                    .unwrap()
+                    .contains(&format!("[[{id2}]]"))
+            );
+
+            let props2 = ws.properties(id2).unwrap();
+            assert_eq!(props2.get("has-links").map(String::as_str), Some("true"));
+            assert!(
+                props2
+                    .get("references")
+                    .unwrap()
+                    .contains(&format!("[[{id1}]]"))
+            );
+
+            // Find by stored property + value.
+            let by_priority = ws.find_by_property("priority", Some("high")).unwrap();
+            assert_eq!(by_priority, vec![id1]);
+            // Find by presence (any value).
+            let any_priority = ws.find_by_property("priority", None).unwrap();
+            assert_eq!(any_priority, vec![id1]);
+            // Find by synthetic property.
+            let open = ws.find_by_property("state", Some("open")).unwrap();
+            assert!(open.contains(&id1) && open.contains(&id2));
+            ws.drop(TaskIdentifier::Id(id2)).unwrap();
+            let archived = ws.find_by_property("state", Some("archived")).unwrap();
+            assert_eq!(archived, vec![id2]);
+
+            // Unset removes the property.
+            ws.unset_property(id1, "priority").unwrap();
+            assert!(ws.properties(id1).unwrap().get("priority").is_none());
+            // Unset of non-existent is fine.
+            ws.unset_property(id1, "nope").unwrap();
+        }
     }
 
     #[test]

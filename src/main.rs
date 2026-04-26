@@ -221,6 +221,14 @@ enum Commands {
     /// task data is copied into refs/tsk/* and the on-disk files are removed.
     Migrate,
 
+    /// Get/set/find tasks by property. Properties are arbitrary key/value
+    /// pairs stored alongside a task; some are synthetic (state, has-links,
+    /// references, referenced-by) and computed on read.
+    Prop {
+        #[command(subcommand)]
+        action: PropAction,
+    },
+
     /// Manage namespaces within a git-backed workspace. Namespaces let multiple
     /// people share the same git repo without sharing tasks; refs live under
     /// refs/tsk/<namespace>/.
@@ -237,6 +245,31 @@ enum Commands {
         #[command(flatten)]
         task_id: TaskId,
     },
+}
+
+#[derive(Subcommand)]
+enum PropAction {
+    /// List all properties on a task (stored + synthetic).
+    List {
+        #[command(flatten)]
+        task_id: TaskId,
+    },
+    /// Set a property. Value may be omitted for unary properties.
+    Set {
+        #[command(flatten)]
+        task_id: TaskId,
+        key: String,
+        value: Option<String>,
+    },
+    /// Remove a property from a task. No-op if not set.
+    Unset {
+        #[command(flatten)]
+        task_id: TaskId,
+        key: String,
+    },
+    /// Find every task whose property KEY equals VALUE (or that has KEY set
+    /// at all when VALUE is omitted).
+    Find { key: String, value: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -389,6 +422,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Export { output } => command_export(dir, output),
         Commands::Migrate => command_migrate(dir),
         Commands::Reopen { task_id } => command_reopen(dir, task_id),
+        Commands::Prop { action } => command_prop(dir, action),
         Commands::Namespace { action } => command_namespace(dir, action),
         Commands::Switch { name } => command_namespace_switch(dir, &name),
     }
@@ -725,6 +759,40 @@ fn command_migrate(dir: PathBuf) -> Result<()> {
         "Migrated workspace to git refs (git dir: {})",
         git_dir.display()
     );
+    Ok(())
+}
+
+fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    match action {
+        PropAction::List { task_id } => {
+            let id = ws.task(task_id.into())?.id;
+            for (k, v) in ws.properties(id)? {
+                if v.is_empty() {
+                    println!("{k}");
+                } else {
+                    println!("{k}\t{v}");
+                }
+            }
+        }
+        PropAction::Set {
+            task_id,
+            key,
+            value,
+        } => {
+            let id = ws.task(task_id.into())?.id;
+            ws.set_property(id, &key, value.as_deref().unwrap_or(""))?;
+        }
+        PropAction::Unset { task_id, key } => {
+            let id = ws.task(task_id.into())?.id;
+            ws.unset_property(id, &key)?;
+        }
+        PropAction::Find { key, value } => {
+            for id in ws.find_by_property(&key, value.as_deref())? {
+                println!("{id}");
+            }
+        }
+    }
     Ok(())
 }
 
