@@ -1,0 +1,3 @@
+tsk migrate: file-based to git-ref importer
+
+fix-up handles in-place property backfills. Add a separate migrate command that imports old file-based workspaces (pre-rewrite .tsk/ layout) into the current git-ref storage.
