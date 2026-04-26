@@ -331,9 +331,13 @@ enum PropAction {
         task_id: TaskId,
         key: String,
     },
-    /// Find every task whose property KEY equals VALUE (or that has KEY set
-    /// at all when VALUE is omitted).
-    Find { key: String, value: Option<String> },
+    /// Find every task whose property KEY equals VALUE. With VALUE omitted,
+    /// matches any task that has KEY set. With both omitted, fzf-picks the
+    /// key first, then the value (with `<any>` to skip value-narrowing).
+    Find {
+        key: Option<String>,
+        value: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1101,6 +1105,31 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
             ws.unset_property(id, &key)?;
         }
         PropAction::Find { key, value } => {
+            const ANY_SENTINEL: &str = "<any>";
+            let prompt_value = key.is_none() && value.is_none();
+            let key = match key {
+                Some(k) => k,
+                None => {
+                    let candidates = ws.all_property_keys()?;
+                    fzf::select::<_, String, _>(candidates, ["--prompt=property> "])?
+                        .ok_or_else(|| errors::Error::Parse("No property selected".into()))?
+                }
+            };
+            // Value-prompt only when neither key nor value was supplied —
+            // `tsk prop find KEY` keeps its "any task with KEY set" meaning.
+            let value = match (value, prompt_value) {
+                (Some(v), _) => Some(v),
+                (None, false) => None,
+                (None, true) => {
+                    let mut candidates = ws.property_values_for(&key)?;
+                    candidates.insert(0, ANY_SENTINEL.to_string());
+                    let picked = fzf::select::<_, String, _>(candidates, ["--prompt=value> "])?;
+                    match picked.as_deref() {
+                        Some(ANY_SENTINEL) | None => None,
+                        Some(v) => Some(v.to_string()),
+                    }
+                }
+            };
             for id in ws.find_by_property(&key, value.as_deref())? {
                 println!("{id}");
             }
