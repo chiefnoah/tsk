@@ -1702,7 +1702,7 @@ impl Workspace {
         let mut my_attrs = backend::read_attrs(self.store(), src_id)?;
         my_attrs.insert("assigned".into(), assigned_link.clone());
         backend::write_attrs(self.store(), src_id, &my_attrs)?;
-        self.log(src_id, "exported", Some(&assigned_link))?;
+        self.log(src_id, "assigned", Some(&assigned_link))?;
         Ok(key)
     }
 
@@ -3185,7 +3185,7 @@ mod test {
             .iter()
             .map(|e| e.event.clone())
             .collect();
-        assert!(src_log_events.contains(&"exported".to_string()));
+        assert!(src_log_events.contains(&"assigned".to_string()));
         let dst_log_events: Vec<String> = alice
             .read_log(new_id)
             .unwrap()
