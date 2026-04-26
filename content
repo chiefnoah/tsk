@@ -1,0 +1,3 @@
+Distinct inbox accept/reject flow
+
+tsk inbox lists pending items but acceptance is implicit via assign and rejection via reject (which were designed for outbound). Add explicit inbox accept/reject subcommands so the inbound side has its own verbs.
