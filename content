@@ -1,1 +1,4 @@
-test
+Fix rendering of notes
+
+`tsk show` doesn't properly render the syntax to the terminal as described in README.
+Fix it
