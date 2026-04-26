@@ -1,0 +1,9 @@
+Add namespaces to the git backend
+
+The idea is that there can be multiple workspaces in a single git repo, primarily
+intended for different *contributors* to that repo. You should be able to switch to a
+different namespace with `tsk switch` or `tsk namespace switch`, create a new one with
+`tsk namespace create`, delete with `tsk namespace delete` (this one should always
+prompt for confirmation if it has any tasks in it). Namespaces should be in
+refs/tsk/<namespace>/, with the current refs being used to reference the _current_
+namespace. This probably requires some refactors to how the git refs are managed.
