@@ -38,7 +38,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a `.tsk/` marker in the current git repo. (Auto-created on first use.)
+    /// Bootstrap user-local state in `<git-dir>/tsk/`. (Auto-created on first use.)
     Init,
     /// Create a new task and push it onto the active queue.
     Push {
@@ -69,8 +69,12 @@ enum Commands {
     },
     /// Show a task by id.
     Show {
+        /// Print xattr-style YAML front-matter for the task's properties.
         #[arg(short = 'x', default_value_t = false)]
         show_attrs: bool,
+        /// Skip the rich-text parser and print the raw bytes verbatim.
+        #[arg(short = 'R', default_value_t = false)]
+        raw: bool,
         #[command(flatten)]
         task_id: TaskId,
     },
@@ -294,7 +298,8 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Show {
             task_id,
             show_attrs,
-        } => command_show(dir, task_id, show_attrs),
+            raw,
+        } => command_show(dir, task_id, show_attrs, raw),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Drop { task_id } => command_drop(dir, task_id),
         Commands::Swap => Workspace::from_path(dir)?.swap_top(),
@@ -429,7 +434,7 @@ fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool) -> Result
     Ok(())
 }
 
-fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
+fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool, raw: bool) -> Result<()> {
     let task = Workspace::from_path(dir)?.task(task_id.into())?;
     if show_attrs && !task.attributes.is_empty() {
         println!("---");
@@ -440,7 +445,16 @@ fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
         }
         println!("---");
     }
-    println!("{task}");
+    let plain = task.to_string();
+    match (raw, task::parse(&plain)) {
+        (false, Some(parsed)) => {
+            // Re-attach the title — the parser is fed the body-side text and
+            // produces a styled body; the title is rendered as-is on top.
+            print!("{}", parsed.content);
+        }
+        _ => print!("{plain}"),
+    }
+    println!();
     Ok(())
 }
 

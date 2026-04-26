@@ -209,6 +209,41 @@ fn property_index_pushed_and_visible_to_other_clone() {
 }
 
 #[test]
+fn show_renders_styled_body() {
+    let (_dir, alice, _bob) = setup_two_clones();
+    // Push a body that exercises every inline style.
+    tsk_ok(
+        &alice,
+        &[
+            "push",
+            "rendered\n\nthis is !bold!, *italic*, _under_, ~struck~, =hi=, `code`.",
+        ],
+    );
+
+    // Force colored output even in the test harness's pipe.
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(&alice)
+        .env("CLICOLOR_FORCE", "1")
+        .args(["show", "-r", "0"]);
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(code, 0, "stderr={stderr}");
+
+    // Markup characters must be stripped.
+    assert!(!stdout.contains("!bold!"), "got {stdout:?}");
+    assert!(!stdout.contains("*italic*"), "got {stdout:?}");
+    assert!(!stdout.contains("=hi="), "got {stdout:?}");
+    // ANSI bold escape must be present somewhere.
+    assert!(
+        stdout.contains("\x1b["),
+        "expected ANSI escapes in styled output: {stdout:?}"
+    );
+
+    // -R bypasses the parser and prints the raw bytes.
+    let raw = tsk_ok(&alice, &["show", "-r", "0", "-R"]);
+    assert!(raw.contains("!bold!"), "raw must keep markup: {raw:?}");
+}
+
+#[test]
 fn share_into_namespace_round_trip() {
     let (_dir, alice, _bob) = setup_two_clones();
 
