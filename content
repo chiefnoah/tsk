@@ -1,3 +1,5 @@
 tsk show for multiple tasks / filters
 
-Today show renders one task by id. Extend it to take multiple -T flags or a property filter (e.g. --where status=open) and render each, so users can review a slice of the queue in one go.
+Today show renders one task by id. Extend it to take multiple -T flags or a property
+filter (e.g. --where status=open) and render each, so users can review a slice of the 
+queue in one go.
