@@ -692,6 +692,7 @@ fn render_link(link: &ParsedLink) -> String {
         ParsedLink::External(url) => url.to_string(),
         ParsedLink::Internal(id) => format!("[[{id}]]"),
         ParsedLink::Foreign { prefix, id } => format!("[[{prefix}-{id}]]"),
+        ParsedLink::Namespaced { namespace, id } => format!("[[{namespace}/{id}]]"),
     }
 }
 
@@ -770,6 +771,23 @@ fn command_follow(
                 exit(1);
             }
             Ok(())
+        }
+        ParsedLink::Namespaced { namespace, id } => {
+            let workspace = Workspace::from_path(dir.clone())?;
+            if edit {
+                eprintln!("Editing tasks in another namespace is not supported.");
+                exit(1);
+            }
+            match workspace.resolve_namespaced_link(namespace, *id)? {
+                Some(task) => {
+                    println!("{task}");
+                    Ok(())
+                }
+                None => {
+                    eprintln!("Task {namespace}/{id} not found.");
+                    exit(1);
+                }
+            }
         }
     }
 }

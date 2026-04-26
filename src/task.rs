@@ -50,7 +50,15 @@ enum ParserState {
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) enum ParsedLink {
     Internal(Id),
-    Foreign { prefix: String, id: u32 },
+    Foreign {
+        prefix: String,
+        id: u32,
+    },
+    /// `[[<namespace>/tsk-N]]` — a task in a sibling namespace of the same repo.
+    Namespaced {
+        namespace: String,
+        id: Id,
+    },
     External(Url),
 }
 
@@ -92,6 +100,11 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                     (']', ']', Some(InternalLink(il, s_pos))) => {
                         state.pop();
                         let contents = s.get(s_pos + 1..char_pos - 1)?;
+                        let valid_ident = |s: &str| {
+                            !s.is_empty()
+                                && s.chars()
+                                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                        };
                         if let Ok(id) = Id::from_str(contents) {
                             let linktext = format!(
                                 "{}{}",
@@ -100,9 +113,20 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
                             );
                             out.replace_range(il - 1..out.len(), &linktext);
                             links.push(ParsedLink::Internal(id));
+                        } else if let Some((ns, rest)) = contents.split_once('/')
+                            && valid_ident(ns)
+                            && let Ok(id) = Id::from_str(rest)
+                        {
+                            let linktext =
+                                format!("{}{}", contents.cyan(), super_num(links.len() + 1).cyan());
+                            out.replace_range(il - 1..out.len(), &linktext);
+                            links.push(ParsedLink::Namespaced {
+                                namespace: ns.to_string(),
+                                id,
+                            });
                         } else if let Some((prefix, id_str)) = contents.split_once('-')
                             && let Ok(id) = id_str.parse::<u32>()
-                            && prefix.chars().all(|c| c.is_alphanumeric() || c == '_')
+                            && valid_ident(prefix)
                         {
                             let linktext =
                                 format!("{}{}", contents.cyan(), super_num(links.len() + 1).cyan());
@@ -515,13 +539,28 @@ mod test {
         assert_eq!(input, output.content);
     }
 
-    /// A foreign-style link whose prefix contains `/` (or any other non-ident
-    /// character) is not a valid namespace; don't register a link, keep the
-    /// bracketed text as-is.
+    /// `[[<namespace>/tsk-N]]` registers as a Namespaced link — used for
+    /// cross-namespace references within a single git repo.
     #[test]
-    fn test_foreign_link_prefix_with_slash() {
+    fn test_namespaced_link() {
         setup();
         let input = "see [[ns/tsk-12]]\n";
+        let output = parse(input).expect("parse to work");
+        assert_eq!(
+            &[ParsedLink::Namespaced {
+                namespace: "ns".into(),
+                id: Id(12)
+            }],
+            output.links.as_slice()
+        );
+    }
+
+    /// A bracketed phrase whose namespace segment contains a non-ident
+    /// character isn't a valid link; keep the text and don't register one.
+    #[test]
+    fn test_namespaced_link_invalid_namespace() {
+        setup();
+        let input = "see [[a b/tsk-12]]\n";
         let output = parse(input).expect("parse to work");
         assert!(output.links.is_empty(), "{:?}", output.links);
         assert_eq!(input, output.content);

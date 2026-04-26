@@ -646,6 +646,9 @@ impl Workspace {
                 crate::task::ParsedLink::External(u) => u.to_string(),
                 crate::task::ParsedLink::Internal(i) => format!("[[{i}]]"),
                 crate::task::ParsedLink::Foreign { prefix, id } => format!("[[{prefix}-{id}]]"),
+                crate::task::ParsedLink::Namespaced { namespace, id } => {
+                    format!("[[{namespace}/{id}]]")
+                }
             })
             .collect())
     }
@@ -892,6 +895,29 @@ impl Workspace {
         let workspace = Workspace::from_path(remote.path.clone())?;
         let task = workspace.task(TaskIdentifier::Id(Id(id)))?;
         Ok(Some(task))
+    }
+
+    /// Resolve a `[[<namespace>/tsk-N]]` link by reading the task in a sibling
+    /// namespace of the same git repo. Returns `Ok(None)` if the task isn't
+    /// found, or an error if the workspace isn't git-backed.
+    pub fn resolve_namespaced_link(&self, namespace: &str, id: Id) -> Result<Option<Task>> {
+        if !self.is_git_backed() {
+            return Err(Error::Parse(
+                "Cross-namespace links only work on git-backed workspaces".into(),
+            ));
+        }
+        let marker = std::fs::read_to_string(self.path.join(backend::GIT_BACKED_MARKER))?;
+        let store =
+            backend::GitStore::open_namespace(PathBuf::from(marker.trim()), namespace.to_string())?;
+        let Some((title, body, _)) = backend::read_task(&store, id)? else {
+            return Ok(None);
+        };
+        Ok(Some(Task {
+            id,
+            title,
+            body,
+            attributes: backend::read_attrs(&store, id)?,
+        }))
     }
 
     fn require_git_dir(&self) -> Result<PathBuf> {
@@ -2366,9 +2392,57 @@ mod test {
                 crate::task::ParsedLink::External(_) => "ext",
                 crate::task::ParsedLink::Internal(_) => "int",
                 crate::task::ParsedLink::Foreign { .. } => "for",
+                crate::task::ParsedLink::Namespaced { .. } => "ns",
             })
             .collect();
         assert_eq!(kinds, vec!["ext", "int", "ext", "for"]);
+    }
+
+    #[test]
+    fn test_parsed_namespaced_link() {
+        let body = "see [[default/tsk-1]] in default ns";
+        let parsed = parse_task(&format!("\n\n{body}")).expect("parse");
+        match parsed.links.as_slice() {
+            [crate::task::ParsedLink::Namespaced { namespace, id }] => {
+                assert_eq!(namespace, "default");
+                assert_eq!(id.0, 1);
+            }
+            other => panic!("expected one Namespaced link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_namespaced_link_reads_sibling_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        run_git_init(&root);
+        Workspace::init(root.clone()).unwrap();
+        let ws = Workspace::from_path(root.clone()).unwrap();
+
+        // Create a task in default.
+        let t = ws.new_task("the-original".into(), "body".into()).unwrap();
+        let id = t.id;
+        ws.push_task(t).unwrap();
+
+        // Switch to alice and look up the link from there.
+        ws.switch_namespace("alice").unwrap();
+        let alice = Workspace::from_path(root.clone()).unwrap();
+        let resolved = alice
+            .resolve_namespaced_link("default", id)
+            .unwrap()
+            .expect("should find original");
+        assert_eq!(resolved.title, "the-original");
+        assert_eq!(resolved.body, "body");
+
+        // Missing namespace → None.
+        assert!(alice.resolve_namespaced_link("nope", id).unwrap().is_none());
+        // Missing id in real namespace → None.
+        assert!(
+            alice
+                .resolve_namespaced_link("default", Id(9999))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
