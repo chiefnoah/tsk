@@ -240,15 +240,17 @@ enum Commands {
     },
 
     /// Push refs/tsk/* to a git remote so other clones can pull task state.
+    /// Defaults to "origin" when configured.
     GitPush {
-        /// Remote name (e.g. origin).
-        remote: String,
+        /// Remote name. Defaults to "origin".
+        remote: Option<String>,
     },
 
     /// Fetch refs/tsk/* from a git remote, overwriting local task state.
+    /// Defaults to "origin" when configured.
     GitPull {
-        /// Remote name (e.g. origin).
-        remote: String,
+        /// Remote name. Defaults to "origin".
+        remote: Option<String>,
     },
 
     /// Assign a task to another namespace by sending it to that namespace's
@@ -283,11 +285,14 @@ enum Commands {
 
     /// Reject a pending inbox item, removing it without creating a local task.
     /// Writes a `rejected` event to the source's event log so the assignor
-    /// sees it.
+    /// sees it. Auto-pushes refs to "origin" when configured; pass -r NAME
+    /// to use a different remote or -r "" to skip the push.
     Reject {
         /// Inbox key (e.g. `alice-3` or `inbox/alice-3`). With no argument,
         /// rejects the first item in the inbox.
         key: Option<String>,
+        #[arg(short = 'r')]
+        remote: Option<String>,
     },
 
     /// Bundle the entire workspace into a zip archive.
@@ -538,7 +543,7 @@ fn run(cli: Cli) -> Result<()> {
         } => command_assign(dir, target, task_id, remote),
         Commands::Inbox { remote } => command_inbox(dir, remote),
         Commands::Accept { key } => command_accept(dir, key),
-        Commands::Reject { key } => command_reject(dir, key),
+        Commands::Reject { key, remote } => command_reject(dir, key, remote),
         Commands::Bundle { output } => command_bundle(dir, output),
         Commands::Migrate => command_migrate(dir),
         Commands::MigrateHistory => command_migrate_history(dir),
@@ -882,14 +887,20 @@ fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
     Ok(())
 }
 
-fn command_git_push(dir: PathBuf, remote: String) -> Result<()> {
+fn command_git_push(dir: PathBuf, remote: Option<String>) -> Result<()> {
     let workspace = Workspace::from_path(dir)?;
-    workspace.git_push_refs(&remote)
+    let r = effective_remote(&workspace, remote)?.ok_or_else(|| {
+        errors::Error::Parse("No remote specified and no 'origin' configured".into())
+    })?;
+    workspace.git_push_refs(&r)
 }
 
-fn command_git_pull(dir: PathBuf, remote: String) -> Result<()> {
+fn command_git_pull(dir: PathBuf, remote: Option<String>) -> Result<()> {
     let workspace = Workspace::from_path(dir)?;
-    workspace.git_pull_refs(&remote)
+    let r = effective_remote(&workspace, remote)?.ok_or_else(|| {
+        errors::Error::Parse("No remote specified and no 'origin' configured".into())
+    })?;
+    workspace.git_pull_refs(&r)
 }
 
 fn command_git_setup(dir: PathBuf, use_gitignore: bool, remote: Option<String>) -> Result<()> {
@@ -991,7 +1002,7 @@ fn command_accept(dir: PathBuf, key: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn command_reject(dir: PathBuf, key: Option<String>) -> Result<()> {
+fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let key = match key {
         Some(k) => k,
@@ -1005,6 +1016,9 @@ fn command_reject(dir: PathBuf, key: Option<String>) -> Result<()> {
     };
     let (src_ns, src_id) = ws.reject_inbox(&key)?;
     eprintln!("Rejected inbox item from {src_ns}/tsk-{src_id}");
+    if let Some(r) = effective_remote(&ws, remote)? {
+        ws.git_push_refs(&r)?;
+    }
     Ok(())
 }
 
