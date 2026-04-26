@@ -1,0 +1,3 @@
+[[tsk-N]] link translation in rich-text rendering
+
+Markup parsing handles [[tsk-N]] tokens but there is no human<->stable id rewriting. Resolve N against the current namespace at render time, and (eventually) rewrite to stable ids when sharing across namespaces.
