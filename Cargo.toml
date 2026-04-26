@@ -14,6 +14,10 @@ authors = ["Noah Pederson <noah@packetlost.dev>"]
 name = "tsk"
 path = "src/main.rs"
 
+[[bin]]
+name = "git-tsk"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"

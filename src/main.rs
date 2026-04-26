@@ -1,68 +1,25 @@
-mod backend;
 mod errors;
 mod fzf;
-mod stack;
+mod namespace;
+mod object;
+mod queue;
 mod task;
 mod util;
 mod workspace;
+
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
+use edit::edit as open_editor;
 use errors::Result;
-use std::io::{self, Write};
+use std::env::current_dir;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr as _;
-use std::{env::current_dir, fs::OpenOptions, io::Read};
-use task::ParsedLink;
 use workspace::{Id, Task, TaskIdentifier, Workspace};
-
-//use smol;
-//use iocraft::prelude::*;
-use clap::{Args, CommandFactory, Parser, Subcommand};
-use edit::edit as open_editor;
 
 fn default_dir() -> Result<PathBuf> {
     Ok(current_dir()?)
-}
-
-const NEW_SENTINEL: &str = "<new>";
-
-/// Resolve the remote to use for an auto-sync command. If the user supplied
-/// `Some("")`, returns None (explicit skip). If `Some(name)`, returns that
-/// name. If `None`, returns "origin" if that remote is configured in git;
-/// otherwise None (so file-backed workspaces and clones without a configured
-/// origin fall through silently).
-fn effective_remote(ws: &Workspace, supplied: Option<String>) -> Result<Option<String>> {
-    if let Some(s) = supplied {
-        if s.is_empty() {
-            return Ok(None);
-        }
-        return Ok(Some(s));
-    }
-    if !ws.is_git_backed() {
-        return Ok(None);
-    }
-    let marker = std::fs::read_to_string(ws.path.join(backend::GIT_BACKED_MARKER))?;
-    let repo = git2::Repository::open(PathBuf::from(marker.trim()))?;
-    if repo.find_remote("origin").is_ok() {
-        Ok(Some("origin".to_string()))
-    } else {
-        Ok(None)
-    }
-}
-
-/// `[[tsk-N]]` → Some(Id(N)). Anything else (including foreign links) → None.
-fn parse_internal_link_for_cli(s: &str) -> Option<Id> {
-    let inner = s.trim().strip_prefix("[[")?.strip_suffix("]]")?;
-    Id::from_str(inner).ok()
-}
-
-fn prompt_line(prompt: &str) -> Result<String> {
-    use std::io::Write as _;
-    eprint!("{prompt}");
-    io::stderr().flush()?;
-    let mut s = String::new();
-    io::stdin().read_line(&mut s)?;
-    Ok(s.trim_end_matches(['\n', '\r']).to_string())
 }
 
 fn parse_id(s: &str) -> std::result::Result<Id, &'static str> {
@@ -70,370 +27,175 @@ fn parse_id(s: &str) -> std::result::Result<Id, &'static str> {
 }
 
 #[derive(Parser)]
-// TODO: add long_about
 #[command(version, about)]
 struct Cli {
     /// Override the tsk root directory.
     #[arg(short = 'C', env = "TSK_ROOT", value_name = "DIR")]
     dir: Option<PathBuf>,
-    // TODO: other global options
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initializes a .tsk workspace in the current effective directory, which defaults to PWD.
+    /// Initialize a `.tsk/` marker in the current git repo. (Auto-created on first use.)
     Init,
-    /// Creates a new task, automatically assigning it a unique identifider and persisting
+    /// Create a new task and push it onto the active queue.
     Push {
-        /// Whether to open $EDITOR to edit the content of the task. The first line if the
-        /// resulting file will be the task's title. The body follows the title after two newlines,
-        /// similr to the format of a commit message.
         #[arg(short = 'e', default_value_t = false)]
         edit: bool,
-
-        /// The body of the task. It may be specified as either a string using quotes or the
-        /// special character '-' to read from stdin.
         #[arg(short = 'b')]
         body: Option<String>,
-
-        /// The title of the task as a raw string. It mus be proceeded by two dashes (--).
         #[command(flatten)]
         title: Title,
     },
-    /// Creates a new task just like `push`, but instead of putting it at the top of the stack, it
-    /// puts it at the bottom
+    /// Create a new task and append it to the bottom of the active queue.
     Append {
-        /// Whether to open $EDITOR to edit the content of the task. The first line if the
-        /// resulting file will be the task's title. The body follows the title after two newlines,
-        /// similr to the format of a commit message.
         #[arg(short = 'e', default_value_t = false)]
         edit: bool,
-
-        /// The body of the task. It may be specified as either a string using quotes or the
-        /// special character '-' to read from stdin.
         #[arg(short = 'b')]
         body: Option<String>,
-
-        /// The title of the task as a raw string. It mus be proceeded by two dashes (--).
         #[command(flatten)]
         title: Title,
     },
-    /// Print the task stack. This will include just TSK-IDs and the title.
+    /// Print the active queue's stack (top-of-stack first).
     List {
-        /// Whether to list all tasks in the task stack. If specified, -c / count is ignored.
         #[arg(short = 'a', default_value_t = false)]
         all: bool,
         #[arg(short = 'c', default_value_t = 10)]
         count: usize,
-        /// Only print task IDs, one per line.
         #[arg(short = 'q', default_value_t = false)]
         ids_only: bool,
     },
-
-    /// Swaps the top two tasks on the stack. If there are less than 2 tasks on the stack, there is
-    /// no effect.
-    Swap,
-
-    /// Open up an editor to modify the task with the given ID.
+    /// Show a task by id.
+    Show {
+        #[arg(short = 'x', default_value_t = false)]
+        show_attrs: bool,
+        #[command(flatten)]
+        task_id: TaskId,
+    },
+    /// Open `$EDITOR` to modify a task.
     Edit {
         #[command(flatten)]
         task_id: TaskId,
     },
-
-    /// Generates completion for a given shell.
-    Completion {
-        #[arg(short = 's')]
-        shell: Shell,
-    },
-
-    /// Use fuzzy finding with `fzf` to search for a task
-    Find {
-        #[command(flatten)]
-        args: FindArgs,
-        /// Whether to print the a shortened tsk ID (just the integer portion). Defaults to *false*
-        #[arg(short = 'f', default_value_t = false)]
-        short_id: bool,
-    },
-
-    /// Prints the contents of a task, parsing the body as rich text and formatting it using ANSI
-    /// escape sequences.
-    Show {
-        /// Shows raw file attributes for the file
-        #[arg(short = 'x', default_value_t = false)]
-        show_attrs: bool,
-
-        #[arg(short = 'R', default_value_t = false)]
-        raw: bool,
-        /// The [TSK-]ID of the task to display
-        #[command(flatten)]
-        task_id: TaskId,
-    },
-
-    /// List or follow a link parsed from a task's body. Without -l or -s,
-    /// prints the numbered list and exits. With -l N, opens link N; URLs go
-    /// to the system handler, [[tsk-N]] internal links are shown, foreign
-    /// refs resolve through the configured remote. With -s, pipes the list
-    /// through fzf and opens the picked one.
-    Follow {
-        /// The task whose body will be searched for links.
-        #[command(flatten)]
-        task_id: TaskId,
-        /// The index of the link to open. Omit (along with -s) to just list.
-        #[arg(short = 'l')]
-        link_index: Option<usize>,
-        /// fzf-pick a link to open instead of supplying -l.
-        #[arg(short = 's', default_value_t = false)]
-        select: bool,
-        /// When opening an internal link, edit the addressed task instead of showing.
-        #[arg(short = 'e', default_value_t = false)]
-        edit: bool,
-    },
-
-    /// Drops the task on the top of the stack and archives it.
+    /// Drop a task (remove from queue + unbind human id, history retained).
     Drop {
-        /// The [TSK-]ID of the task to drop.
         #[command(flatten)]
         task_id: TaskId,
     },
-
-    /// Moves the 3rd item on the stack to the front of the stack, shifting everything else down by
-    /// one. If there are less than 3 tasks on the stack, has no effect.
+    /// Swap the top two tasks.
+    Swap,
+    /// Rotate top 3: third → top.
     Rot,
-    /// Moves the task on the top of the stack back behind the 2nd element, shifting the next two
-    /// task up.
+    /// Reverse-rotate top 3: top → third.
     Tor,
-
-    /// Prioritizes an arbitrary task to the top of the stack.
+    /// Move a task to the top of the stack.
     Prioritize {
-        /// The [TSK-]ID to prioritize. If it exists, it is moved to the top of the stack.
         #[command(flatten)]
         task_id: TaskId,
     },
-
-    /// Deprioritizes a task to the bottom of the stack.
+    /// Move a task to the bottom of the stack.
     Deprioritize {
-        /// The [TSK-]ID to deprioritize. If it exists, it is moved to the bottom of the stack.
         #[command(flatten)]
         task_id: TaskId,
     },
-
-    /// Cleans up orphaned task files in .tsk/tasks/ that are no longer in the stack index.
+    /// Drop index entries whose stable ids no longer resolve.
     Clean,
-
-    /// Manage remote workspace mappings for cross-workspace task linking.
-    Remote {
-        #[command(subcommand)]
-        action: RemoteAction,
-    },
-
-    /// Sets up git integration by adding .tsk/ to .git/info/exclude or .gitignore.
+    /// Print refspec/setup hints for `git push`/`git fetch` to include `refs/tsk/*`.
     GitSetup {
-        /// Use .gitignore instead of .git/info/exclude.
-        #[arg(short = 'g', default_value_t = false)]
-        gitignore: bool,
-        /// Also configure push/fetch refspecs on the named remote so refs/tsk/*
-        /// is included in `git push <remote>` and `git fetch <remote>`.
+        /// Configure push/fetch refspecs on the named remote (default: origin).
         #[arg(short = 'r')]
         remote: Option<String>,
     },
-
-    /// Push refs/tsk/* to a git remote so other clones can pull task state.
-    /// Defaults to "origin" when configured.
+    /// Push tsk refs to a git remote (default: origin).
     GitPush {
-        /// Remote name. Defaults to "origin".
         remote: Option<String>,
     },
-
-    /// Fetch refs/tsk/* from a git remote, overwriting local task state.
-    /// Defaults to "origin" when configured.
+    /// Fetch tsk refs from a git remote (default: origin).
     GitPull {
-        /// Remote name. Defaults to "origin".
         remote: Option<String>,
     },
-
-    /// Assign a task to another namespace by sending it to that namespace's
-    /// inbox. Defaults to the top-of-stack task; use -T to pick a different
-    /// one. Sets `assigned=[[<ns>/tsk-N]]` on the source. Auto-pushes refs
-    /// to "origin" when configured; pass -r NAME to use a different remote
-    /// or -r "" to skip the push.
-    Assign {
-        /// Target namespace.
+    /// Share a task into another namespace (binds same stable id under that namespace's next human id).
+    Share {
         target: String,
         #[command(flatten)]
         task_id: TaskId,
-        #[arg(short = 'r')]
+    },
+    /// Move a task from the active queue's index into another queue's inbox.
+    Assign {
+        target: String,
+        #[command(flatten)]
+        task_id: TaskId,
+        /// Auto-push refs to this remote after assigning. Empty string skips. Default: origin.
+        #[arg(short = 'R')]
         remote: Option<String>,
     },
-
-    /// List tasks pending in the current namespace's inbox. Pulls from a
-    /// remote first so the listing reflects what others have sent. Defaults
-    /// to "origin" if that remote exists; pass -r "" to skip the pull.
+    /// Pull a task from another queue's index (only allowed if its can-pull is true).
+    Pull {
+        source: String,
+        #[command(flatten)]
+        task_id: TaskId,
+    },
+    /// List inbox items pending in the active queue.
     Inbox {
-        #[arg(short = 'r')]
+        /// Auto-pull from this remote first. Empty string skips. Default: origin.
+        #[arg(short = 'R')]
         remote: Option<String>,
     },
-
-    /// Accept a pending inbox item, creating a new local task with copied
-    /// content + properties and `source=[[<src-ns>/tsk-N]]` set.
-    Accept {
-        /// Inbox key (e.g. `alice-3` or `inbox/alice-3`). With no argument,
-        /// accepts the first item in the inbox.
-        key: Option<String>,
-    },
-
-    /// Reject a pending inbox item, removing it without creating a local task.
-    /// Writes a `rejected` event to the source's event log so the assignor
-    /// sees it. Auto-pushes refs to "origin" when configured; pass -r NAME
-    /// to use a different remote or -r "" to skip the push.
+    /// Accept an inbox item by key (no key = first item).
+    Accept { key: Option<String> },
+    /// Reject an inbox item by key (no key = first item).
     Reject {
-        /// Inbox key (e.g. `alice-3` or `inbox/alice-3`). With no argument,
-        /// rejects the first item in the inbox.
         key: Option<String>,
-        #[arg(short = 'r')]
+        /// Auto-push refs to this remote after rejecting. Empty string skips. Default: origin.
+        #[arg(short = 'R')]
         remote: Option<String>,
     },
-
-    /// Bundle the entire workspace into a zip archive.
-    Bundle {
-        /// Output path. Defaults to ./tsk.zip.
-        #[arg(short = 'o')]
-        output: Option<PathBuf>,
-    },
-
-    /// Migrate a file-backed workspace to a git-backed one. The directory must
-    /// now be inside a git repository (run `git init` first if needed). All
-    /// task data is copied into refs/tsk/* and the on-disk files are removed.
-    Migrate,
-
-    /// Convert blob-backed refs/tsk/<ns>/* refs to commit-backed history
-    /// (one commit per past mutation; future writes append commits). Inbox
-    /// blobs are intentionally left blob-backed.
-    MigrateHistory,
-
-    /// Print the event log. Without -T, prints every event in the current
-    /// namespace, newest first, in git-log style. With -T, scopes to one task.
-    Log {
-        /// Optionally scope to a single task by tsk-ID.
-        #[arg(short = 'T', value_name = "TSK-ID", value_parser = parse_id)]
-        tsk_id: Option<Id>,
-    },
-
-    /// Get/set/find tasks by property. Properties are arbitrary key/value
-    /// pairs stored alongside a task; some are synthetic (state, has-links,
-    /// references, referenced-by) and computed on read.
-    Prop {
-        #[command(subcommand)]
-        action: PropAction,
-    },
-
-    /// Manage namespaces within a git-backed workspace. Namespaces let multiple
-    /// people share the same git repo without sharing tasks; refs live under
-    /// refs/tsk/<namespace>/.
+    /// Manage namespaces.
     Namespace {
         #[command(subcommand)]
         action: NamespaceAction,
     },
-
-    /// Switch to a different namespace. Shorthand for `tsk namespace switch`.
-    /// With no name, fzf-picks from existing namespaces (plus a `<new>`
-    /// sentinel for creating one on the fly).
-    Switch { name: Option<String> },
-
-    /// Reopens an archived task, recreating the symlink and adding it back to the stack.
-    Reopen {
-        #[command(flatten)]
-        task_id: TaskId,
+    /// Manage queues.
+    Queue {
+        #[command(subcommand)]
+        action: QueueAction,
     },
-}
-
-#[derive(Subcommand)]
-enum PropAction {
-    /// List all properties on a task (stored + synthetic).
-    List {
-        #[command(flatten)]
-        task_id: TaskId,
-    },
-    /// Set a property. With both KEY and VALUE supplied, sets directly.
-    /// With KEY but no VALUE, fzf-picks a value from existing values for
-    /// that key (and, with -l, also from links/URLs in the task body).
-    /// With neither, fzf-picks the key first, then the value. The fzf list
-    /// always includes a `<new>` sentinel for entering a fresh string.
-    Set {
-        #[command(flatten)]
-        task_id: TaskId,
-        /// Property name. If omitted, the user is prompted via fzf.
-        key: Option<String>,
-        /// New value. If omitted, the user is prompted via fzf.
-        value: Option<String>,
-        /// Also include links/URLs parsed from the task body as value
-        /// candidates.
-        #[arg(short = 'l', default_value_t = false)]
-        from_body: bool,
-    },
-    /// Remove a property from a task. No-op if not set.
-    Unset {
-        #[command(flatten)]
-        task_id: TaskId,
-        key: String,
-    },
-    /// Find every task whose property KEY equals VALUE. With VALUE omitted,
-    /// matches any task that has KEY set. With both omitted, fzf-picks the
-    /// key first, then the value (with `<any>` to skip value-narrowing).
-    Find {
-        key: Option<String>,
-        value: Option<String>,
+    /// Switch active namespace (shorthand).
+    Switch { name: String },
+    /// Generate shell completion.
+    Completion {
+        #[arg(short = 's')]
+        shell: Shell,
     },
 }
 
 #[derive(Subcommand)]
 enum NamespaceAction {
-    /// List all namespaces with refs in this repo.
     List,
-    /// Print the current namespace name.
     Current,
-    /// Switch to (create on first push of) the given namespace. With no
-    /// name, fzf-picks from existing namespaces.
-    Switch { name: Option<String> },
-    /// Create an empty namespace and switch to it.
-    Create { name: String },
-    /// Delete every ref under the given namespace. Refuses if the namespace is
-    /// the active one. Prompts for confirmation when it has tasks unless -y.
-    Delete {
-        name: String,
-        /// Skip the confirmation prompt.
-        #[arg(short = 'y', default_value_t = false)]
-        yes: bool,
-    },
+    Switch { name: String },
 }
 
 #[derive(Subcommand)]
-enum RemoteAction {
-    /// List configured remote workspaces.
+enum QueueAction {
     List,
-    /// Add a remote workspace mapping.
-    Add {
-        /// The prefix to use for this remote (e.g. "jira", "gl").
-        prefix: String,
-        /// The path to the remote workspace.
-        path: String,
+    Current,
+    /// Create a new queue. By default `can-pull=false`; use `-p` to make it true.
+    Create {
+        name: String,
+        #[arg(short = 'p', default_value_t = false)]
+        can_pull: bool,
     },
-    /// Remove a remote workspace mapping.
-    Remove {
-        /// The prefix of the remote to remove.
-        prefix: String,
-    },
+    Switch { name: String },
 }
 
 #[derive(Args)]
 #[group(required = true, multiple = false)]
 struct Title {
-    /// The title of the task. This is useful for when you also wish to specify the body of the
-    /// task as an argument (ie. with -b).
     #[arg(short, value_name = "TITLE")]
     title: Option<String>,
-
     #[arg(value_name = "TITLE")]
     title_simple: Option<Vec<String>>,
 }
@@ -441,60 +203,28 @@ struct Title {
 #[derive(Args)]
 #[group(required = false, multiple = false)]
 struct TaskId {
-    /// The ID of the task to select as a plain integer.
     #[arg(short = 't', value_name = "ID")]
     id: Option<u32>,
-
-    /// The ID of the task to select with the 'tsk-' prefix.
     #[arg(short = 'T', value_name = "TSK-ID", value_parser = parse_id)]
     tsk_id: Option<Id>,
-
-    /// Selects a task relative to the top of the stack.
-    /// If no option is specified, the task selected will be the top of the stack.
     #[arg(short = 'r', value_name = "RELATIVE", default_value_t = 0)]
     relative_id: u32,
-
-    #[command(flatten)]
-    find: Find,
-}
-
-/// Use fuzzy finding to search for and select a task.
-/// Does not support searching task bodies or archived tasks.
-#[derive(Args)]
-#[group(required = false, multiple = true)]
-struct Find {
-    /// Use fuzzy finding to select a task.
-    #[arg(short = 'f', value_name = "FIND", default_value_t = false)]
-    find: bool,
-    #[command(flatten)]
-    args: FindArgs,
-}
-
-#[derive(Args)]
-#[group(required = false, multiple = false)]
-struct FindArgs {
-    /// Exclude the contents of tasks in the search criteria.
-    #[arg(short = 'b', default_value_t = false)]
-    exclude_body: bool,
-    /// Include archived tasks in the search criteria. Combine with `-b` to include archived
-    /// bodies in the search criteria.
-    #[arg(short = 'a', default_value_t = false)]
-    search_archived: bool,
 }
 
 impl From<TaskId> for TaskIdentifier {
-    fn from(value: TaskId) -> Self {
-        if let Some(id) = value.id.map(Id::from).or(value.tsk_id) {
+    fn from(v: TaskId) -> Self {
+        if let Some(id) = v.id.map(Id::from).or(v.tsk_id) {
             TaskIdentifier::Id(id)
-        } else if value.find.find {
-            TaskIdentifier::Find {
-                exclude_body: value.find.args.exclude_body,
-                archived: value.find.args.search_archived,
-            }
         } else {
-            TaskIdentifier::Relative(value.relative_id)
+            TaskIdentifier::Relative(v.relative_id)
         }
     }
+}
+
+fn effective_remote(supplied: Option<String>) -> Option<String> {
+    supplied
+        .map(|s| if s.is_empty() { None } else { Some(s) })
+        .unwrap_or_else(|| Some("origin".to_string()))
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -503,55 +233,59 @@ fn run(cli: Cli) -> Result<()> {
         None => default_dir()?,
     };
     match cli.command {
-        Commands::Init => command_init(dir),
-        Commands::Push { edit, body, title } => command_push(dir, edit, body, title),
-        Commands::Append { edit, body, title } => command_append(dir, edit, body, title),
+        Commands::Init => Workspace::init(dir),
+        Commands::Push { edit, body, title } => command_push(dir, edit, body, title, true),
+        Commands::Append { edit, body, title } => command_push(dir, edit, body, title, false),
         Commands::List {
             all,
             count,
             ids_only,
         } => command_list(dir, all, count, ids_only),
-        Commands::Swap => command_swap(dir),
         Commands::Show {
             task_id,
-            raw,
             show_attrs,
-        } => command_show(dir, task_id, show_attrs, raw),
-        Commands::Follow {
-            task_id,
-            link_index,
-            select,
-            edit,
-        } => command_follow(dir, task_id, link_index, select, edit),
+        } => command_show(dir, task_id, show_attrs),
         Commands::Edit { task_id } => command_edit(dir, task_id),
-        Commands::Completion { shell } => command_completion(shell),
         Commands::Drop { task_id } => command_drop(dir, task_id),
-        Commands::Find { args, short_id } => command_find(dir, short_id, args),
+        Commands::Swap => Workspace::from_path(dir)?.swap_top(),
         Commands::Rot => Workspace::from_path(dir)?.rot(),
         Commands::Tor => Workspace::from_path(dir)?.tor(),
-        Commands::Prioritize { task_id } => command_prioritize(dir, task_id),
-        Commands::Deprioritize { task_id } => command_deprioritize(dir, task_id),
-        Commands::Clean => command_clean(dir),
-        Commands::Remote { action } => command_remote(dir, action),
-        Commands::GitSetup { gitignore, remote } => command_git_setup(dir, gitignore, remote),
-        Commands::GitPush { remote } => command_git_push(dir, remote),
-        Commands::GitPull { remote } => command_git_pull(dir, remote),
+        Commands::Prioritize { task_id } => {
+            Workspace::from_path(dir)?.prioritize(task_id.into())
+        }
+        Commands::Deprioritize { task_id } => {
+            Workspace::from_path(dir)?.deprioritize(task_id.into())
+        }
+        Commands::Clean => Workspace::from_path(dir)?.clean(),
+        Commands::GitSetup { remote } => {
+            let r = remote.unwrap_or_else(|| "origin".to_string());
+            Workspace::from_path(dir)?.configure_git_remote_refspecs(&r)
+        }
+        Commands::GitPush { remote } => {
+            let r = remote.unwrap_or_else(|| "origin".to_string());
+            Workspace::from_path(dir)?.git_push(&r)
+        }
+        Commands::GitPull { remote } => {
+            let r = remote.unwrap_or_else(|| "origin".to_string());
+            Workspace::from_path(dir)?.git_pull(&r)
+        }
+        Commands::Share { target, task_id } => command_share(dir, target, task_id),
         Commands::Assign {
             target,
             task_id,
             remote,
         } => command_assign(dir, target, task_id, remote),
+        Commands::Pull { source, task_id } => command_pull(dir, source, task_id),
         Commands::Inbox { remote } => command_inbox(dir, remote),
         Commands::Accept { key } => command_accept(dir, key),
         Commands::Reject { key, remote } => command_reject(dir, key, remote),
-        Commands::Bundle { output } => command_bundle(dir, output),
-        Commands::Migrate => command_migrate(dir),
-        Commands::MigrateHistory => command_migrate_history(dir),
-        Commands::Reopen { task_id } => command_reopen(dir, task_id),
-        Commands::Log { tsk_id } => command_log(dir, tsk_id),
-        Commands::Prop { action } => command_prop(dir, action),
         Commands::Namespace { action } => command_namespace(dir, action),
-        Commands::Switch { name } => command_namespace_switch(dir, name),
+        Commands::Queue { action } => command_queue(dir, action),
+        Commands::Switch { name } => Workspace::from_path(dir)?.switch_namespace(&name),
+        Commands::Completion { shell } => {
+            generate(shell, &mut Cli::command(), "tsk", &mut io::stdout());
+            Ok(())
+        }
     }
 }
 
@@ -565,385 +299,121 @@ fn main() {
     }
 }
 
-fn taskid_from_tsk_id(tsk_id: Id) -> TaskId {
-    TaskId {
-        tsk_id: Some(tsk_id),
-        id: None,
-        relative_id: 0,
-        find: Find {
-            find: false,
-            args: FindArgs {
-                exclude_body: true,
-                search_archived: false,
-            },
-        },
-    }
-}
-
-fn command_init(dir: PathBuf) -> Result<()> {
-    Workspace::init(dir)
-}
-
-fn create_task(
-    workspace: &mut Workspace,
+fn read_title_and_body(
     edit: bool,
     body: Option<String>,
-    title: Title,
-) -> Result<Task> {
-    let mut title = if let Some(title) = title.title {
-        title
-    } else if let Some(title) = title.title_simple {
-        title.join(" ")
+    title_arg: Title,
+) -> Result<(String, String)> {
+    let mut title = if let Some(t) = title_arg.title {
+        t
+    } else if let Some(ts) = title_arg.title_simple {
+        ts.join(" ")
     } else {
-        "".to_string()
+        String::new()
     };
-    // If no body was explicitly provided and the title contains newlines,
-    // treat the first line as the title and the rest as the body (like git commit -m)
     let mut body = if body.is_none() {
-        if let Some((first_line, rest)) = title.split_once('\n') {
-            let extracted_body = rest.to_string();
-            title = first_line.to_string();
-            extracted_body
+        if let Some((first, rest)) = title.split_once('\n') {
+            let extracted = rest.to_string();
+            title = first.to_string();
+            extracted
         } else {
             String::new()
         }
     } else {
-        // Body was explicitly provided, so strip any newlines from title
         title = title.replace(['\n', '\r'], " ");
         body.unwrap_or_default()
     };
     if body == "-" {
-        // add newline so you can type directly in the shell
-        //eprintln!("");
         body.clear();
-        std::io::stdin().read_to_string(&mut body)?;
+        io::stdin().read_to_string(&mut body)?;
     }
     if edit {
         let new_content = open_editor(format!("{title}\n\n{body}"))?;
-        if let Some(content) = new_content.split_once("\n") {
-            title = content.0.to_string();
-            body = content.1.to_string();
+        if let Some((t, b)) = new_content.split_once('\n') {
+            title = t.to_string();
+            body = b.trim_start_matches('\n').to_string();
         }
     }
-    // Ensure title never contains newlines (invariant for index file format)
     title = title.replace(['\n', '\r'], " ");
-    let task = workspace.new_task(title, body)?;
-    workspace.handle_metadata(&task, None)?;
-    Ok(task)
+    Ok((title, body))
 }
 
-fn command_push(dir: PathBuf, edit: bool, body: Option<String>, title: Title) -> Result<()> {
-    let mut workspace = Workspace::from_path(dir)?;
-    let task = create_task(&mut workspace, edit, body, title)?;
-    workspace.push_task(task)
-}
-
-fn command_append(dir: PathBuf, edit: bool, body: Option<String>, title: Title) -> Result<()> {
-    let mut workspace = Workspace::from_path(dir)?;
-    let task = create_task(&mut workspace, edit, body, title)?;
-    workspace.append_task(task)
+fn command_push(
+    dir: PathBuf,
+    edit: bool,
+    body: Option<String>,
+    title: Title,
+    on_top: bool,
+) -> Result<()> {
+    let (title, body) = read_title_and_body(edit, body, title)?;
+    let ws = Workspace::from_path(dir)?;
+    let task = ws.new_task(title, body)?;
+    if on_top {
+        ws.push_task(task)
+    } else {
+        ws.append_task(task)
+    }
 }
 
 fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    let stack = workspace.read_stack()?;
-
-    if stack.empty() {
+    let ws = Workspace::from_path(dir)?;
+    let stack = ws.read_stack()?;
+    if stack.is_empty() {
         println!("*No tasks*");
-        exit(0);
+        return Ok(());
     }
-
-    for (_, stack_item) in stack
-        .into_iter()
-        .enumerate()
-        .take_while(|(idx, _)| all || idx < &count)
-    {
+    for (i, entry) in stack.iter().enumerate() {
+        if !all && i >= count {
+            break;
+        }
         if ids_only {
-            println!("{}", stack_item.id);
-        } else if let Some(parsed) = task::parse(&stack_item.title) {
-            println!("{}\t{}", stack_item.id, parsed.content.trim());
+            println!("{}", entry.id);
         } else {
-            println!("{stack_item}");
+            println!("{}\t{}", entry.id, entry.title);
         }
     }
     Ok(())
 }
 
-fn command_swap(dir: PathBuf) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    workspace.swap_top()?;
-    Ok(())
-}
-
-fn command_edit(dir: PathBuf, id: TaskId) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    let id: TaskIdentifier = id.into();
-    let mut task = workspace.task(id)?;
-    let pre_links = task::parse(&task.to_string()).map(|pt| pt.intenal_links());
-    let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))?;
-    if let Some((title, body)) = new_content.split_once("\n") {
-        // Ensure title never contains newlines (invariant for index file format)
-        task.title = title.replace(['\n', '\r'], " ");
-        task.body = body.to_string();
-        workspace.handle_metadata(&task, pre_links)?;
-        workspace.save_task(&task)?;
+fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool) -> Result<()> {
+    let task = Workspace::from_path(dir)?.task(task_id.into())?;
+    if show_attrs && !task.attributes.is_empty() {
+        println!("---");
+        for (k, v) in &task.attributes {
+            println!("{k}: \"{v}\"");
+        }
+        println!("---");
     }
+    println!("{task}");
     Ok(())
 }
 
-fn command_completion(shell: Shell) -> Result<()> {
-    generate(shell, &mut Cli::command(), "tsk", &mut io::stdout());
+fn command_edit(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let mut task = ws.task(task_id.into())?;
+    let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))?;
+    if let Some((t, b)) = new_content.split_once('\n') {
+        task.title = t.replace(['\n', '\r'], " ");
+        task.body = b.trim_start_matches('\n').to_string();
+        ws.save_task(&task)?;
+    }
     Ok(())
 }
 
 fn command_drop(dir: PathBuf, task_id: TaskId) -> Result<()> {
     if let Some(id) = Workspace::from_path(dir)?.drop(task_id.into())? {
-        eprint!("Dropped ");
-        println!("{id}");
+        println!("Dropped {id}");
+        Ok(())
     } else {
         eprintln!("No task to drop.");
         exit(1);
     }
-    Ok(())
 }
 
-fn command_find(dir: PathBuf, short_id: bool, find_args: FindArgs) -> Result<()> {
-    let id = Workspace::from_path(dir)?.search(None, !find_args.exclude_body, false)?;
-    if let Some(id) = id {
-        if short_id {
-            // print as integer
-            println!("{}", id.0);
-        } else {
-            println!("{id}");
-        }
-    } else {
-        eprintln!("No task selected.");
-        exit(1);
-    }
-    Ok(())
-}
-
-fn command_prioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
-    Workspace::from_path(dir)?.prioritize(task_id.into())
-}
-
-fn command_deprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
-    Workspace::from_path(dir)?.deprioritize(task_id.into())
-}
-
-fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool, raw: bool) -> Result<()> {
-    let task = Workspace::from_path(dir)?.task(task_id.into())?;
-    // YAML front-matter style. YAML is gross, but it's what everyone uses!
-    if show_attrs && !task.attributes.is_empty() {
-        println!("---");
-        for (attr, value) in task.attributes.iter() {
-            println!("{attr}: \"{value}\"");
-        }
-        println!("---");
-    }
-    match task::parse(&task.to_string()) {
-        Some(styled_task) if !raw => {
-            writeln!(io::stdout(), "{}", styled_task.content)?;
-        }
-        _ => {
-            println!("{task}");
-        }
-    }
-    Ok(())
-}
-
-fn render_link(link: &ParsedLink) -> String {
-    match link {
-        ParsedLink::External(url) => url.to_string(),
-        ParsedLink::Internal(id) => format!("[[{id}]]"),
-        ParsedLink::Foreign { prefix, id } => format!("[[{prefix}-{id}]]"),
-        ParsedLink::Namespaced { namespace, id } => format!("[[{namespace}/{id}]]"),
-    }
-}
-
-fn command_follow(
-    dir: PathBuf,
-    task_id: TaskId,
-    link_index: Option<usize>,
-    select: bool,
-    edit: bool,
-) -> Result<()> {
-    let task = Workspace::from_path(dir.clone())?.task(task_id.into())?;
-    let Some(parsed_task) = task::parse(&task.to_string()) else {
-        eprintln!("Unable to parse any links from body.");
-        exit(1);
-    };
-    if parsed_task.links.is_empty() {
-        eprintln!("No links found in {}.", task.id);
-        return Ok(());
-    }
-
-    // Resolve which link index to act on, or fall through to listing.
-    let idx = match (link_index, select) {
-        (Some(n), _) => n,
-        (None, true) => {
-            let lines: Vec<String> = parsed_task
-                .links
-                .iter()
-                .enumerate()
-                .map(|(i, l)| format!("{}\t{}", i + 1, render_link(l)))
-                .collect();
-            match fzf::select::<_, usize, _>(lines, ["--delimiter=\t", "--accept-nth=1"])? {
-                Some(n) => n,
-                None => {
-                    eprintln!("No link selected.");
-                    exit(1);
-                }
-            }
-        }
-        (None, false) => {
-            // Just list.
-            for (i, link) in parsed_task.links.iter().enumerate() {
-                println!("{}\t{}", i + 1, render_link(link));
-            }
-            return Ok(());
-        }
-    };
-
-    if idx == 0 || idx > parsed_task.links.len() {
-        eprintln!("Link index out of bounds.");
-        exit(1);
-    }
-    match &parsed_task.links[idx - 1] {
-        ParsedLink::External(url) => {
-            open::that_detached(url.as_str())?;
-            Ok(())
-        }
-        ParsedLink::Internal(id) => {
-            let taskid = taskid_from_tsk_id(*id);
-            if edit {
-                command_edit(dir, taskid)
-            } else {
-                command_show(dir, taskid, false, false)
-            }
-        }
-        ParsedLink::Foreign { prefix, id } => {
-            let workspace = Workspace::from_path(dir.clone())?;
-            if let Some(task) = workspace.resolve_foreign_link(prefix, *id)? {
-                if edit {
-                    eprintln!("Editing foreign tasks is not supported.");
-                    exit(1);
-                } else {
-                    println!("{task}");
-                }
-            } else {
-                eprintln!("Task {prefix}-{id} not found in remote workspace.");
-                exit(1);
-            }
-            Ok(())
-        }
-        ParsedLink::Namespaced { namespace, id } => {
-            let workspace = Workspace::from_path(dir.clone())?;
-            if edit {
-                eprintln!("Editing tasks in another namespace is not supported.");
-                exit(1);
-            }
-            match workspace.resolve_namespaced_link(namespace, *id)? {
-                Some(task) => {
-                    println!("{task}");
-                    Ok(())
-                }
-                None => {
-                    eprintln!("Task {namespace}/{id} not found.");
-                    exit(1);
-                }
-            }
-        }
-    }
-}
-
-fn command_clean(dir: PathBuf) -> Result<()> {
-    Workspace::from_path(dir)?.clean()?;
-    Ok(())
-}
-
-fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    match action {
-        RemoteAction::List => {
-            let remotes = workspace.read_remotes()?;
-            if remotes.is_empty() {
-                println!("No remotes configured.");
-            } else {
-                for remote in remotes {
-                    println!("{remote}");
-                }
-            }
-        }
-        RemoteAction::Add { prefix, path } => {
-            workspace.add_remote(&prefix, &path)?;
-            eprintln!("Added remote '{prefix}' -> {path}");
-        }
-        RemoteAction::Remove { prefix } => {
-            workspace.remove_remote(&prefix)?;
-            eprintln!("Removed remote '{prefix}'");
-        }
-    }
-    Ok(())
-}
-
-fn command_git_push(dir: PathBuf, remote: Option<String>) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    let r = effective_remote(&workspace, remote)?.ok_or_else(|| {
-        errors::Error::Parse("No remote specified and no 'origin' configured".into())
-    })?;
-    workspace.git_push_refs(&r)
-}
-
-fn command_git_pull(dir: PathBuf, remote: Option<String>) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    let r = effective_remote(&workspace, remote)?.ok_or_else(|| {
-        errors::Error::Parse("No remote specified and no 'origin' configured".into())
-    })?;
-    workspace.git_pull_refs(&r)
-}
-
-fn command_git_setup(dir: PathBuf, use_gitignore: bool, remote: Option<String>) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    let git_dir = workspace.path.join(".git");
-    if !git_dir.exists() {
-        eprintln!("No .git directory found at workspace root.");
-        exit(1);
-    }
-    let (ignore_file, label) = if use_gitignore {
-        (workspace.path.join(".gitignore"), ".gitignore")
-    } else {
-        let info_dir = git_dir.join("info");
-        std::fs::create_dir_all(&info_dir)?;
-        (info_dir.join("exclude"), ".git/info/exclude")
-    };
-    let content = if ignore_file.exists() {
-        std::fs::read_to_string(&ignore_file)?
-    } else {
-        String::new()
-    };
-    if content.lines().any(|line| line.trim() == ".tsk/") {
-        eprintln!(".tsk/ is already in {label}.");
-        return Ok(());
-    }
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&ignore_file)?;
-    writeln!(file, ".tsk/")?;
-    eprintln!("Added .tsk/ to {label}.");
-    if let Some(remote) = remote {
-        workspace.configure_git_remote_refspecs(&remote)?;
-        eprintln!("Configured push/fetch refspecs on remote '{remote}' for refs/tsk/*");
-    }
-    Ok(())
-}
-
-fn command_bundle(dir: PathBuf, output: Option<PathBuf>) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    let dest = output.unwrap_or_else(|| PathBuf::from("tsk.zip"));
-    workspace.export_zip(&dest)?;
-    eprintln!("Wrote {}", dest.display());
+fn command_share(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let h = ws.share(task_id.into(), &target)?;
+    println!("Shared as {target}/tsk-{h}");
     Ok(())
 }
 
@@ -954,33 +424,37 @@ fn command_assign(
     remote: Option<String>,
 ) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    let id = ws.task(task_id.into())?.id;
-    let key = ws.export_to_namespace(&target, id)?;
-    eprintln!("Sent {id} to namespace '{target}' (inbox key: {key})");
-    if let Some(r) = effective_remote(&ws, remote)? {
-        ws.git_push_refs(&r)?;
+    let key = ws.assign_to_queue(task_id.into(), &target)?;
+    println!("Assigned to {target} as {key}");
+    if let Some(r) = effective_remote(remote) {
+        let _ = ws.git_push(&r);
     }
+    Ok(())
+}
+
+fn command_pull(dir: PathBuf, source: String, task_id: TaskId) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    // For pull, the task id is interpreted in the source queue's namespace
+    // mapping context. Simplification: require the caller to use -T <stable>
+    // form via human id in active namespace. For v1 we just resolve in
+    // active namespace; sharing first lets the user reference foreign tasks.
+    let id = ws.pull_from_queue(&source, task_id.into())?;
+    println!("Pulled {id}");
     Ok(())
 }
 
 fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    if let Some(r) = effective_remote(&ws, remote)? {
-        ws.git_pull_refs(&r)?;
+    if let Some(r) = effective_remote(remote) {
+        let _ = ws.git_pull(&r);
     }
-    let items = ws.list_inbox()?;
-    if items.is_empty() {
-        println!("Inbox is empty.");
+    let inbox = ws.list_inbox()?;
+    if inbox.is_empty() {
+        println!("*Empty*");
         return Ok(());
     }
-    for item in items {
-        println!(
-            "{}\t{}/tsk-{}\t{}",
-            item.inbox_key.trim_start_matches("inbox/"),
-            item.source_namespace,
-            item.source_id,
-            item.title
-        );
+    for item in inbox {
+        println!("{}\tfrom {}\t{}", item.key, item.source_queue, item.title);
     }
     Ok(())
 }
@@ -994,11 +468,11 @@ fn command_accept(dir: PathBuf, key: Option<String>) -> Result<()> {
                 .into_iter()
                 .next()
                 .ok_or_else(|| errors::Error::Parse("Inbox is empty".into()))?
-                .inbox_key
+                .key
         }
     };
     let id = ws.accept_inbox(&key)?;
-    eprintln!("Accepted as {id}");
+    println!("Accepted as {id}");
     Ok(())
 }
 
@@ -1011,301 +485,48 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
                 .into_iter()
                 .next()
                 .ok_or_else(|| errors::Error::Parse("Inbox is empty".into()))?
-                .inbox_key
+                .key
         }
     };
-    let (src_ns, src_id) = ws.reject_inbox(&key)?;
-    eprintln!("Rejected inbox item from {src_ns}/tsk-{src_id}");
-    if let Some(r) = effective_remote(&ws, remote)? {
-        ws.git_push_refs(&r)?;
+    ws.reject_inbox(&key)?;
+    println!("Rejected {key}");
+    if let Some(r) = effective_remote(remote) {
+        let _ = ws.git_push(&r);
     }
     Ok(())
-}
-
-fn command_migrate_history(dir: PathBuf) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    if !ws.is_git_backed() {
-        return Err(errors::Error::Parse(
-            "migrate-history only applies to git-backed workspaces".into(),
-        ));
-    }
-    let marker = std::fs::read_to_string(ws.path.join(backend::GIT_BACKED_MARKER))?;
-    let n = backend::migrate_to_commit_history(&PathBuf::from(marker.trim()))?;
-    eprintln!("Converted {n} blob refs to commit-backed history.");
-    Ok(())
-}
-
-fn command_migrate(dir: PathBuf) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    let git_dir = workspace.migrate_to_git()?;
-    eprintln!(
-        "Migrated workspace to git refs (git dir: {})",
-        git_dir.display()
-    );
-    Ok(())
-}
-
-fn command_log(dir: PathBuf, tsk_id: Option<Id>) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    let mut entries = match tsk_id {
-        Some(id) => ws.read_log(id)?,
-        None => ws.read_namespace_log()?,
-    };
-    if entries.is_empty() {
-        eprintln!("No log entries.");
-        return Ok(());
-    }
-    // Newest first, git-log style.
-    entries.reverse();
-    for (i, e) in entries.iter().enumerate() {
-        if i > 0 {
-            println!();
-        }
-        let header = if tsk_id.is_some() {
-            format!("event {}", e.event)
-        } else {
-            format!("event {} {}", e.id, e.event)
-        };
-        println!("{header}");
-        if !e.author.is_empty() {
-            println!("Author: {}", e.author);
-        }
-        let ts = std::time::UNIX_EPOCH + std::time::Duration::from_secs(e.timestamp);
-        println!("Date:   {}", format_systemtime(ts));
-        if !e.detail.is_empty() {
-            println!();
-            println!("    {}", e.detail);
-        }
-    }
-    Ok(())
-}
-
-fn format_systemtime(t: std::time::SystemTime) -> String {
-    let secs = t
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // Lightweight RFC3339-ish formatter: split into Y-m-d H:M:S UTC. Avoids
-    // pulling in chrono just for this.
-    let (y, mo, d, h, mi, s) = ymd_hms_utc(secs);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
-}
-
-fn ymd_hms_utc(secs: u64) -> (u64, u32, u32, u32, u32, u32) {
-    let day = secs / 86_400;
-    let rem = secs % 86_400;
-    let h = (rem / 3600) as u32;
-    let mi = ((rem % 3600) / 60) as u32;
-    let s = (rem % 60) as u32;
-    // Civil-from-days (Howard Hinnant). Stable for all valid u64 epoch days.
-    let z = day as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let mo = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
-    let y = if mo <= 2 { y + 1 } else { y };
-    (y as u64, mo, d, h, mi, s)
-}
-
-fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    match action {
-        PropAction::List { task_id } => {
-            let id = ws.task(task_id.into())?.id;
-            for (k, v) in ws.properties(id)? {
-                if v.is_empty() {
-                    println!("{k}");
-                } else {
-                    println!("{k}\t{v}");
-                }
-            }
-        }
-        PropAction::Set {
-            task_id,
-            key,
-            value,
-            from_body,
-        } => {
-            let id = ws.task(task_id.into())?.id;
-            let key = match key {
-                Some(k) => k,
-                None => {
-                    let mut candidates = ws.all_property_keys()?;
-                    candidates.push(NEW_SENTINEL.to_string());
-                    let picked = fzf::select::<_, String, _>(candidates, ["--prompt=property> "])?
-                        .ok_or_else(|| errors::Error::Parse("No property selected".into()))?;
-                    if picked == NEW_SENTINEL {
-                        prompt_line("new property name: ")?
-                    } else {
-                        picked
-                    }
-                }
-            };
-            let value = match value {
-                Some(v) => v,
-                None => {
-                    let mut candidates = ws.property_values_for(&key)?;
-                    if from_body {
-                        for c in ws.body_candidates(id)? {
-                            if !candidates.contains(&c) {
-                                candidates.push(c);
-                            }
-                        }
-                    }
-                    candidates.push(NEW_SENTINEL.to_string());
-                    let picked = fzf::select::<_, String, _>(candidates, ["--prompt=value> "])?
-                        .ok_or_else(|| errors::Error::Parse("No value selected".into()))?;
-                    if picked == NEW_SENTINEL {
-                        prompt_line("new value (empty for unary): ")?
-                    } else {
-                        picked
-                    }
-                }
-            };
-            ws.set_property(id, &key, &value)?;
-            // For duplicates: if the duplicate and original are both still on
-            // the stack, prompt to drop the duplicate so they don't both keep
-            // showing up in tsk list.
-            if key == "duplicates"
-                && let Some(target) = parse_internal_link_for_cli(&value)
-            {
-                let stack = ws.read_stack()?;
-                let dup_open = stack.iter().any(|i| i.id == id);
-                let orig_open = stack.iter().any(|i| i.id == target);
-                if dup_open && orig_open {
-                    eprint!("{id} duplicates {target} and both are open. Drop {id}? [y/N] ");
-                    use std::io::Write as _;
-                    io::stderr().flush()?;
-                    let mut answer = String::new();
-                    io::stdin().read_line(&mut answer)?;
-                    if matches!(answer.trim(), "y" | "Y" | "yes") {
-                        ws.drop(workspace::TaskIdentifier::Id(id))?;
-                        eprintln!("Dropped {id}");
-                    }
-                }
-            }
-        }
-        PropAction::Unset { task_id, key } => {
-            let id = ws.task(task_id.into())?.id;
-            ws.unset_property(id, &key)?;
-        }
-        PropAction::Find { key, value } => {
-            const ANY_SENTINEL: &str = "<any>";
-            let prompt_value = key.is_none() && value.is_none();
-            let key = match key {
-                Some(k) => k,
-                None => {
-                    let candidates = ws.all_property_keys()?;
-                    fzf::select::<_, String, _>(candidates, ["--prompt=property> "])?
-                        .ok_or_else(|| errors::Error::Parse("No property selected".into()))?
-                }
-            };
-            // Value-prompt only when neither key nor value was supplied —
-            // `tsk prop find KEY` keeps its "any task with KEY set" meaning.
-            let value = match (value, prompt_value) {
-                (Some(v), _) => Some(v),
-                (None, false) => None,
-                (None, true) => {
-                    let mut candidates = ws.property_values_for(&key)?;
-                    candidates.insert(0, ANY_SENTINEL.to_string());
-                    let picked = fzf::select::<_, String, _>(candidates, ["--prompt=value> "])?;
-                    match picked.as_deref() {
-                        Some(ANY_SENTINEL) | None => None,
-                        Some(v) => Some(v.to_string()),
-                    }
-                }
-            };
-            for id in ws.find_by_property(&key, value.as_deref())? {
-                println!("{id}");
-            }
-        }
-    }
-    Ok(())
-}
-
-fn command_namespace_switch(dir: PathBuf, name: Option<String>) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    let target = match name {
-        Some(n) => n,
-        None => pick_namespace(&ws)?,
-    };
-    ws.switch_namespace(&target)?;
-    eprintln!("Switched to namespace '{target}'");
-    Ok(())
-}
-
-/// fzf-pick a namespace from the workspace's existing list, with a `<new>`
-/// sentinel for entering one that doesn't exist yet.
-fn pick_namespace(ws: &Workspace) -> Result<String> {
-    let mut candidates = ws.list_namespaces()?;
-    candidates.push(NEW_SENTINEL.to_string());
-    let picked = fzf::select::<_, String, _>(candidates, ["--prompt=namespace> "])?
-        .ok_or_else(|| errors::Error::Parse("No namespace selected".into()))?;
-    if picked == NEW_SENTINEL {
-        prompt_line("new namespace name: ")
-    } else {
-        Ok(picked)
-    }
 }
 
 fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
-        NamespaceAction::Current => {
-            println!("{}", ws.namespace());
-        }
         NamespaceAction::List => {
-            let cur = ws.namespace();
-            for ns in ws.list_namespaces()? {
-                let marker = if ns == cur { "* " } else { "  " };
-                println!("{marker}{ns}");
+            for n in ws.list_namespaces()? {
+                println!("{n}");
             }
         }
-        NamespaceAction::Switch { name } => {
-            let target = match name {
-                Some(n) => n,
-                None => pick_namespace(&ws)?,
-            };
-            ws.switch_namespace(&target)?;
-            eprintln!("Switched to namespace '{target}'");
-        }
-        NamespaceAction::Create { name } => {
-            ws.switch_namespace(&name)?;
-            eprintln!("Switched to namespace '{name}'");
-        }
-        NamespaceAction::Delete { name, yes } => {
-            let count = ws.namespace_ref_count(&name)?;
-            if count == 0 {
-                eprintln!("Namespace '{name}' has no refs.");
-                return Ok(());
-            }
-            if !yes {
-                eprint!("Namespace '{name}' has {count} refs. Delete? [y/N] ");
-                use std::io::Write as _;
-                io::stderr().flush()?;
-                let mut answer = String::new();
-                io::stdin().read_line(&mut answer)?;
-                if !matches!(answer.trim(), "y" | "Y" | "yes") {
-                    eprintln!("Aborted.");
-                    return Ok(());
-                }
-            }
-            let n = ws.delete_namespace(&name)?;
-            eprintln!("Deleted {n} refs from namespace '{name}'");
-        }
+        NamespaceAction::Current => println!("{}", ws.namespace()),
+        NamespaceAction::Switch { name } => ws.switch_namespace(&name)?,
     }
     Ok(())
 }
 
-fn command_reopen(dir: PathBuf, task_id: TaskId) -> Result<()> {
-    let workspace = Workspace::from_path(dir)?;
-    let id: TaskIdentifier = task_id.into();
-    let reopened_id = workspace.reopen(id)?;
-    eprintln!("Reopened ");
-    println!("{reopened_id}");
+fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    match action {
+        QueueAction::List => {
+            for n in ws.list_queues()? {
+                println!("{n}");
+            }
+        }
+        QueueAction::Current => println!("{}", ws.queue()),
+        QueueAction::Create { name, can_pull } => {
+            ws.create_queue(&name, Some(can_pull))?;
+            println!("Created queue '{name}' (can-pull={can_pull})");
+        }
+        QueueAction::Switch { name } => ws.switch_queue(&name)?,
+    }
     Ok(())
 }
+
+#[allow(dead_code)]
+fn _silence_unused(_w: &dyn Write, _t: Task) {}
