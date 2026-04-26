@@ -1,0 +1,3 @@
+Backfill status=open property on tasks created before auto-status landed
+
+The auto-status feature only fires for new_task. Tasks that pre-existed (e.g. tsk-5..8) carry no status property, so prop find status {open,done} won't surface them. Add a one-shot migration (or implicit backfill on first read) that sets status=open on any task with no status set, scoped to the active namespace. Skip tasks already marked done.
