@@ -590,7 +590,11 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
         }
     };
     ws.reject_inbox(&key)?;
-    println!("Rejected {key}");
+    if let Some((src, _)) = key.rsplit_once('-') {
+        println!("Rejected {key} (returned to '{src}' inbox)");
+    } else {
+        println!("Rejected {key}");
+    }
     if let Some(r) = effective_remote(remote) {
         let _ = ws.git_push(&r);
     }

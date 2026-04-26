@@ -663,10 +663,21 @@ impl Workspace {
         Ok(Id(human))
     }
 
+    /// Reject an inbox item: remove it from the active queue's inbox and
+    /// bounce it back to the sender's inbox so they see the return. The
+    /// source queue is recovered from the key (`<src>-<seq>`); the return
+    /// key is `<active>-<seq>` so each round-trip is uniquely identified.
     pub fn reject_inbox(&self, key: &str) -> Result<()> {
         let repo = self.repo()?;
-        queue::take_from_inbox(&repo, &self.queue(), key, "reject")?
+        let stable = queue::take_from_inbox(&repo, &self.queue(), key, "reject")?
             .ok_or_else(|| Error::Parse(format!("Inbox item '{key}' not found")))?;
+        if let Some((src, seq)) = key.rsplit_once('-') {
+            let cur = self.queue();
+            if src != cur {
+                let return_key = format!("{cur}-{seq}");
+                queue::add_to_inbox(&repo, src, return_key, stable, "reject-return")?;
+            }
+        }
         Ok(())
     }
 
@@ -885,6 +896,28 @@ mod test {
         assert_eq!(accepted.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn reject_returns_to_source_inbox() {
+        let (_d, ws) = fresh_workspace();
+        ws.create_queue("review", None).unwrap();
+        let t = ws.new_task("bounce me".into(), "".into()).unwrap();
+        let id = t.id;
+        let stable = t.stable.clone();
+        ws.push_task(t).unwrap();
+        let assign_key = ws
+            .assign_to_queue(TaskIdentifier::Id(id), "review")
+            .unwrap();
+        ws.switch_queue("review").unwrap();
+        ws.reject_inbox(&assign_key).unwrap();
+        let inbox_here = ws.list_inbox().unwrap();
+        assert!(inbox_here.is_empty(), "rejected item must leave receiver inbox");
+        ws.switch_queue("tsk").unwrap();
+        let returned = ws.list_inbox().unwrap();
+        assert_eq!(returned.len(), 1, "rejected item must land in sender inbox");
+        assert_eq!(returned[0].source_queue, "review");
+        assert_eq!(returned[0].stable, stable);
     }
 
     #[test]
