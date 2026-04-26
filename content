@@ -1,0 +1,6 @@
+Add task exporting and accepting
+
+The idea is other namespaces have an inbox that tasks can be sent to using `tsk export`.
+Tasks can be accepeted from these inboxes into the workspace where they become mostly
+normal tasks with a new local ID. Additional metadata is added to the "source" namespace
+and task ID. Metadata for these tasks should generally be shared, especially properties.
