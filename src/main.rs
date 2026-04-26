@@ -162,8 +162,10 @@ enum Commands {
         #[command(subcommand)]
         action: QueueAction,
     },
-    /// Switch active namespace (shorthand).
-    Switch { name: String },
+    /// Switch active namespace (shorthand). With no name, fzf-picks from
+    /// existing namespaces (plus a `<new>` sentinel for creating one on
+    /// the fly).
+    Switch { name: Option<String> },
     /// Generate shell completion.
     Completion {
         #[arg(short = 's')]
@@ -175,7 +177,9 @@ enum Commands {
 enum NamespaceAction {
     List,
     Current,
-    Switch { name: String },
+    /// Switch active namespace. With no name, fzf-picks from existing
+    /// namespaces (plus a `<new>` sentinel for creating one on the fly).
+    Switch { name: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -281,7 +285,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Reject { key, remote } => command_reject(dir, key, remote),
         Commands::Namespace { action } => command_namespace(dir, action),
         Commands::Queue { action } => command_queue(dir, action),
-        Commands::Switch { name } => Workspace::from_path(dir)?.switch_namespace(&name),
+        Commands::Switch { name } => command_namespace_switch(dir, name),
         Commands::Completion { shell } => {
             generate(shell, &mut Cli::command(), "tsk", &mut io::stdout());
             Ok(())
@@ -505,7 +509,7 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
             }
         }
         NamespaceAction::Current => println!("{}", ws.namespace()),
-        NamespaceAction::Switch { name } => ws.switch_namespace(&name)?,
+        NamespaceAction::Switch { name } => return resolve_and_switch_namespace(&ws, name),
     }
     Ok(())
 }
@@ -528,5 +532,101 @@ fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
     Ok(())
 }
 
+const NEW_NS_SENTINEL: &str = "<new>";
+
+fn command_namespace_switch(dir: PathBuf, name: Option<String>) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    resolve_and_switch_namespace(&ws, name)
+}
+
+fn resolve_and_switch_namespace(ws: &Workspace, name: Option<String>) -> Result<()> {
+    let target = match name {
+        Some(n) => n,
+        None => pick_namespace(ws)?,
+    };
+    ws.switch_namespace(&target)?;
+    println!("Switched to namespace '{target}'");
+    Ok(())
+}
+
+fn pick_namespace(ws: &Workspace) -> Result<String> {
+    let cur = ws.namespace();
+    let existing = ws.list_namespaces()?;
+    let entries = namespace_picker_entries(&existing, &cur);
+    let picked = fzf::select::<_, String, _>(entries, ["--prompt=namespace> "])?
+        .ok_or_else(|| errors::Error::Parse("No namespace selected".into()))?;
+    let picked = strip_picker_marker(&picked);
+    if picked == NEW_NS_SENTINEL {
+        let name = prompt_line("New namespace name: ")?;
+        if name.is_empty() {
+            return Err(errors::Error::Parse("Empty namespace name".into()));
+        }
+        Ok(name)
+    } else {
+        Ok(picked.to_string())
+    }
+}
+
+/// Build the fzf input lines for namespace selection: every existing
+/// namespace (active marked with `* `, others with `  `) plus a trailing
+/// `<new>` sentinel for creating one on the fly. The active namespace is
+/// always present even when no refs have been written yet.
+fn namespace_picker_entries(existing: &[String], current: &str) -> Vec<String> {
+    let mut entries: Vec<String> = existing
+        .iter()
+        .map(|n| {
+            if n == current {
+                format!("* {n}")
+            } else {
+                format!("  {n}")
+            }
+        })
+        .collect();
+    if !existing.iter().any(|n| n == current) {
+        entries.insert(0, format!("* {current}"));
+    }
+    entries.push(NEW_NS_SENTINEL.to_string());
+    entries
+}
+
+fn strip_picker_marker(s: &str) -> &str {
+    s.strip_prefix("* ").or_else(|| s.strip_prefix("  ")).unwrap_or(s)
+}
+
+fn prompt_line(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+    let mut s = String::new();
+    io::stdin().read_line(&mut s)?;
+    Ok(s.trim_end_matches(['\n', '\r']).to_string())
+}
+
 #[allow(dead_code)]
 fn _silence_unused(_w: &dyn Write, _t: Task) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picker_marks_current_and_appends_sentinel() {
+        let entries = namespace_picker_entries(
+            &["alpha".to_string(), "tsk".to_string()],
+            "tsk",
+        );
+        assert_eq!(entries, vec!["  alpha", "* tsk", "<new>"]);
+    }
+
+    #[test]
+    fn picker_includes_current_when_missing_from_list() {
+        let entries = namespace_picker_entries(&[], "tsk");
+        assert_eq!(entries, vec!["* tsk", "<new>"]);
+    }
+
+    #[test]
+    fn strip_marker_handles_all_prefixes() {
+        assert_eq!(strip_picker_marker("* tsk"), "tsk");
+        assert_eq!(strip_picker_marker("  alpha"), "alpha");
+        assert_eq!(strip_picker_marker("<new>"), "<new>");
+    }
+}
