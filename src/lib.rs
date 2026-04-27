@@ -35,6 +35,12 @@ struct Cli {
     /// Override the tsk root directory.
     #[arg(short = 'C', env = "TSK_ROOT", value_name = "DIR")]
     dir: Option<PathBuf>,
+    /// Override the active queue for this invocation only. Affects every
+    /// command that reads/writes the active queue (push, drop, swap,
+    /// rot/tor, prioritize/deprioritize, list, inbox, assign, accept,
+    /// reject, export, ...).
+    #[arg(short = 'q', long = "queue", value_name = "QUEUE", global = true)]
+    queue: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -385,6 +391,7 @@ fn auto_push_refs(ws: &Workspace, remote: Option<String>, refs: Vec<String>) {
 }
 
 fn dispatch(cli: Cli) -> Result<()> {
+    workspace::set_queue_override(cli.queue);
     let dir = match cli.dir {
         Some(d) => d,
         None => default_dir()?,

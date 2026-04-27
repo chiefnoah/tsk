@@ -14,6 +14,16 @@ use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::OnceLock;
+
+/// Process-wide override for the active queue, set once by the CLI's
+/// `-q/--queue` flag. When `Some`, `Workspace::queue()` returns this
+/// value instead of reading `<git-dir>/tsk/queue`.
+static QUEUE_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+
+pub fn set_queue_override(q: Option<String>) {
+    let _ = QUEUE_OVERRIDE.set(q);
+}
 
 #[derive(Debug)]
 pub struct ImportOutcome {
@@ -178,6 +188,9 @@ impl Workspace {
     }
 
     pub fn queue(&self) -> String {
+        if let Some(Some(q)) = QUEUE_OVERRIDE.get() {
+            return q.clone();
+        }
         self.read_selector(QUEUE_FILE, queue::DEFAULT_QUEUE)
     }
 
