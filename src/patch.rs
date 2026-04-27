@@ -247,13 +247,20 @@ pub fn import_task(repo: &Repository, mbox: &str) -> Result<ImportResult> {
             tb.insert(name.as_str(), oid, 0o100644)?;
         }
         let tree_oid = tb.write()?;
-        let sig = Signature::new(&e.author_name, &e.author_email, &e.when)?;
+        // Author = original sender (from the From: / Date: headers).
+        // Committer = local user — same shape as `git rebase`, so the
+        // history records who applied the import while preserving authorship.
+        let author = Signature::new(&e.author_name, &e.author_email, &e.when)?;
+        let committer = repo
+            .signature()
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|_| Signature::now("tsk", "tsk@local").unwrap());
         let parents: Vec<git2::Commit> = prev.into_iter().map(|o| repo.find_commit(o).unwrap()).collect();
         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
         let commit_oid = repo.commit(
             None,
-            &sig,
-            &sig,
+            &author,
+            &committer,
             &e.message,
             &repo.find_tree(tree_oid)?,
             &parent_refs,
@@ -557,6 +564,89 @@ mod test {
         let task = object::read(&dst, &res.stable).unwrap().unwrap();
         assert!(task.content.contains("From the desk"));
         assert!(task.content.contains("From another rogue"));
+    }
+
+    fn init_repo_as(p: &Path, name: &str, email: &str) -> Repository {
+        let r = Repository::init(p).unwrap();
+        let mut cfg = r.config().unwrap();
+        cfg.set_str("user.name", name).unwrap();
+        cfg.set_str("user.email", email).unwrap();
+        r
+    }
+
+    #[test]
+    fn import_preserves_author_sets_local_committer() {
+        // Alice creates → exports. Bob imports.
+        let alice_dir = tempfile::tempdir().unwrap();
+        let alice_repo = init_repo_as(alice_dir.path(), "Alice", "a@x");
+        let stable =
+            object::create(&alice_repo, &Task::new("from alice"), "create").unwrap();
+        let mbox = export_task(&alice_repo, &stable, &ExportOpts { bind: None }).unwrap();
+
+        let bob_dir = tempfile::tempdir().unwrap();
+        let bob_repo = init_repo_as(bob_dir.path(), "Bob", "b@x");
+        let res = import_task(&bob_repo, &mbox).unwrap();
+        let head = bob_repo
+            .find_reference(&res.stable.refname())
+            .unwrap()
+            .target()
+            .unwrap();
+        let commit = bob_repo.find_commit(head).unwrap();
+        assert_eq!(commit.author().name().unwrap(), "Alice");
+        assert_eq!(commit.committer().name().unwrap(), "Bob");
+    }
+
+    #[test]
+    fn rebase_style_authorship_across_import_chain() {
+        // Alice creates v1 → exports. Bob imports, edits, exports.
+        // Alice imports Bob's mbox: root commit still authored by Alice,
+        // second commit authored by Bob.
+        let alice_dir = tempfile::tempdir().unwrap();
+        let alice_repo = init_repo_as(alice_dir.path(), "Alice", "a@x");
+        let stable =
+            object::create(&alice_repo, &Task::new("from alice"), "create").unwrap();
+        let alice_mbox =
+            export_task(&alice_repo, &stable, &ExportOpts { bind: None }).unwrap();
+
+        let bob_dir = tempfile::tempdir().unwrap();
+        let bob_repo = init_repo_as(bob_dir.path(), "Bob", "b@x");
+        import_task(&bob_repo, &alice_mbox).unwrap();
+        // Bob edits — append a property without changing content (so the
+        // stable id stays the same).
+        let mut bobs_task = object::read(&bob_repo, &stable).unwrap().unwrap();
+        bobs_task
+            .properties
+            .insert("priority".into(), vec!["high".into()]);
+        object::update(&bob_repo, &stable, &bobs_task, "bob's edit").unwrap();
+        let bob_mbox = export_task(&bob_repo, &stable, &ExportOpts { bind: None }).unwrap();
+
+        // Alice imports Bob's mbox into a fresh clone. Force-overwrite is fine
+        // because the import deliberately replaces the task ref.
+        let alice2_dir = tempfile::tempdir().unwrap();
+        let alice2_repo = init_repo_as(alice2_dir.path(), "Alice", "a@x");
+        let res = import_task(&alice2_repo, &bob_mbox).unwrap();
+        let head = alice2_repo
+            .find_reference(&res.stable.refname())
+            .unwrap()
+            .target()
+            .unwrap();
+        let tip = alice2_repo.find_commit(head).unwrap();
+        assert_eq!(
+            tip.author().name().unwrap(),
+            "Bob",
+            "the edit commit's author must be Bob"
+        );
+        assert_eq!(
+            tip.committer().name().unwrap(),
+            "Alice",
+            "Alice imported, so the committer is Alice"
+        );
+        let root = tip.parent(0).unwrap();
+        assert_eq!(
+            root.author().name().unwrap(),
+            "Alice",
+            "the root commit's author must still be Alice across two hops"
+        );
     }
 
     #[test]
