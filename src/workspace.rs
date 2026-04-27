@@ -85,6 +85,7 @@ pub struct StackEntry {
 
 /// User-facing task: human id (in active namespace) + content + properties.
 /// Each property holds zero or more text values.
+#[derive(Debug)]
 pub struct Task {
     #[allow(dead_code)] // exposed for callers; constructed by workspace
     pub id: Id,
@@ -225,6 +226,21 @@ impl Workspace {
         }
     }
 
+    /// Create a task — or, when the content matches an existing task,
+    /// reopen / re-bind it instead of clobbering.
+    ///
+    /// Stable id is content-addressed (SHA-1 of the content blob), so two
+    /// `new_task` calls with the same body produce the same stable id and
+    /// would collide on the task ref. Branches:
+    ///
+    /// - ref doesn't exist → fresh create.
+    /// - ref exists, bound in active namespace, status=done → reopen
+    ///   (flip status back to `open`, return the existing human id).
+    /// - ref exists, bound in active namespace, status=open → idempotent;
+    ///   return the existing human id without touching the task tree.
+    /// - ref exists, bound in another namespace but not the active one →
+    ///   error with a hint to use `tsk share` or `tsk reopen -T`.
+    /// - ref exists, unbound everywhere → bind it in the active namespace.
     pub fn new_task(&self, title: String, body: String) -> Result<Task> {
         let repo = self.repo()?;
         let content = if body.is_empty() {
@@ -232,13 +248,75 @@ impl Workspace {
         } else {
             format!("{}\n\n{}", title.trim(), body.trim())
         };
-        let mut task_obj = TaskObj::new(content);
-        task_obj
-            .properties
-            .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
-        let stable = object::create(&repo, &task_obj, "create")?;
-        properties::reindex_task(&repo, &stable, &task_obj.properties)?;
-        let human = namespace::assign_id(&repo, &self.namespace(), stable.clone(), "assign-id")?;
+        // Compute the stable id without writing anything.
+        let content_oid = repo.blob(content.as_bytes())?;
+        let stable = StableId(content_oid.to_string());
+        let active_ns = self.namespace();
+
+        let exists = repo.find_reference(&stable.refname()).is_ok();
+        if !exists {
+            let mut task_obj = TaskObj::new(content);
+            task_obj
+                .properties
+                .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
+            let stable = object::create(&repo, &task_obj, "create")?;
+            properties::reindex_task(&repo, &stable, &task_obj.properties)?;
+            let human =
+                namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
+            return Ok(Task {
+                id: Id(human),
+                stable,
+                title: task_obj.title().to_string(),
+                body: task_obj.body().to_string(),
+                attributes: task_obj.properties,
+            });
+        }
+
+        // Ref already exists. Decide between reopen / idempotent / bind / error.
+        if let Some(human) = namespace::human_for(&repo, &active_ns, &stable)? {
+            // Bound in active namespace.
+            let mut task_obj = object::read(&repo, &stable)?
+                .ok_or_else(|| Error::Parse(format!("task {stable} content missing")))?;
+            let is_done = task_obj
+                .properties
+                .get(STATUS_KEY)
+                .map(|v| v.iter().any(|s| s == STATUS_DONE))
+                .unwrap_or(false);
+            if is_done {
+                task_obj
+                    .properties
+                    .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
+                object::update(&repo, &stable, &task_obj, "reopen")?;
+                properties::reindex_task(&repo, &stable, &task_obj.properties)?;
+            }
+            return Ok(Task {
+                id: Id(human),
+                stable,
+                title: task_obj.title().to_string(),
+                body: task_obj.body().to_string(),
+                attributes: task_obj.properties,
+            });
+        }
+
+        // Not bound here. Refuse if it lives in another namespace; otherwise bind.
+        let mut elsewhere = Vec::new();
+        for ns_name in namespace::list_names(&repo)? {
+            if ns_name == active_ns {
+                continue;
+            }
+            if let Some(h) = namespace::human_for(&repo, &ns_name, &stable)? {
+                elsewhere.push(format!("{ns_name}-{h}"));
+            }
+        }
+        if !elsewhere.is_empty() {
+            return Err(Error::Parse(format!(
+                "task with this content is already bound at {} — use `tsk share {active_ns} -T <id>` or `tsk reopen -T <id>` to bind it into '{active_ns}'",
+                elsewhere.join(", ")
+            )));
+        }
+        let task_obj = object::read(&repo, &stable)?
+            .ok_or_else(|| Error::Parse(format!("task {stable} content missing")))?;
+        let human = namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
         Ok(Task {
             id: Id(human),
             stable,
@@ -1294,6 +1372,79 @@ mod test {
         // The state files should live under <git-dir>/tsk/.
         assert!(dir.path().join(".git/tsk/namespace").exists());
         assert!(dir.path().join(".git/tsk/queue").exists());
+    }
+
+    #[test]
+    fn duplicate_content_in_active_ns_done_reopens() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws.new_task("clean kitchen".into(), "".into()).unwrap();
+        let original_id = t.id;
+        let stable = t.stable.clone();
+        ws.push_task(t).unwrap();
+        ws.drop(TaskIdentifier::Id(original_id)).unwrap();
+        // Task is now status=done. Re-creating with the same content should
+        // reopen rather than mint a new id.
+        let again = ws.new_task("clean kitchen".into(), "".into()).unwrap();
+        assert_eq!(again.id, original_id, "reopened task keeps its human id");
+        assert_eq!(again.stable, stable);
+        assert_eq!(
+            again.attributes.get(STATUS_KEY).unwrap(),
+            &vec![STATUS_OPEN.to_string()],
+            "reopen flips status back to open"
+        );
+    }
+
+    #[test]
+    fn duplicate_content_open_in_active_ns_is_idempotent() {
+        let (_d, ws) = fresh_workspace();
+        let first = ws.new_task("write report".into(), "".into()).unwrap();
+        let id = first.id;
+        ws.push_task(first).unwrap();
+        let second = ws.new_task("write report".into(), "".into()).unwrap();
+        assert_eq!(second.id, id, "same content returns the same id");
+    }
+
+    #[test]
+    fn duplicate_content_bound_only_in_other_ns_errors() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws.new_task("file taxes".into(), "".into()).unwrap();
+        let id = t.id;
+        ws.push_task(t).unwrap();
+        // Move the binding from the default `tsk` namespace into `alpha`,
+        // leaving the active `tsk` namespace without a binding.
+        ws.share(TaskIdentifier::Id(id), "alpha").unwrap();
+        // Manually unbind from `tsk` (simulating "this content lives only
+        // in another namespace").
+        let repo = ws.repo().unwrap();
+        namespace::unassign_id(&repo, "tsk", id.0, "test-unbind").unwrap();
+        // Now creating with the same content should refuse.
+        let err = ws
+            .new_task("file taxes".into(), "".into())
+            .expect_err("must error when content lives only in another ns");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("alpha-"),
+            "error should reference the foreign binding: {msg}"
+        );
+    }
+
+    #[test]
+    fn duplicate_content_unbound_everywhere_binds_in_active_ns() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws.new_task("legacy task".into(), "".into()).unwrap();
+        let id = t.id;
+        let stable = t.stable.clone();
+        ws.push_task(t).unwrap();
+        // Forcibly unbind everywhere to simulate an orphaned task ref.
+        let repo = ws.repo().unwrap();
+        namespace::unassign_id(&repo, "tsk", id.0, "test-unbind").unwrap();
+        // Same content again should re-bind into active ns with a new id.
+        let again = ws.new_task("legacy task".into(), "".into()).unwrap();
+        assert_eq!(again.stable, stable, "stable id must match the orphaned ref");
+        assert_ne!(
+            again.id, id,
+            "rebinding allocates a fresh human id from `next`"
+        );
     }
 
     #[test]
