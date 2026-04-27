@@ -143,15 +143,18 @@ fn concurrent_pushes_dont_clobber() {
         "bob's push should fail (non-fast-forward); stderr={stderr}"
     );
 
-    // After bob pulls, his local refs are overwritten with alice's state
-    // (v1 has no merge driver for refs/tsk/queues/* — that's tracked for
-    // a follow-up). The safety property we DO have is that the failed
-    // push above didn't silently win.
-    let (_, _, _) = tsk(&bob, &["git-pull"]);
+    // After bob pulls, the queue merge driver merges both sides so neither
+    // task is lost. Namespace conflict (both allocated tsk-1) auto-renumbers
+    // the local binding (tsk-12 + tsk-34).
+    tsk_ok(&bob, &["git-pull"]);
     let listed = tsk_ok(&bob, &["list"]);
     assert!(
         listed.contains("alice work"),
-        "after force-pull bob inherits alice's queue state: {listed}"
+        "alice's task must survive the merge: {listed}"
+    );
+    assert!(
+        listed.contains("bob work"),
+        "bob's task must survive the merge: {listed}"
     );
 }
 

@@ -1055,8 +1055,9 @@ impl Workspace {
         let repo = self.repo()?;
         let tasks = merge::reconcile_task_refs(&repo, remote, strategy)?;
         let namespaces = merge::reconcile_namespace_refs(&repo, remote)?;
+        let queues = merge::reconcile_queue_refs(&repo, remote)?;
         merge::fast_forward_non_task_refs(&repo, remote)?;
-        Ok(merge::PullOutcome { tasks, namespaces })
+        Ok(merge::PullOutcome { tasks, namespaces, queues })
     }
 }
 

@@ -24,8 +24,9 @@
 use crate::errors::Result;
 use crate::namespace::{self, NS_REF_PREFIX, Namespace};
 use crate::object::{self, StableId, TASK_REF_PREFIX};
+use crate::queue::{self, QUEUE_REF_PREFIX, Queue};
 use git2::{Commit, Oid, Repository};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Strategy {
@@ -60,6 +61,7 @@ pub struct Reconciliation {
 pub struct PullOutcome {
     pub tasks: Vec<Reconciliation>,
     pub namespaces: Vec<NamespaceReconciliation>,
+    pub queues: Vec<QueueReconciliation>,
 }
 
 pub const FETCH_PREFIX: &str = "refs/tsk-fetched/";
@@ -345,6 +347,172 @@ fn reconcile_namespace_one(
     }
 }
 
+/// One queue's reconciliation outcome at pull time. Currently we only
+/// surface that a non-trivial merge happened; counts/diffs could be
+/// added later if useful.
+#[derive(Debug)]
+pub struct QueueReconciliation {
+    pub name: String,
+}
+
+/// 3-way merge each queue ref against its fetched counterpart.
+///
+/// `index`: per-stable-id 3-way set merge — entries present in *base*
+/// stay only if both sides keep them; entries added on either side are
+/// included; entries removed on either side are dropped. Order is
+/// remote-first, then local additions appended.
+///
+/// `inbox`: per-key 3-way map merge. Removals on either side win;
+/// adds on either side are included; if both sides set the same new key
+/// to different stables (shouldn't happen — keys carry a per-source
+/// sequence), remote wins.
+///
+/// `can_pull`: 3-way bool. Local change wins if it differs from base;
+/// otherwise take remote.
+pub fn reconcile_queue_refs(
+    repo: &Repository,
+    remote: &str,
+) -> Result<Vec<QueueReconciliation>> {
+    let fetched = format!("{}queues/", fetched_prefix(remote));
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for r in repo.references_glob(&format!("{QUEUE_REF_PREFIX}*"))? {
+        let r = r?;
+        if let Some(n) = r.name().and_then(|n| n.strip_prefix(QUEUE_REF_PREFIX)) {
+            names.insert(n.to_string());
+        }
+    }
+    for r in repo.references_glob(&format!("{fetched}*"))? {
+        let r = r?;
+        if let Some(n) = r.name().and_then(|n| n.strip_prefix(fetched.as_str())) {
+            names.insert(n.to_string());
+        }
+    }
+    let mut out = Vec::new();
+    for name in names {
+        let local = repo
+            .find_reference(&queue::refname(&name))
+            .ok()
+            .and_then(|r| r.target());
+        let remote_oid = repo
+            .find_reference(&format!("{fetched}{name}"))
+            .ok()
+            .and_then(|r| r.target());
+        if let Some(rec) = reconcile_queue_one(repo, &name, local, remote_oid)? {
+            out.push(rec);
+        }
+    }
+    Ok(out)
+}
+
+fn reconcile_queue_one(
+    repo: &Repository,
+    name: &str,
+    local: Option<Oid>,
+    remote: Option<Oid>,
+) -> Result<Option<QueueReconciliation>> {
+    match (local, remote) {
+        (None, None) | (Some(_), None) => Ok(None),
+        (None, Some(r)) => {
+            repo.reference(&queue::refname(name), r, true, "pull-import")?;
+            Ok(None)
+        }
+        (Some(l), Some(r)) if l == r => Ok(None),
+        (Some(l), Some(r)) => {
+            if repo.graph_descendant_of(l, r).unwrap_or(false) {
+                return Ok(None);
+            }
+            if repo.graph_descendant_of(r, l).unwrap_or(false) {
+                repo.reference(&queue::refname(name), r, true, "fast-forward")?;
+                return Ok(None);
+            }
+            // No common ancestor when each clone independently rooted
+            // its queue ref; treat the base as empty in that case.
+            let base_q = match repo.merge_base(l, r).ok() {
+                Some(oid) => queue::read_at_commit(repo, name, oid)?,
+                None => Queue::new(name),
+            };
+            let local_q = queue::read_at_commit(repo, name, l)?;
+            let remote_q = queue::read_at_commit(repo, name, r)?;
+            let merged = three_way_queue_merge(&base_q, &local_q, &remote_q);
+            let tree_oid = queue::build_tree(repo, &merged)?;
+            let sig = object::signature(repo);
+            let local_commit = repo.find_commit(l)?;
+            let remote_commit = repo.find_commit(r)?;
+            let parents: Vec<&Commit> = vec![&local_commit, &remote_commit];
+            let new_oid = repo.commit(
+                None,
+                &sig,
+                &sig,
+                &format!("merge-queue {name}"),
+                &repo.find_tree(tree_oid)?,
+                &parents,
+            )?;
+            repo.reference(&queue::refname(name), new_oid, true, "merge")?;
+            Ok(Some(QueueReconciliation { name: name.to_string() }))
+        }
+    }
+}
+
+fn three_way_queue_merge(base: &Queue, local: &Queue, remote: &Queue) -> Queue {
+    let base_set: HashSet<&StableId> = base.index.iter().collect();
+    let local_set: HashSet<&StableId> = local.index.iter().collect();
+    let remote_set: HashSet<&StableId> = remote.index.iter().collect();
+    let keep: HashSet<&StableId> = base_set
+        .iter()
+        .chain(local_set.iter())
+        .chain(remote_set.iter())
+        .copied()
+        .filter(|s| {
+            let in_base = base_set.contains(*s);
+            let in_local = local_set.contains(*s);
+            let in_remote = remote_set.contains(*s);
+            // present in base → kept iff neither side removed it.
+            // not in base → added by either side, keep.
+            if in_base { in_local && in_remote } else { in_local || in_remote }
+        })
+        .collect();
+
+    let mut index = Vec::new();
+    let mut seen: HashSet<StableId> = HashSet::new();
+    for s in remote.index.iter().chain(local.index.iter()) {
+        if keep.contains(s) && seen.insert(s.clone()) {
+            index.push(s.clone());
+        }
+    }
+
+    let mut inbox: BTreeMap<String, StableId> = BTreeMap::new();
+    let all_keys: BTreeSet<&String> = base
+        .inbox
+        .keys()
+        .chain(local.inbox.keys())
+        .chain(remote.inbox.keys())
+        .collect();
+    for k in all_keys {
+        let in_base = base.inbox.contains_key(k);
+        let lv = local.inbox.get(k);
+        let rv = remote.inbox.get(k);
+        if in_base {
+            // Removal on either side wins; otherwise prefer remote on conflict.
+            if let (Some(_), Some(rv)) = (lv, rv) {
+                inbox.insert(k.clone(), rv.clone());
+            }
+        } else {
+            // New on either side; remote wins on simultaneous-add conflict.
+            if let Some(v) = rv.or(lv) {
+                inbox.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    let can_pull = if local.can_pull == base.can_pull {
+        remote.can_pull
+    } else {
+        local.can_pull
+    };
+
+    Queue { index, can_pull, inbox }
+}
+
 /// After task refs are reconciled, copy every other fetched ref
 /// (`refs/tsk-fetched/<remote>/{namespaces,queues,properties}/*`) onto its
 /// `refs/tsk/*` counterpart with force-update. Better merging for these is
@@ -359,7 +527,10 @@ pub fn fast_forward_non_task_refs(repo: &Repository, remote: &str) -> Result<()>
         let Some(rest) = name.strip_prefix(prefix.as_str()) else {
             continue;
         };
-        if rest.starts_with("tasks/") || rest.starts_with("namespaces/") {
+        if rest.starts_with("tasks/")
+            || rest.starts_with("namespaces/")
+            || rest.starts_with("queues/")
+        {
             continue;
         }
         let Some(target) = repo.find_reference(&name).ok().and_then(|r| r.target()) else {

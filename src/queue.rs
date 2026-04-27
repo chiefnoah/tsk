@@ -58,13 +58,16 @@ impl Queue {
 }
 
 pub fn read(repo: &Repository, name: &str) -> Result<Queue> {
-    let Ok(r) = repo.find_reference(&refname(name)) else {
+    let Some(target) = repo.find_reference(&refname(name)).ok().and_then(|r| r.target()) else {
         return Ok(Queue::new(name));
     };
-    let Some(target) = r.target() else {
-        return Ok(Queue::new(name));
-    };
-    let tree = repo.find_commit(target)?.tree()?;
+    read_at_commit(repo, name, target)
+}
+
+/// Read a queue from the tree of a specific commit (used by the queue
+/// merge driver to compare local and fetched-remote tips).
+pub fn read_at_commit(repo: &Repository, name: &str, commit_oid: Oid) -> Result<Queue> {
+    let tree = repo.find_commit(commit_oid)?.tree()?;
     let mut q = Queue::new(name);
     if let Some(e) = tree.get_name(INDEX_FILE) {
         let blob = e.to_object(repo)?.peel_to_blob()?;
@@ -85,15 +88,14 @@ pub fn read(repo: &Repository, name: &str) -> Result<Queue> {
             let blob = ie.to_object(repo)?.peel_to_blob()?;
             let stable = String::from_utf8_lossy(blob.content()).trim().to_string();
             if !stable.is_empty() {
-                q.inbox
-                    .insert(name.to_string(), StableId(stable));
+                q.inbox.insert(name.to_string(), StableId(stable));
             }
         }
     }
     Ok(q)
 }
 
-fn build_tree(repo: &Repository, q: &Queue) -> Result<Oid> {
+pub fn build_tree(repo: &Repository, q: &Queue) -> Result<Oid> {
     let mut tb = repo.treebuilder(None)?;
     let index_text: String = q
         .index

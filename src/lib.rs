@@ -483,6 +483,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                     );
                 }
             }
+            for qr in &outcome.queues {
+                println!("merged queue {}", qr.name);
+            }
             Ok(())
         }
         Commands::Share { target, task_id } => command_share(dir, target, task_id),
