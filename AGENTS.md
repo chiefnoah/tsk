@@ -91,7 +91,9 @@ tsk fix-up
 Local refs aren't visible to the user until pushed:
 
 ```
-tsk git-push              # push refs/tsk/* to origin (also runs after assign/reject)
+tsk remote add <name> <url>   # add a git remote + configure tsk refspecs in one step
+tsk remote set-default <name> # use this remote for git-push/pull and the auto-push paths
+tsk git-push              # push refs/tsk/* to default remote (also runs after assign/reject)
 tsk git-pull              # fetch + reconcile divergent task histories
 tsk git-pull --rebase     # replay local commits on the remote tip instead of merging
 tsk inbox                 # auto-pulls then lists pending inbox items

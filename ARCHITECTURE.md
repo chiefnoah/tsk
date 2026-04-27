@@ -28,7 +28,8 @@ classes:
 │       └── properties/<key>           # tree: { <stable-id> → blob of values }
 └── tsk/
     ├── namespace                      # active namespace (defaults to "tsk")
-    └── queue                          # active queue     (defaults to "tsk")
+    ├── queue                          # active queue     (defaults to "tsk")
+    └── remote                         # default git remote for sync (defaults to "origin")
 ```
 
 Every category except `tasks` is a tree; per-task histories are

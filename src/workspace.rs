@@ -34,6 +34,8 @@ pub struct ImportOutcome {
 
 const NAMESPACE_FILE: &str = "namespace";
 const QUEUE_FILE: &str = "queue";
+const REMOTE_FILE: &str = "remote";
+pub const DEFAULT_REMOTE: &str = "origin";
 /// Auto-managed property holding the task's lifecycle state. Set to
 /// `STATUS_OPEN` on creation and flipped to `STATUS_DONE` by [`Workspace::drop`].
 pub const STATUS_KEY: &str = "status";
@@ -204,6 +206,56 @@ impl Workspace {
         queue::validate_name(name)?;
         std::fs::write(self.path.join(QUEUE_FILE), name.as_bytes())?;
         Ok(())
+    }
+
+    /// Persist a clone-local default remote so `tsk git-push` /
+    /// `tsk git-pull` (and the auto-push paths) target it without an
+    /// explicit `<remote>` arg.
+    pub fn default_remote(&self) -> String {
+        self.read_selector(REMOTE_FILE, DEFAULT_REMOTE)
+    }
+
+    pub fn set_default_remote(&self, name: &str) -> Result<()> {
+        std::fs::write(self.path.join(REMOTE_FILE), name.as_bytes())?;
+        Ok(())
+    }
+
+    /// Wrap `git remote add` and immediately configure the tsk refspecs
+    /// on it. Idempotent on the refspec side; errors on duplicate remote.
+    pub fn git_remote_add(&self, name: &str, url: &str) -> Result<()> {
+        if !self
+            .git()
+            .args(["remote", "add", name, url])
+            .status()?
+            .success()
+        {
+            return Err(Error::Parse(format!("git remote add {name} failed")));
+        }
+        self.configure_git_remote_refspecs(name)
+    }
+
+    pub fn git_remote_remove(&self, name: &str) -> Result<()> {
+        if !self
+            .git()
+            .args(["remote", "remove", name])
+            .status()?
+            .success()
+        {
+            return Err(Error::Parse(format!("git remote remove {name} failed")));
+        }
+        Ok(())
+    }
+
+    pub fn git_remotes(&self) -> Result<Vec<String>> {
+        let out = self.git().arg("remote").output()?;
+        if !out.status.success() {
+            return Err(Error::Parse("git remote failed".into()));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect())
     }
 
     pub fn list_namespaces(&self) -> Result<Vec<String>> {

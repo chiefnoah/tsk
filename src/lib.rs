@@ -230,6 +230,11 @@ enum Commands {
         #[command(subcommand)]
         action: QueueAction,
     },
+    /// Manage git remotes that carry tsk refs.
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
     /// Switch active namespace (shorthand). With no name, fzf-picks from
     /// existing namespaces (plus a `<new>` sentinel for creating one on
     /// the fly).
@@ -318,6 +323,20 @@ enum QueueAction {
     Switch { name: String },
 }
 
+#[derive(Subcommand)]
+enum RemoteAction {
+    /// List configured git remotes (delegates to `git remote`).
+    List,
+    /// Print the active default remote (the one used when no `-R` is given).
+    Default,
+    /// Add a git remote and configure the tsk refspecs on it in one step.
+    Add { name: String, url: String },
+    /// Remove a git remote.
+    Remove { name: String },
+    /// Persist the active default remote for this clone.
+    SetDefault { name: String },
+}
+
 #[derive(Args)]
 #[group(required = true, multiple = false)]
 struct Title {
@@ -382,15 +401,15 @@ impl From<TaskId> for TaskIdentifier {
     }
 }
 
-fn effective_remote(supplied: Option<String>) -> Option<String> {
+fn effective_remote(ws: &Workspace, supplied: Option<String>) -> Option<String> {
     supplied
         .map(|s| if s.is_empty() { None } else { Some(s) })
-        .unwrap_or_else(|| Some("origin".to_string()))
+        .unwrap_or_else(|| Some(ws.default_remote()))
 }
 
 /// Scoped push (best-effort, silent on `-R ""`).
 fn auto_push_refs(ws: &Workspace, remote: Option<String>, refs: Vec<String>) {
-    if let Some(r) = effective_remote(remote) {
+    if let Some(r) = effective_remote(ws, remote) {
         let _ = ws.git_push_refs(&r, &refs);
     }
 }
@@ -454,21 +473,24 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::GitSetup { remote } => {
-            let r = remote.unwrap_or_else(|| "origin".to_string());
-            Workspace::from_path(dir)?.configure_git_remote_refspecs(&r)
+            let ws = Workspace::from_path(dir)?;
+            let r = remote.unwrap_or_else(|| ws.default_remote());
+            ws.configure_git_remote_refspecs(&r)
         }
         Commands::GitPush { remote } => {
-            let r = remote.unwrap_or_else(|| "origin".to_string());
-            Workspace::from_path(dir)?.git_push(&r)
+            let ws = Workspace::from_path(dir)?;
+            let r = remote.unwrap_or_else(|| ws.default_remote());
+            ws.git_push(&r)
         }
         Commands::GitPull { remote, rebase } => {
-            let r = remote.unwrap_or_else(|| "origin".to_string());
+            let ws = Workspace::from_path(dir)?;
+            let r = remote.unwrap_or_else(|| ws.default_remote());
             let strategy = if rebase {
                 merge::Strategy::Rebase
             } else {
                 merge::Strategy::Merge
             };
-            let outcome = Workspace::from_path(dir)?.git_pull_with_strategy(&r, strategy)?;
+            let outcome = ws.git_pull_with_strategy(&r, strategy)?;
             for rec in &outcome.tasks {
                 if !matches!(rec.kind, merge::ReconKind::Unchanged) {
                     let short = &rec.stable.0[..12.min(rec.stable.0.len())];
@@ -501,6 +523,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Prop { action } => command_prop(dir, action),
         Commands::Namespace { action } => command_namespace(dir, action),
         Commands::Queue { action } => command_queue(dir, action),
+        Commands::Remote { action } => command_remote(dir, action),
         Commands::Switch { name } => {
             resolve_and_switch_namespace(&Workspace::from_path(dir)?, name)
         }
@@ -699,7 +722,7 @@ fn command_pull(dir: PathBuf, source: String, task_id: TaskId) -> Result<()> {
 
 fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    if let Some(r) = effective_remote(remote) {
+    if let Some(r) = effective_remote(&ws, remote) {
         let refs = ws.refs_for_inbox_pull();
         let _ = ws.git_fetch_refs(&r, &refs);
     }
@@ -931,6 +954,27 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
             for entry in ws.list_namespace_tasks(&target)? {
                 println!("{}\t{}", entry.id, entry.title);
             }
+        }
+    }
+    Ok(())
+}
+
+fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    match action {
+        RemoteAction::List => print_lines(ws.git_remotes()?),
+        RemoteAction::Default => println!("{}", ws.default_remote()),
+        RemoteAction::Add { name, url } => {
+            ws.git_remote_add(&name, &url)?;
+            println!("Added remote '{name}' (refspecs configured)");
+        }
+        RemoteAction::Remove { name } => {
+            ws.git_remote_remove(&name)?;
+            println!("Removed remote '{name}'");
+        }
+        RemoteAction::SetDefault { name } => {
+            ws.set_default_remote(&name)?;
+            println!("Default remote set to '{name}'");
         }
     }
     Ok(())
