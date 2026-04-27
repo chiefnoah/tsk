@@ -1,0 +1,8 @@
+tsk gc-refs to prune empty/orphan refs
+
+Property index refs (refs/tsk/properties/<key>) and namespace refs accumulate. When the last value for a key is removed, the index ref is already deleted, but other classes of orphan refs can pile up:
+- queue refs whose index is empty and whose inbox is empty (after queue switch + drop)
+- property index refs that point at stable ids whose task ref no longer resolves (shouldn't happen but defensively)
+- namespace refs whose 'next' counter is past every binding's lifecycle
+
+Add a tsk gc-refs (or fold into tsk fix-up) that walks refs/tsk/* and drops the empty/orphan ones. Do NOT touch task object refs — preserving full task history is intentional. Print a summary of what was pruned. Idempotent.
