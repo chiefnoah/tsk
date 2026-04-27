@@ -62,7 +62,14 @@ pub fn read(repo: &Repository, name: &str) -> Result<Namespace> {
             mapping: BTreeMap::new(),
         });
     };
-    let tree = repo.find_commit(target)?.tree()?;
+    read_at_commit(repo, target)
+}
+
+/// Read a namespace from the tree of a specific commit (rather than from
+/// the active ref). Used by the namespace merge driver to compare local
+/// and fetched-remote tips.
+pub fn read_at_commit(repo: &Repository, commit_oid: Oid) -> Result<Namespace> {
+    let tree = repo.find_commit(commit_oid)?.tree()?;
     let mut ns = Namespace {
         next: 1,
         mapping: BTreeMap::new(),
@@ -91,7 +98,7 @@ pub fn read(repo: &Repository, name: &str) -> Result<Namespace> {
     Ok(ns)
 }
 
-fn build_tree(repo: &Repository, ns: &Namespace) -> Result<Oid> {
+pub fn build_tree(repo: &Repository, ns: &Namespace) -> Result<Oid> {
     let mut ids_tb = repo.treebuilder(None)?;
     for (human, stable) in &ns.mapping {
         let oid = repo.blob(stable.0.as_bytes())?;

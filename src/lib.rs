@@ -392,11 +392,19 @@ fn dispatch(cli: Cli) -> Result<()> {
             } else {
                 merge::Strategy::Merge
             };
-            let recs = Workspace::from_path(dir)?.git_pull_with_strategy(&r, strategy)?;
-            for rec in &recs {
+            let outcome = Workspace::from_path(dir)?.git_pull_with_strategy(&r, strategy)?;
+            for rec in &outcome.tasks {
                 if !matches!(rec.kind, merge::ReconKind::Unchanged) {
                     let short = &rec.stable.0[..12.min(rec.stable.0.len())];
                     println!("{:?} {short}", rec.kind);
+                }
+            }
+            for nr in &outcome.namespaces {
+                for (old, new) in &nr.renumbers {
+                    println!(
+                        "{}-{} → {}-{} (conflict with {r})",
+                        nr.namespace, old, nr.namespace, new
+                    );
                 }
             }
             Ok(())

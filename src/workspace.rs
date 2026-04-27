@@ -908,7 +908,7 @@ impl Workspace {
         &self,
         remote: &str,
         strategy: merge::Strategy,
-    ) -> Result<Vec<merge::Reconciliation>> {
+    ) -> Result<merge::PullOutcome> {
         // `--refmap=` disables the remote's configured fetch refspec so our
         // explicit refspec is the *only* one applied; otherwise git also
         // performs the configured `+refs/tsk/*:refs/tsk/*` mapping and
@@ -924,9 +924,10 @@ impl Workspace {
             return Err(Error::Parse("git fetch failed".into()));
         }
         let repo = self.repo()?;
-        let recs = merge::reconcile_task_refs(&repo, remote, strategy)?;
+        let tasks = merge::reconcile_task_refs(&repo, remote, strategy)?;
+        let namespaces = merge::reconcile_namespace_refs(&repo, remote)?;
         merge::fast_forward_non_task_refs(&repo, remote)?;
-        Ok(recs)
+        Ok(merge::PullOutcome { tasks, namespaces })
     }
 }
 

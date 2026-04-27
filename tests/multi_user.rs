@@ -348,3 +348,37 @@ fn assign_auto_push_only_targets_relevant_refs() {
         "namespace must NOT be pushed: {after}"
     );
 }
+
+#[test]
+fn namespace_collision_renumbers_local_on_pull() {
+    let (_dir, alice, bob) = setup_two_clones();
+
+    // Both clones independently allocate tsk-1 to different stable ids.
+    tsk_ok(&alice, &["push", "alice's task"]);
+    tsk_ok(&bob, &["push", "bob's task"]);
+
+    // Alice pushes first: origin's namespace now binds tsk-1 → alice-stable.
+    tsk_ok(&alice, &["git-push"]);
+
+    // Bob pulls — his local namespace had tsk-1 → bob-stable, conflict with
+    // origin's tsk-1 → alice-stable. Auto-renumber should move bob's binding
+    // to a fresh id (tsk-2) and let alice's win tsk-1.
+    let pull_out = tsk_ok(&bob, &["git-pull"]);
+    assert!(
+        pull_out.contains("tsk-1 → tsk-2") || pull_out.contains("tsk-1 \u{2192} tsk-2"),
+        "expected renumber message in pull output, got: {pull_out}"
+    );
+
+    // tsk-1 on bob's side now resolves to alice's task.
+    let show1 = tsk_ok(&bob, &["show", "-T", "tsk-1"]);
+    assert!(
+        show1.contains("alice's task"),
+        "tsk-1 must point at alice's task after pull: {show1}"
+    );
+    // bob's original task is bound at tsk-2.
+    let show2 = tsk_ok(&bob, &["show", "-T", "tsk-2"]);
+    assert!(
+        show2.contains("bob's task"),
+        "tsk-2 must point at bob's task after renumber: {show2}"
+    );
+}

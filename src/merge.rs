@@ -22,6 +22,7 @@
 //! re-run with the other strategy or hand-resolve.
 
 use crate::errors::Result;
+use crate::namespace::{self, NS_REF_PREFIX, Namespace};
 use crate::object::{StableId, TASK_REF_PREFIX};
 use git2::{Commit, Oid, Repository, Signature};
 use std::collections::BTreeSet;
@@ -53,6 +54,12 @@ pub enum ReconKind {
 pub struct Reconciliation {
     pub stable: StableId,
     pub kind: ReconKind,
+}
+
+#[derive(Debug)]
+pub struct PullOutcome {
+    pub tasks: Vec<Reconciliation>,
+    pub namespaces: Vec<NamespaceReconciliation>,
 }
 
 pub const FETCH_PREFIX: &str = "refs/tsk-fetched/";
@@ -214,6 +221,136 @@ fn signature(repo: &Repository) -> Signature<'static> {
         .unwrap_or_else(|_| Signature::now("tsk", "tsk@local").unwrap())
 }
 
+/// One namespace's reconciliation outcome at pull time.
+#[derive(Debug)]
+pub struct NamespaceReconciliation {
+    pub namespace: String,
+    /// `(old_human_id, new_human_id)` per binding that had to be moved
+    /// because the remote claimed the same id for a different stable.
+    pub renumbers: Vec<(u32, u32)>,
+}
+
+/// Three-way merge each namespace ref against its fetched counterpart.
+///
+/// On conflict (same human id mapped to different stable ids on each
+/// side), the **remote** binding keeps the id and the **local** binding
+/// is renumbered to a fresh id past `max(local.next, remote.next)`.
+/// Local-only bindings are preserved at their original id; remote-only
+/// bindings are added verbatim. The merged tree is written as a commit
+/// with two parents so future pulls can fast-forward.
+pub fn reconcile_namespace_refs(
+    repo: &Repository,
+    remote: &str,
+) -> Result<Vec<NamespaceReconciliation>> {
+    let fetched_ns = format!("{}namespaces/", fetched_prefix(remote));
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for r in repo.references_glob(&format!("{NS_REF_PREFIX}*"))? {
+        let r = r?;
+        if let Some(name) = r.name().and_then(|n| n.strip_prefix(NS_REF_PREFIX)) {
+            names.insert(name.to_string());
+        }
+    }
+    for r in repo.references_glob(&format!("{fetched_ns}*"))? {
+        let r = r?;
+        if let Some(name) = r.name().and_then(|n| n.strip_prefix(fetched_ns.as_str())) {
+            names.insert(name.to_string());
+        }
+    }
+    let mut out = Vec::new();
+    for name in names {
+        let local = repo
+            .find_reference(&namespace::refname(&name))
+            .ok()
+            .and_then(|r| r.target());
+        let remote_oid = repo
+            .find_reference(&format!("{fetched_ns}{name}"))
+            .ok()
+            .and_then(|r| r.target());
+        if let Some(rec) = reconcile_namespace_one(repo, &name, local, remote_oid)? {
+            out.push(rec);
+        }
+    }
+    Ok(out)
+}
+
+fn reconcile_namespace_one(
+    repo: &Repository,
+    name: &str,
+    local: Option<Oid>,
+    remote: Option<Oid>,
+) -> Result<Option<NamespaceReconciliation>> {
+    match (local, remote) {
+        (None, None) | (Some(_), None) => Ok(None),
+        (None, Some(r)) => {
+            repo.reference(&namespace::refname(name), r, true, "pull-import")?;
+            Ok(None)
+        }
+        (Some(l), Some(r)) if l == r => Ok(None),
+        (Some(l), Some(r)) => {
+            if repo.graph_descendant_of(l, r).unwrap_or(false) {
+                return Ok(None);
+            }
+            if repo.graph_descendant_of(r, l).unwrap_or(false) {
+                repo.reference(&namespace::refname(name), r, true, "fast-forward")?;
+                return Ok(None);
+            }
+            // Diverged: 3-way merge with remote-wins on conflicts.
+            let local_ns = namespace::read_at_commit(repo, l)?;
+            let remote_ns = namespace::read_at_commit(repo, r)?;
+            let mut merged = Namespace {
+                next: local_ns.next.max(remote_ns.next),
+                mapping: remote_ns.mapping.clone(),
+            };
+            let mut renumbers: Vec<(u32, u32)> = Vec::new();
+            for (lh, lstable) in &local_ns.mapping {
+                match remote_ns.mapping.get(lh) {
+                    Some(rstable) if rstable == lstable => {} // already in merged
+                    Some(_rstable) => {
+                        // Conflict: same id, different stable. Renumber local.
+                        let new_h = merged.next;
+                        merged.next += 1;
+                        merged.mapping.insert(new_h, lstable.clone());
+                        renumbers.push((*lh, new_h));
+                    }
+                    None => {
+                        // Local-only binding; preserve at its current id (it
+                        // can't collide because remote_ns lacks that id).
+                        merged.mapping.insert(*lh, lstable.clone());
+                    }
+                }
+            }
+            // Bump next past any human id we just placed.
+            if let Some(max_h) = merged.mapping.keys().max() {
+                merged.next = merged.next.max(max_h + 1);
+            }
+            // Write a merge commit with two parents.
+            let tree_oid = namespace::build_tree(repo, &merged)?;
+            let local_commit = repo.find_commit(l)?;
+            let remote_commit = repo.find_commit(r)?;
+            let sig = signature(repo);
+            let msg = if renumbers.is_empty() {
+                format!("merge-namespace {name}")
+            } else {
+                format!("rebase-bind {name}")
+            };
+            let parents: Vec<&Commit> = vec![&local_commit, &remote_commit];
+            let new_oid = repo.commit(
+                None,
+                &sig,
+                &sig,
+                &msg,
+                &repo.find_tree(tree_oid)?,
+                &parents,
+            )?;
+            repo.reference(&namespace::refname(name), new_oid, true, &msg)?;
+            Ok(Some(NamespaceReconciliation {
+                namespace: name.to_string(),
+                renumbers,
+            }))
+        }
+    }
+}
+
 /// After task refs are reconciled, copy every other fetched ref
 /// (`refs/tsk-fetched/<remote>/{namespaces,queues,properties}/*`) onto its
 /// `refs/tsk/*` counterpart with force-update. Better merging for these is
@@ -228,7 +365,7 @@ pub fn fast_forward_non_task_refs(repo: &Repository, remote: &str) -> Result<()>
         let Some(rest) = name.strip_prefix(prefix.as_str()) else {
             continue;
         };
-        if rest.starts_with("tasks/") {
+        if rest.starts_with("tasks/") || rest.starts_with("namespaces/") {
             continue;
         }
         let Some(target) = repo.find_reference(&name).ok().and_then(|r| r.target()) else {
