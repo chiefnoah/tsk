@@ -1,0 +1,9 @@
+Type properties as sequence-of-values; support escaped newlines
+
+Today every property is stored as a single blob with one value per line. Values can't contain newlines, and there's no schema — every key is treated as List<String>.
+
+Two changes:
+1. Replace the line-split storage with a length-prefixed or escape-based encoding so values may contain any bytes (newlines included). Candidate format inside the blob: each value preceded by a 'size: N\n' header, mirroring the patch wire format. Or simpler: backslash-escape (\n, \\) per value, one value per line.
+2. Surface a value-typing layer at the API boundary (workspace::Property): variants for Text, Sequence<Text>, Date, TaskRef, Enum<...>. The on-disk format stays bytes; the type lives in a per-key schema (refs/tsk/schemas/<key> or in-tree). prop set/add/find validate against the declared type at write/query time.
+
+Migration: tsk fix-up converts existing line-split blobs into the new format; the new parser still reads old blobs (treats each line as a value). No data loss.
