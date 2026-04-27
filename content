@@ -1,0 +1,5 @@
+Multi-task export
+
+tsk export today takes one -T and emits one task's mbox. Extend it to accept multiple -T flags or a property filter (e.g. --where status=open) and emit a concatenated mbox containing every selected task's commit chain. Importer already handles entry-by-entry parsing, but verify it picks the right boundaries when consecutive tasks have different X-Tsk-Stable-Ids (group by stable id, write each ref once after its last entry).
+
+Add a 'X-Tsk-Task-Boundary: <stable-id>' header on the first entry of each task to make grouping unambiguous. Also support 'tsk export --all' for a full backup of the active namespace.
