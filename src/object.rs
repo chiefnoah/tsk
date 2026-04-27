@@ -5,8 +5,10 @@
 //!
 //! Tree layout for a task at any commit:
 //!   content     → blob: full task body, first line is the title
-//!   title       → blob: cached title (optional; canonical title is content's first line)
 //!   <prop-key>  → blob: property value (one file per property)
+//!
+//! Older trees may also contain a `title` blob (a cache of content's first
+//! line). It's ignored on read and silently dropped on the next write.
 
 use crate::errors::Result;
 use crate::propvalue;
@@ -76,13 +78,10 @@ pub(crate) fn signature(repo: &Repository) -> Signature<'static> {
 fn build_tree(
     repo: &Repository,
     content_oid: Oid,
-    title: &str,
     properties: &BTreeMap<String, Vec<String>>,
 ) -> Result<Oid> {
     let mut tb = repo.treebuilder(None)?;
     tb.insert(CONTENT_FILE, content_oid, 0o100644)?;
-    let title_oid = repo.blob(title.as_bytes())?;
-    tb.insert(TITLE_FILE, title_oid, 0o100644)?;
     for (k, values) in properties {
         if k == CONTENT_FILE || k == TITLE_FILE {
             continue;
@@ -98,7 +97,7 @@ fn build_tree(
 pub fn create(repo: &Repository, task: &Task, message: &str) -> Result<StableId> {
     let content_oid = repo.blob(task.content.as_bytes())?;
     let stable = StableId(content_oid.to_string());
-    let tree_oid = build_tree(repo, content_oid, task.title(), &task.properties)?;
+    let tree_oid = build_tree(repo, content_oid, &task.properties)?;
     let sig = signature(repo);
     let commit = repo.commit(
         None,
@@ -117,7 +116,7 @@ pub fn create(repo: &Repository, task: &Task, message: &str) -> Result<StableId>
 /// parent's (idempotent no-op).
 pub fn update(repo: &Repository, id: &StableId, task: &Task, message: &str) -> Result<bool> {
     let content_oid = repo.blob(task.content.as_bytes())?;
-    let tree_oid = build_tree(repo, content_oid, task.title(), &task.properties)?;
+    let tree_oid = build_tree(repo, content_oid, &task.properties)?;
     let parent = repo
         .find_reference(&id.refname())
         .ok()
