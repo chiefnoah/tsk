@@ -112,9 +112,10 @@ pub fn create(repo: &Repository, task: &Task, message: &str) -> Result<StableId>
     Ok(stable)
 }
 
-/// Append a new commit to a task's history. No-op when the resulting tree
-/// matches the parent's tree (idempotent saves).
-pub fn update(repo: &Repository, id: &StableId, task: &Task, message: &str) -> Result<()> {
+/// Append a new commit to a task's history. Returns `true` if a commit
+/// was actually written; `false` when the resulting tree matches the
+/// parent's (idempotent no-op).
+pub fn update(repo: &Repository, id: &StableId, task: &Task, message: &str) -> Result<bool> {
     let content_oid = repo.blob(task.content.as_bytes())?;
     let tree_oid = build_tree(repo, content_oid, task.title(), &task.properties)?;
     let parent = repo
@@ -125,7 +126,7 @@ pub fn update(repo: &Repository, id: &StableId, task: &Task, message: &str) -> R
     if let Some(p) = &parent
         && p.tree_id() == tree_oid
     {
-        return Ok(());
+        return Ok(false);
     }
     let sig = signature(repo);
     let parents: Vec<&git2::Commit> = parent.iter().collect();
@@ -138,7 +139,7 @@ pub fn update(repo: &Repository, id: &StableId, task: &Task, message: &str) -> R
         &parents,
     )?;
     repo.reference(&id.refname(), commit, true, message)?;
-    Ok(())
+    Ok(true)
 }
 
 pub fn read(repo: &Repository, id: &StableId) -> Result<Option<Task>> {

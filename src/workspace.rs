@@ -328,7 +328,10 @@ impl Workspace {
         Ok(Self::make_task(id, stable, obj))
     }
 
-    pub fn save_task(&self, task: &Task) -> Result<()> {
+    /// Persist any in-memory edits to a task. Returns `true` when the
+    /// underlying `object::update` actually wrote a new commit (i.e. the
+    /// resulting tree differs from the current tip); `false` on a no-op.
+    pub fn save_task(&self, task: &Task) -> Result<bool> {
         let repo = self.repo()?;
         let content = if task.body.is_empty() {
             task.title.trim().to_string()
@@ -339,9 +342,9 @@ impl Workspace {
             content,
             properties: task.attributes.clone(),
         };
-        object::update(&repo, &task.stable, &task_obj, "edit")?;
+        let wrote = object::update(&repo, &task.stable, &task_obj, "edit")?;
         properties::reindex_task(&repo, &task.stable, &task.attributes)?;
-        Ok(())
+        Ok(wrote)
     }
 
     /// Append a value to a property on a task. If the value is already
@@ -357,7 +360,8 @@ impl Workspace {
         if !entry.iter().any(|v| v == value) {
             entry.push(value.to_string());
         }
-        self.save_task(&task)
+        self.save_task(&task)?;
+        Ok(())
     }
 
     /// Replace the entire value list for a property.
@@ -373,7 +377,8 @@ impl Workspace {
         } else {
             task.attributes.insert(key.to_string(), values);
         }
-        self.save_task(&task)
+        self.save_task(&task)?;
+        Ok(())
     }
 
     /// Remove a single value from a property, or the whole property if
@@ -398,7 +403,8 @@ impl Workspace {
                 }
             }
         }
-        self.save_task(&task)
+        self.save_task(&task)?;
+        Ok(())
     }
 
     pub fn property_keys(&self) -> Result<Vec<String>> {
@@ -580,25 +586,14 @@ impl Workspace {
 
     /// Re-save every task in the active namespace whose property blobs are
     /// in the legacy line-split encoding, rewriting them as size-prefixed.
-    /// Returns the number of tasks rewritten. Idempotent — already-migrated
-    /// tasks have a tree that matches the rewrite, so `object::update`
-    /// no-ops for them.
+    /// Returns the number of tasks rewritten. Idempotent — `save_task`
+    /// no-ops on already-migrated tasks.
     pub fn migrate_property_encoding(&self) -> Result<usize> {
-        let repo = self.repo()?;
-        let ns = namespace::read(&repo, &self.namespace())?;
-        let mut rewritten = 0usize;
-        for (human, _stable) in ns.mapping.iter() {
+        let ns = namespace::read(&self.repo()?, &self.namespace())?;
+        let mut rewritten = 0;
+        for human in ns.mapping.keys() {
             let task = self.task(TaskIdentifier::Id(Id(*human)))?;
-            let head_before = repo
-                .find_reference(&task.stable.refname())
-                .ok()
-                .and_then(|r| r.target());
-            self.save_task(&task)?;
-            let head_after = repo
-                .find_reference(&task.stable.refname())
-                .ok()
-                .and_then(|r| r.target());
-            if head_before != head_after {
+            if self.save_task(&task)? {
                 rewritten += 1;
             }
         }
