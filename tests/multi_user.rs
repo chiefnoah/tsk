@@ -309,3 +309,42 @@ fn divergent_task_edits_rebase_on_pull() {
     assert!(listing.contains("priority\thigh"), "alice's edit lost: {listing}");
     assert!(listing.contains("owner\tbob"), "bob's edit lost: {listing}");
 }
+
+#[test]
+fn assign_auto_push_only_targets_relevant_refs() {
+    let (dir, alice, _bob) = setup_two_clones();
+    let origin = dir.path().join("origin.git");
+
+    // Alice creates a review queue and a task, neither pushed yet.
+    tsk_ok(&alice, &["queue", "create", "review"]);
+    tsk_ok(&alice, &["push", "task-to-assign"]);
+
+    // Capture origin's refs before the auto-push.
+    let before = git(&origin, &["for-each-ref", "refs/tsk/"]);
+    assert!(
+        !before.contains("refs/tsk/"),
+        "origin should be empty: {before}"
+    );
+
+    // Assign auto-pushes to origin (the default).
+    tsk_ok(&alice, &["assign", "review", "-r", "0"]);
+
+    // Origin should have *only* the target queue, the task ref, and any
+    // property indices referencing that task. The active queue (tsk) and
+    // namespace must NOT have been pushed.
+    let after = git(&origin, &["for-each-ref", "refs/tsk/"]);
+    assert!(
+        after.contains("refs/tsk/queues/review"),
+        "review queue must be pushed: {after}"
+    );
+    let task_ref_present = after.lines().any(|l| l.contains("refs/tsk/tasks/"));
+    assert!(task_ref_present, "task ref must be pushed: {after}");
+    assert!(
+        !after.contains("refs/tsk/queues/tsk"),
+        "active queue must NOT be pushed: {after}"
+    );
+    assert!(
+        !after.contains("refs/tsk/namespaces/"),
+        "namespace must NOT be pushed: {after}"
+    );
+}

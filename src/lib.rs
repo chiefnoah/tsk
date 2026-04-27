@@ -181,7 +181,12 @@ enum Commands {
         remote: Option<String>,
     },
     /// Accept an inbox item by key (no key = first item).
-    Accept { key: Option<String> },
+    Accept {
+        key: Option<String>,
+        /// Auto-push refs to this remote after accepting. Empty string skips. Default: origin.
+        #[arg(short = 'R')]
+        remote: Option<String>,
+    },
     /// Reject an inbox item by key (no key = first item).
     Reject {
         key: Option<String>,
@@ -401,7 +406,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         } => command_assign(dir, target, task_id, remote),
         Commands::Pull { source, task_id } => command_pull(dir, source, task_id),
         Commands::Inbox { remote } => command_inbox(dir, remote),
-        Commands::Accept { key } => command_accept(dir, key),
+        Commands::Accept { key, remote } => command_accept(dir, key, remote),
         Commands::Reject { key, remote } => command_reject(dir, key, remote),
         Commands::Prop { action } => command_prop(dir, action),
         Commands::Namespace { action } => command_namespace(dir, action),
@@ -563,10 +568,11 @@ fn command_assign(
     remote: Option<String>,
 ) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    let key = ws.assign_to_queue(task_id.into(), &target)?;
+    let (key, stable) = ws.assign_to_queue(task_id.into(), &target)?;
     println!("Assigned to {target} as {key}");
     if let Some(r) = effective_remote(remote) {
-        let _ = ws.git_push(&r);
+        let refs = ws.refs_for_assign_out(&target, &stable)?;
+        let _ = ws.git_push_refs(&r, &refs);
     }
     Ok(())
 }
@@ -585,7 +591,8 @@ fn command_pull(dir: PathBuf, source: String, task_id: TaskId) -> Result<()> {
 fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     if let Some(r) = effective_remote(remote) {
-        let _ = ws.git_pull(&r);
+        let refs = ws.refs_for_inbox_pull();
+        let _ = ws.git_fetch_refs(&r, &refs);
     }
     let inbox = ws.list_inbox()?;
     if inbox.is_empty() {
@@ -598,7 +605,7 @@ fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn command_accept(dir: PathBuf, key: Option<String>) -> Result<()> {
+fn command_accept(dir: PathBuf, key: Option<String>, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let key = match key {
         Some(k) => k,
@@ -612,6 +619,10 @@ fn command_accept(dir: PathBuf, key: Option<String>) -> Result<()> {
     };
     let id = ws.accept_inbox(&key)?;
     println!("Accepted as {id}");
+    if let Some(r) = effective_remote(remote) {
+        let refs = ws.refs_for_accept_inbox();
+        let _ = ws.git_push_refs(&r, &refs);
+    }
     Ok(())
 }
 
@@ -634,7 +645,11 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
         println!("Rejected {key}");
     }
     if let Some(r) = effective_remote(remote) {
-        let _ = ws.git_push(&r);
+        let source = key.rsplit_once('-').map(|(s, _)| s.to_string());
+        if let Some(src) = source {
+            let refs = ws.refs_for_reject_inbox(&src);
+            let _ = ws.git_push_refs(&r, &refs);
+        }
     }
     Ok(())
 }

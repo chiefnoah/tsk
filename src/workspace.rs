@@ -643,7 +643,7 @@ impl Workspace {
         &self,
         identifier: TaskIdentifier,
         target_queue: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, StableId)> {
         let cur = self.queue();
         if target_queue == cur {
             return Err(Error::Parse(
@@ -656,7 +656,7 @@ impl Workspace {
         let key = queue::inbox_key(&cur, id.0);
         queue::add_to_inbox(&repo, target_queue, key.clone(), stable.clone(), "assign")?;
         queue::remove(&repo, &cur, &stable, "assigned-out")?;
-        Ok(key)
+        Ok((key, stable))
     }
 
     pub fn list_inbox(&self) -> Result<Vec<InboxItem>> {
@@ -784,9 +784,93 @@ impl Workspace {
         Ok(())
     }
 
+    #[allow(dead_code)] // CLI calls git_pull_with_strategy directly; kept for API symmetry.
     pub fn git_pull(&self, remote: &str) -> Result<()> {
         self.git_pull_with_strategy(remote, merge::Strategy::default())?;
         Ok(())
+    }
+
+    /// Push only the named refs to `remote`. Each ref is sent as its own
+    /// `<ref>:<ref>` refspec (no force) so the operation refuses
+    /// non-fast-forward updates the same way `git_push` does.
+    pub fn git_push_refs(&self, remote: &str, refs: &[String]) -> Result<()> {
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("--git-dir").arg(&self.git_dir).args(["push", remote]);
+        for r in refs {
+            cmd.arg(format!("{r}:{r}"));
+        }
+        let s = cmd.status()?;
+        if !s.success() {
+            return Err(Error::Parse("git push failed".into()));
+        }
+        Ok(())
+    }
+
+    /// Fetch only the named refs from `remote`, force-updating each. Used
+    /// by paths (e.g. `tsk inbox`) that need a single ref refreshed without
+    /// the wire cost of a full `git_pull`.
+    pub fn git_fetch_refs(&self, remote: &str, refs: &[String]) -> Result<()> {
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("--git-dir")
+            .arg(&self.git_dir)
+            .args(["fetch", "--refmap=", remote]);
+        for r in refs {
+            cmd.arg(format!("+{r}:{r}"));
+        }
+        let s = cmd.status()?;
+        if !s.success() {
+            return Err(Error::Parse("git fetch failed".into()));
+        }
+        Ok(())
+    }
+
+    /// Refs to push after `assign_to_queue`: the target queue (gained an
+    /// inbox entry), the task ref itself (so the receiver can read the
+    /// body), and every property index that already references this task.
+    pub fn refs_for_assign_out(
+        &self,
+        target_queue: &str,
+        stable: &StableId,
+    ) -> Result<Vec<String>> {
+        let repo = self.repo()?;
+        let mut refs = vec![queue::refname(target_queue), stable.refname()];
+        for key in properties::list_keys(&repo)? {
+            let entries = properties::read(&repo, &key)?;
+            if entries.contains_key(stable) {
+                refs.push(properties::refname(&key));
+            }
+        }
+        Ok(refs)
+    }
+
+    /// Refs to push after `accept_inbox`: the active queue (entry moved
+    /// from inbox to index) and the active namespace (the receiver may have
+    /// allocated a new human id binding the accepted task).
+    pub fn refs_for_accept_inbox(&self) -> Vec<String> {
+        vec![
+            queue::refname(&self.queue()),
+            namespace::refname(&self.namespace()),
+        ]
+    }
+
+    /// Refs to push after `reject_inbox`: the active queue (entry left the
+    /// inbox) and the source queue (entry was bounced back into its inbox).
+    pub fn refs_for_reject_inbox(&self, source_queue: &str) -> Vec<String> {
+        vec![
+            queue::refname(&self.queue()),
+            queue::refname(source_queue),
+        ]
+    }
+
+    /// Refs to fetch before listing the inbox: just the active queue.
+    pub fn refs_for_inbox_pull(&self) -> Vec<String> {
+        vec![queue::refname(&self.queue())]
     }
 
     /// Fetch into a non-clobbering shadow namespace, then reconcile each
@@ -940,7 +1024,8 @@ mod test {
         ws.push_task(t).unwrap();
         let key = ws
             .assign_to_queue(TaskIdentifier::Id(id), "review")
-            .unwrap();
+            .unwrap()
+            .0;
         let stack = ws.read_stack().unwrap();
         assert!(stack.is_empty());
         ws.switch_queue("review").unwrap();
@@ -963,7 +1048,8 @@ mod test {
         ws.push_task(t).unwrap();
         let assign_key = ws
             .assign_to_queue(TaskIdentifier::Id(id), "review")
-            .unwrap();
+            .unwrap()
+            .0;
         ws.switch_queue("review").unwrap();
         ws.reject_inbox(&assign_key).unwrap();
         let inbox_here = ws.list_inbox().unwrap();
