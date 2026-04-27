@@ -325,15 +325,11 @@ enum QueueAction {
 
 #[derive(Subcommand)]
 enum RemoteAction {
-    /// List configured git remotes (delegates to `git remote`).
-    List,
     /// Print the active default remote (the one used when no `-R` is given).
     Default,
-    /// Add a git remote and configure the tsk refspecs on it in one step.
-    Add { name: String, url: String },
-    /// Remove a git remote.
-    Remove { name: String },
-    /// Persist the active default remote for this clone.
+    /// Persist the active default remote for this clone. Must already be
+    /// a git remote — use `git remote add ...` (and `tsk git-setup -r
+    /// <name>` to configure refspecs) first.
     SetDefault { name: String },
 }
 
@@ -962,16 +958,7 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
 fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
-        RemoteAction::List => print_lines(ws.git_remotes()?),
         RemoteAction::Default => println!("{}", ws.default_remote()),
-        RemoteAction::Add { name, url } => {
-            ws.git_remote_add(&name, &url)?;
-            println!("Added remote '{name}' (refspecs configured)");
-        }
-        RemoteAction::Remove { name } => {
-            ws.git_remote_remove(&name)?;
-            println!("Removed remote '{name}'");
-        }
         RemoteAction::SetDefault { name } => {
             ws.set_default_remote(&name)?;
             println!("Default remote set to '{name}'");

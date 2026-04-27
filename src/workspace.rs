@@ -215,34 +215,22 @@ impl Workspace {
         self.read_selector(REMOTE_FILE, DEFAULT_REMOTE)
     }
 
+    /// Persist `name` as the default remote. Errors if `name` isn't a
+    /// configured git remote — tsk only ever uses remotes the host repo
+    /// already knows about.
     pub fn set_default_remote(&self, name: &str) -> Result<()> {
+        let known = self.git_remotes()?;
+        if !known.iter().any(|r| r == name) {
+            return Err(Error::Parse(format!(
+                "no such git remote '{name}'; configured: {}",
+                if known.is_empty() {
+                    "<none>".into()
+                } else {
+                    known.join(", ")
+                }
+            )));
+        }
         std::fs::write(self.path.join(REMOTE_FILE), name.as_bytes())?;
-        Ok(())
-    }
-
-    /// Wrap `git remote add` and immediately configure the tsk refspecs
-    /// on it. Idempotent on the refspec side; errors on duplicate remote.
-    pub fn git_remote_add(&self, name: &str, url: &str) -> Result<()> {
-        if !self
-            .git()
-            .args(["remote", "add", name, url])
-            .status()?
-            .success()
-        {
-            return Err(Error::Parse(format!("git remote add {name} failed")));
-        }
-        self.configure_git_remote_refspecs(name)
-    }
-
-    pub fn git_remote_remove(&self, name: &str) -> Result<()> {
-        if !self
-            .git()
-            .args(["remote", "remove", name])
-            .status()?
-            .success()
-        {
-            return Err(Error::Parse(format!("git remote remove {name} failed")));
-        }
         Ok(())
     }
 
