@@ -1,0 +1,6 @@
+Retain task authorship across export/import like git rebase
+
+tsk import currently uses Signature::new with the parsed From: header for *both* author and committer. That's good — author is preserved. But for tasks created locally on the receiver after an import, and for re-exports of imported tasks, we should mirror git's rebase behavior: original author retained, committer updated to the current user. Audit:
+- patch::import_task: ensure author is from From: header, committer is the local git signature (currently both come from the parsed signature).
+- object::update on a re-imported task: must keep the imported commit's author when the local user touches it (this is git's default for fresh commits — confirm we're not accidentally overwriting).
+- Round-trip test: A creates, exports; B imports, edits, exports; A imports B's edit and verifies original author is still A on the root commit and B on the edit commit.
