@@ -1,11 +1,9 @@
 //! High-level workspace API. Orchestrates [`object`], [`namespace`], and
 //! [`queue`] to back the CLI commands.
 //!
-//! On disk the workspace is just a `.tsk/` marker directory inside a git
-//! repository. `.tsk/namespace` and `.tsk/queue` select the user's active
-//! namespace and queue (defaults: `tsk` / `tsk`).
-
-#![allow(dead_code)]
+//! Per-clone state lives under `<git-dir>/tsk/` (not tracked, not pushed).
+//! Two files select the active namespace and queue (defaults: `tsk` / `tsk`):
+//! `<git-dir>/tsk/namespace` and `<git-dir>/tsk/queue`.
 
 use crate::errors::{Error, Result};
 use crate::object::{self, StableId, Task as TaskObj};
@@ -87,7 +85,9 @@ pub struct StackEntry {
 /// User-facing task: human id (in active namespace) + content + properties.
 /// Each property holds zero or more text values.
 pub struct Task {
+    #[allow(dead_code)] // exposed for callers; constructed by workspace
     pub id: Id,
+    #[allow(dead_code)] // exposed for callers; constructed by workspace
     pub stable: StableId,
     pub title: String,
     pub body: String,
@@ -112,6 +112,7 @@ pub struct LogCommit {
 pub struct InboxItem {
     pub key: String,
     pub source_queue: String,
+    #[allow(dead_code)] // exposed for callers; constructed by workspace
     pub stable: StableId,
     pub title: String,
 }
@@ -133,21 +134,6 @@ impl Workspace {
             .ok_or_else(|| Error::Parse("tsk requires an enclosing git repository".into()))?;
         let state_dir = git_dir.join(STATE_DIR);
         std::fs::create_dir_all(&state_dir)?;
-        // Lift any pre-existing selectors out of a legacy `.tsk/` directory
-        // *before* writing defaults, so the migrated values win.
-        if let Some(workdir) = git_dir.parent() {
-            let legacy = workdir.join(".tsk");
-            if legacy.is_dir() {
-                for name in [NAMESPACE_FILE, QUEUE_FILE] {
-                    let src = legacy.join(name);
-                    let dst = state_dir.join(name);
-                    if src.exists() && !dst.exists() {
-                        let _ = std::fs::copy(&src, &dst);
-                    }
-                }
-                let _ = std::fs::remove_dir_all(&legacy);
-            }
-        }
         let ns = state_dir.join(NAMESPACE_FILE);
         if !ns.exists() {
             std::fs::write(&ns, namespace::DEFAULT_NS.as_bytes())?;
@@ -1146,23 +1132,6 @@ mod test {
         // The state files should live under <git-dir>/tsk/.
         assert!(dir.path().join(".git/tsk/namespace").exists());
         assert!(dir.path().join(".git/tsk/queue").exists());
-    }
-
-    #[test]
-    fn legacy_dot_tsk_directory_is_migrated_and_removed() {
-        let dir = tempfile::tempdir().unwrap();
-        run_git_init(dir.path());
-        // Simulate an old workspace with a tracked `.tsk/namespace` already.
-        let legacy = dir.path().join(".tsk");
-        std::fs::create_dir(&legacy).unwrap();
-        std::fs::write(legacy.join("namespace"), b"alpha").unwrap();
-        std::fs::write(legacy.join("queue"), b"review").unwrap();
-
-        Workspace::init(dir.path().to_path_buf()).unwrap();
-        let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
-        assert_eq!(ws.namespace(), "alpha", "legacy namespace must migrate");
-        assert_eq!(ws.queue(), "review", "legacy queue must migrate");
-        assert!(!legacy.exists(), "legacy .tsk/ must be removed");
     }
 
     #[test]

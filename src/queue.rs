@@ -6,7 +6,7 @@
 //!   inbox/<src>-<n> → blob: stable id of a task assigned by queue <src>
 //!
 //! Queues are pushed/shared (refspec `refs/tsk/*`). The active queue per-user
-//! is selected by the `.tsk/queue` file.
+//! is selected by `<git-dir>/tsk/queue`.
 
 use crate::errors::{Error, Result};
 use crate::object::StableId;
