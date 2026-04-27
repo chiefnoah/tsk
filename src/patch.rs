@@ -20,6 +20,37 @@ const MBOX_DATE: &str = "Mon Sep 17 00:00:00 2001";
 const TREE_DELIM: &str = "---tsk-tree---";
 const END_DELIM: &str = "---end---";
 
+/// Standard mbox `From `-mangling: any line matching `^>*From ` gets one
+/// extra `>` on export so a strict mbox reader can't mistake it for an
+/// entry separator. Inverse on import.
+fn mangle_from(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for line in s.split_inclusive('\n') {
+        let arrows = line.bytes().take_while(|b| *b == b'>').count();
+        if line.len() >= arrows + 5 && &line.as_bytes()[arrows..arrows + 5] == b"From " {
+            out.push('>');
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+fn unmangle_from(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for line in s.split_inclusive('\n') {
+        let arrows = line.bytes().take_while(|b| *b == b'>').count();
+        if arrows >= 1
+            && line.len() >= arrows + 5
+            && &line.as_bytes()[arrows..arrows + 5] == b"From "
+        {
+            out.push_str(&line[1..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 pub struct ExportOpts {
     /// If set, embed `X-Tsk-Namespace: <ns>-<human>` on the root entry so
     /// the recipient can opt in to binding the task into their namespace.
@@ -115,8 +146,9 @@ fn write_entry(
         writeln!(out, "X-Tsk-Namespace: {ns}-{human}").unwrap();
     }
     writeln!(out).unwrap();
-    out.push_str(message);
-    if !message.ends_with('\n') {
+    let mangled_msg = mangle_from(message);
+    out.push_str(&mangled_msg);
+    if !mangled_msg.ends_with('\n') {
         out.push('\n');
     }
     writeln!(out).unwrap();
@@ -131,11 +163,14 @@ fn write_entry(
         }
         let blob = entry.to_object(repo)?.peel_to_blob()?;
         let bytes = blob.content();
+        let as_str =
+            std::str::from_utf8(bytes).map_err(|e| Error::Parse(e.to_string()))?;
+        let mangled = mangle_from(as_str);
         writeln!(out, "file: {name}").unwrap();
-        writeln!(out, "size: {}", bytes.len()).unwrap();
-        // Bytes verbatim. They may contain newlines or arbitrary text; size
-        // is the authoritative delimiter.
-        out.push_str(std::str::from_utf8(bytes).map_err(|e| Error::Parse(e.to_string()))?);
+        writeln!(out, "size: {}", mangled.len()).unwrap();
+        // Mangled bytes; size counts post-mangling. Importer reads `size`
+        // bytes verbatim then runs the inverse unmangle.
+        out.push_str(&mangled);
         out.push('\n');
     }
     writeln!(out, "{END_DELIM}").unwrap();
@@ -327,7 +362,7 @@ fn parse_entry(chunk: &str) -> Result<Entry> {
     let message = if message.trim().is_empty() {
         subject
     } else {
-        message.trim_end_matches('\n').to_string()
+        unmangle_from(message.trim_end_matches('\n'))
     };
     // Parse file blocks until END_DELIM.
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -366,7 +401,9 @@ fn parse_entry(chunk: &str) -> Result<Entry> {
         if rest.len() < size + 1 {
             return Err(Error::Parse("truncated file body".into()));
         }
-        let bytes = rest[..size].to_vec();
+        let mangled = std::str::from_utf8(&rest[..size])
+            .map_err(|e| Error::Parse(e.to_string()))?;
+        let bytes = unmangle_from(mangled).into_bytes();
         // Trailing \n separator (not part of size).
         if rest[size] != b'\n' {
             return Err(Error::Parse("missing newline after file body".into()));
@@ -474,6 +511,52 @@ mod test {
             msg.contains("stable id verification failed"),
             "expected verification error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn from_mangling_round_trip() {
+        // Content has both a bare `From ` line and an already-quoted one.
+        let s = "preamble\nFrom the desk of...\n>From me\nbody\n";
+        let mangled = mangle_from(s);
+        assert_eq!(
+            mangled,
+            "preamble\n>From the desk of...\n>>From me\nbody\n",
+            "every ^>*From  line gets one extra '>'",
+        );
+        assert_eq!(unmangle_from(&mangled), s);
+    }
+
+    #[test]
+    fn export_survives_strict_mbox_split() {
+        // A naive mbox parser splits entries on `\n` followed by `From `.
+        // Confirm the export only contains exactly one such boundary per
+        // commit, no matter what's in the body.
+        let dir = tempfile::tempdir().unwrap();
+        let src = init_repo(dir.path());
+        let stable = object::create(
+            &src,
+            &Task::new("evil\n\nFrom the desk of darth vader\nFrom another rogue line"),
+            "create",
+        )
+        .unwrap();
+        let mbox = export_task(&src, &stable, &ExportOpts { bind: None }).unwrap();
+
+        // Count `\nFrom ` occurrences (real entry boundaries). For our
+        // single-commit export there should be exactly zero (the `From `
+        // separator at the very start of the mbox isn't preceded by `\n`).
+        let interior_boundaries = mbox.match_indices("\nFrom ").count();
+        assert_eq!(
+            interior_boundaries, 0,
+            "no spurious entry boundaries should appear in the body: {mbox}"
+        );
+
+        // And the round-trip still reconstructs the original content.
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst = init_repo(dst_dir.path());
+        let res = import_task(&dst, &mbox).unwrap();
+        let task = object::read(&dst, &res.stable).unwrap().unwrap();
+        assert!(task.content.contains("From the desk"));
+        assert!(task.content.contains("From another rogue"));
     }
 
     #[test]
