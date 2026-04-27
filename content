@@ -1,0 +1,32 @@
+tsk export / tsk import: mbox-format patch series for offline transfer
+
+Replaces the original 'tsk bundle' idea. tsk owns both ends, so we do not need git am — but we keep the wire format byte-compatible with git's mbox so it survives standard mail tooling.
+
+Format (per task, one mbox file or one --stdout stream):
+- Standard mbox 'From <commit-sha> ...' separator per commit in the task's chain.
+- RFC-822 headers including:
+  - From, Date, Subject: [PATCH tsk] <commit summary>
+  - X-Tsk-Stable-Id: <sha of initial content blob>
+  - X-Tsk-Parent: <parent commit sha or 'none' for the root>
+  - X-Tsk-Namespace: <ns>-<human>   (optional, only if --bind requested)
+- Body: commit message, then '---', then a unified diff of the task tree against the parent task tree (or against empty for the root commit). Diff paths are tree-relative (content, title, <property>...).
+
+Commands:
+- tsk export -T tsk-N [--bind] [-o file | --stdout]
+  - Walks refs/tsk/tasks/<sha> from root to tip, emits one mbox entry per commit.
+  - --bind adds X-Tsk-Namespace so the recipient can auto-bind on import.
+- tsk import [<file> | --stdin]
+  - Parses entries in order. For each:
+    1. Reconstruct the tree by applying the unified diff to the parent task tree (use git plumbing; trees are small and structured, no working tree needed).
+    2. Write the commit object with the parsed metadata.
+    3. After the last entry, update refs/tsk/tasks/<stable-id> to the tip.
+    4. Verify: SHA of the reconstructed root content blob must equal X-Tsk-Stable-Id. Reject the import on mismatch.
+    5. If X-Tsk-Namespace was present, optionally bind under the active namespace (or the named one) — prompt or require a flag for cross-namespace binds.
+
+Tests:
+- Round-trip: export task, import into a fresh repo, refs match byte-for-byte.
+- Tamper detection: flip a byte in the root content diff, confirm import rejects with a stable-id mismatch error.
+- Multi-commit history preserved: edit a task twice, export, import, log_task on the receiver shows all three commits with original timestamps and authors.
+- Namespace bind on import is opt-in: default import does not touch the active namespace tree.
+
+Out of scope for v1: exporting queues, exporting properties indices (recipient's tsk fix-up rebuilds them), or batching multiple tasks into one mbox (can be added later — just concatenate entries).
