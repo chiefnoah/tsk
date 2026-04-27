@@ -9,8 +9,8 @@
 //! is selected by `<git-dir>/tsk/queue`.
 
 use crate::errors::{Error, Result};
-use crate::object::StableId;
-use git2::{Oid, Repository, Signature};
+use crate::object::{self, StableId};
+use git2::{Oid, Repository};
 use std::collections::BTreeMap;
 
 pub const QUEUE_REF_PREFIX: &str = "refs/tsk/queues/";
@@ -55,12 +55,6 @@ impl Queue {
             inbox: BTreeMap::new(),
         }
     }
-}
-
-fn signature(repo: &Repository) -> Signature<'static> {
-    repo.signature()
-        .map(|s| s.to_owned())
-        .unwrap_or_else(|_| Signature::now("tsk", "tsk@local").unwrap())
 }
 
 pub fn read(repo: &Repository, name: &str) -> Result<Queue> {
@@ -136,7 +130,7 @@ pub fn write(repo: &Repository, name: &str, q: &Queue, message: &str) -> Result<
     {
         return Ok(());
     }
-    let sig = signature(repo);
+    let sig = object::signature(repo);
     let parents: Vec<&git2::Commit> = parent.iter().collect();
     let commit = repo.commit(
         None,

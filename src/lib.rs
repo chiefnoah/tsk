@@ -19,7 +19,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr as _;
-use workspace::{Id, Task, TaskIdentifier, Workspace};
+use workspace::{Id, TaskIdentifier, Workspace};
 
 fn default_dir() -> Result<PathBuf> {
     Ok(current_dir()?)
@@ -469,7 +469,9 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Prop { action } => command_prop(dir, action),
         Commands::Namespace { action } => command_namespace(dir, action),
         Commands::Queue { action } => command_queue(dir, action),
-        Commands::Switch { name } => command_namespace_switch(dir, name),
+        Commands::Switch { name } => {
+            resolve_and_switch_namespace(&Workspace::from_path(dir)?, name)
+        }
         Commands::Completion { shell } => {
             generate(shell, &mut Cli::command(), "tsk", &mut io::stdout());
             Ok(())
@@ -663,18 +665,21 @@ fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> {
     Ok(())
 }
 
+fn pick_inbox_key(ws: &Workspace, key: Option<String>) -> Result<String> {
+    if let Some(k) = key {
+        return Ok(k);
+    }
+    Ok(ws
+        .list_inbox()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| errors::Error::Parse("Inbox is empty".into()))?
+        .key)
+}
+
 fn command_accept(dir: PathBuf, key: Option<String>, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    let key = match key {
-        Some(k) => k,
-        None => {
-            ws.list_inbox()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| errors::Error::Parse("Inbox is empty".into()))?
-                .key
-        }
-    };
+    let key = pick_inbox_key(&ws, key)?;
     let id = ws.accept_inbox(&key)?;
     println!("Accepted as {id}");
     if let Some(r) = effective_remote(remote) {
@@ -686,16 +691,7 @@ fn command_accept(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
 
 fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    let key = match key {
-        Some(k) => k,
-        None => {
-            ws.list_inbox()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| errors::Error::Parse("Inbox is empty".into()))?
-                .key
-        }
-    };
+    let key = pick_inbox_key(&ws, key)?;
     ws.reject_inbox(&key)?;
     if let Some((src, _)) = key.rsplit_once('-') {
         println!("Rejected {key} (returned to '{src}' inbox)");
@@ -932,11 +928,6 @@ fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
 
 const NEW_NS_SENTINEL: &str = "<new>";
 
-fn command_namespace_switch(dir: PathBuf, name: Option<String>) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    resolve_and_switch_namespace(&ws, name)
-}
-
 fn resolve_and_switch_namespace(ws: &Workspace, name: Option<String>) -> Result<()> {
     let target = match name {
         Some(n) => n,
@@ -998,9 +989,6 @@ fn prompt_line(prompt: &str) -> Result<String> {
     io::stdin().read_line(&mut s)?;
     Ok(s.trim_end_matches(['\n', '\r']).to_string())
 }
-
-#[allow(dead_code)]
-fn _silence_unused(_w: &dyn Write, _t: Task) {}
 
 #[cfg(test)]
 mod tests {

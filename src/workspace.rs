@@ -165,20 +165,20 @@ impl Workspace {
         Ok(Repository::open(&self.git_dir)?)
     }
 
-    pub fn namespace(&self) -> String {
-        std::fs::read_to_string(self.path.join(NAMESPACE_FILE))
+    fn read_selector(&self, file: &str, default: &str) -> String {
+        std::fs::read_to_string(self.path.join(file))
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| namespace::DEFAULT_NS.to_string())
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    pub fn namespace(&self) -> String {
+        self.read_selector(NAMESPACE_FILE, namespace::DEFAULT_NS)
     }
 
     pub fn queue(&self) -> String {
-        std::fs::read_to_string(self.path.join(QUEUE_FILE))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| queue::DEFAULT_QUEUE.to_string())
+        self.read_selector(QUEUE_FILE, queue::DEFAULT_QUEUE)
     }
 
     pub fn switch_namespace(&self, name: &str) -> Result<()> {
@@ -226,6 +226,21 @@ impl Workspace {
         }
     }
 
+    fn make_task(id: Id, stable: StableId, obj: TaskObj) -> Task {
+        Task {
+            title: obj.title().to_string(),
+            body: obj.body().to_string(),
+            attributes: obj.properties,
+            id,
+            stable,
+        }
+    }
+
+    fn read_task_obj(repo: &Repository, stable: &StableId) -> Result<TaskObj> {
+        object::read(repo, stable)?
+            .ok_or_else(|| Error::Parse(format!("task {stable} content missing")))
+    }
+
     /// Create a task — or, when the content matches an existing task,
     /// reopen / re-bind it instead of clobbering.
     ///
@@ -253,49 +268,31 @@ impl Workspace {
         let stable = StableId(content_oid.to_string());
         let active_ns = self.namespace();
 
-        let exists = repo.find_reference(&stable.refname()).is_ok();
-        if !exists {
-            let mut task_obj = TaskObj::new(content);
-            task_obj
-                .properties
+        if repo.find_reference(&stable.refname()).is_err() {
+            let mut obj = TaskObj::new(content);
+            obj.properties
                 .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
-            let stable = object::create(&repo, &task_obj, "create")?;
-            properties::reindex_task(&repo, &stable, &task_obj.properties)?;
+            let stable = object::create(&repo, &obj, "create")?;
+            properties::reindex_task(&repo, &stable, &obj.properties)?;
             let human =
                 namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
-            return Ok(Task {
-                id: Id(human),
-                stable,
-                title: task_obj.title().to_string(),
-                body: task_obj.body().to_string(),
-                attributes: task_obj.properties,
-            });
+            return Ok(Self::make_task(Id(human), stable, obj));
         }
 
         // Ref already exists. Decide between reopen / idempotent / bind / error.
         if let Some(human) = namespace::human_for(&repo, &active_ns, &stable)? {
-            // Bound in active namespace.
-            let mut task_obj = object::read(&repo, &stable)?
-                .ok_or_else(|| Error::Parse(format!("task {stable} content missing")))?;
-            let is_done = task_obj
+            let mut obj = Self::read_task_obj(&repo, &stable)?;
+            let is_done = obj
                 .properties
                 .get(STATUS_KEY)
-                .map(|v| v.iter().any(|s| s == STATUS_DONE))
-                .unwrap_or(false);
+                .is_some_and(|v| v.iter().any(|s| s == STATUS_DONE));
             if is_done {
-                task_obj
-                    .properties
+                obj.properties
                     .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
-                object::update(&repo, &stable, &task_obj, "reopen")?;
-                properties::reindex_task(&repo, &stable, &task_obj.properties)?;
+                object::update(&repo, &stable, &obj, "reopen")?;
+                properties::reindex_task(&repo, &stable, &obj.properties)?;
             }
-            return Ok(Task {
-                id: Id(human),
-                stable,
-                title: task_obj.title().to_string(),
-                body: task_obj.body().to_string(),
-                attributes: task_obj.properties,
-            });
+            return Ok(Self::make_task(Id(human), stable, obj));
         }
 
         // Not bound here. Refuse if it lives in another namespace; otherwise bind.
@@ -314,30 +311,15 @@ impl Workspace {
                 elsewhere.join(", ")
             )));
         }
-        let task_obj = object::read(&repo, &stable)?
-            .ok_or_else(|| Error::Parse(format!("task {stable} content missing")))?;
+        let obj = Self::read_task_obj(&repo, &stable)?;
         let human = namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
-        Ok(Task {
-            id: Id(human),
-            stable,
-            title: task_obj.title().to_string(),
-            body: task_obj.body().to_string(),
-            attributes: task_obj.properties,
-        })
+        Ok(Self::make_task(Id(human), stable, obj))
     }
 
     pub fn task(&self, identifier: TaskIdentifier) -> Result<Task> {
         let (id, stable) = self.resolve(identifier)?;
-        let repo = self.repo()?;
-        let task_obj = object::read(&repo, &stable)?
-            .ok_or_else(|| Error::Parse(format!("Task {id} content missing")))?;
-        Ok(Task {
-            id,
-            stable,
-            title: task_obj.title().to_string(),
-            body: task_obj.body().to_string(),
-            attributes: task_obj.properties,
-        })
+        let obj = Self::read_task_obj(&self.repo()?, &stable)?;
+        Ok(Self::make_task(id, stable, obj))
     }
 
     pub fn save_task(&self, task: &Task) -> Result<()> {
@@ -875,28 +857,30 @@ impl Workspace {
         Ok(Id(human))
     }
 
+    fn git(&self) -> std::process::Command {
+        let mut c = std::process::Command::new("git");
+        c.arg("--git-dir").arg(&self.git_dir);
+        c
+    }
+
     pub fn configure_git_remote_refspecs(&self, remote: &str) -> Result<()> {
         for (key, value) in [
             (format!("remote.{remote}.push"), "refs/tsk/*:refs/tsk/*"),
             (format!("remote.{remote}.fetch"), "+refs/tsk/*:refs/tsk/*"),
         ] {
-            let cmd = std::process::Command::new("git")
-                .arg("--git-dir")
-                .arg(&self.git_dir)
-                .args(["config", "--get-all", &key])
-                .output()?;
-            if String::from_utf8_lossy(&cmd.stdout)
+            let existing = self.git().args(["config", "--get-all", &key]).output()?;
+            if String::from_utf8_lossy(&existing.stdout)
                 .lines()
                 .any(|l| l.trim() == value)
             {
                 continue;
             }
-            let s = std::process::Command::new("git")
-                .arg("--git-dir")
-                .arg(&self.git_dir)
+            if !self
+                .git()
                 .args(["config", "--add", &key, value])
-                .status()?;
-            if !s.success() {
+                .status()?
+                .success()
+            {
                 return Err(Error::Parse("git config failed".into()));
             }
         }
@@ -904,12 +888,12 @@ impl Workspace {
     }
 
     pub fn git_push(&self, remote: &str) -> Result<()> {
-        let s = std::process::Command::new("git")
-            .arg("--git-dir")
-            .arg(&self.git_dir)
+        if !self
+            .git()
             .args(["push", remote, "refs/tsk/*:refs/tsk/*"])
-            .status()?;
-        if !s.success() {
+            .status()?
+            .success()
+        {
             return Err(Error::Parse("git push failed".into()));
         }
         Ok(())
@@ -928,13 +912,12 @@ impl Workspace {
         if refs.is_empty() {
             return Ok(());
         }
-        let mut cmd = std::process::Command::new("git");
-        cmd.arg("--git-dir").arg(&self.git_dir).args(["push", remote]);
+        let mut cmd = self.git();
+        cmd.args(["push", remote]);
         for r in refs {
             cmd.arg(format!("{r}:{r}"));
         }
-        let s = cmd.status()?;
-        if !s.success() {
+        if !cmd.status()?.success() {
             return Err(Error::Parse("git push failed".into()));
         }
         Ok(())
@@ -947,15 +930,12 @@ impl Workspace {
         if refs.is_empty() {
             return Ok(());
         }
-        let mut cmd = std::process::Command::new("git");
-        cmd.arg("--git-dir")
-            .arg(&self.git_dir)
-            .args(["fetch", "--refmap=", remote]);
+        let mut cmd = self.git();
+        cmd.args(["fetch", "--refmap=", remote]);
         for r in refs {
             cmd.arg(format!("+{r}:{r}"));
         }
-        let s = cmd.status()?;
-        if !s.success() {
+        if !cmd.status()?.success() {
             return Err(Error::Parse("git fetch failed".into()));
         }
         Ok(())
@@ -1018,13 +998,13 @@ impl Workspace {
         // performs the configured `+refs/tsk/*:refs/tsk/*` mapping and
         // clobbers local task refs before we get a chance to reconcile.
         let refspec = format!("+refs/tsk/*:{}{remote}/*", merge::FETCH_PREFIX);
-        let s = std::process::Command::new("git")
-            .arg("--git-dir")
-            .arg(&self.git_dir)
+        if !self
+            .git()
             .args(["fetch", "--prune", "--refmap=", remote])
             .arg(&refspec)
-            .status()?;
-        if !s.success() {
+            .status()?
+            .success()
+        {
             return Err(Error::Parse("git fetch failed".into()));
         }
         let repo = self.repo()?;

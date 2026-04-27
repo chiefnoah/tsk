@@ -285,10 +285,7 @@ fn import_one_chain(repo: &Repository, entries: &[Entry]) -> Result<ImportResult
         // Committer = local user — same shape as `git rebase`, so the
         // history records who applied the import while preserving authorship.
         let author = Signature::new(&e.author_name, &e.author_email, &e.when)?;
-        let committer = repo
-            .signature()
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|_| Signature::now("tsk", "tsk@local").unwrap());
+        let committer = crate::object::signature(repo);
         let parents: Vec<git2::Commit> = prev.into_iter().map(|o| repo.find_commit(o).unwrap()).collect();
         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
         let commit_oid = repo.commit(

@@ -8,21 +8,15 @@
 //! tree merge; only same-key/same-task races require manual resolution.
 
 use crate::errors::Result;
-use crate::object::StableId;
+use crate::object::{self, StableId};
 use crate::propvalue;
-use git2::{Oid, Repository, Signature};
+use git2::{Oid, Repository};
 use std::collections::BTreeMap;
 
 pub const PROP_REF_PREFIX: &str = "refs/tsk/properties/";
 
 pub fn refname(key: &str) -> String {
     format!("{PROP_REF_PREFIX}{key}")
-}
-
-fn signature(repo: &Repository) -> Signature<'static> {
-    repo.signature()
-        .map(|s| s.to_owned())
-        .unwrap_or_else(|_| Signature::now("tsk", "tsk@local").unwrap())
 }
 
 /// Read every (stable_id, values) entry currently indexed under `key`.
@@ -74,7 +68,7 @@ fn write_index(
     {
         return Ok(());
     }
-    let sig = signature(repo);
+    let sig = object::signature(repo);
     let parents: Vec<&git2::Commit> = parent.iter().collect();
     let commit = repo.commit(
         None,

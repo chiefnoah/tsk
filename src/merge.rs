@@ -23,8 +23,8 @@
 
 use crate::errors::Result;
 use crate::namespace::{self, NS_REF_PREFIX, Namespace};
-use crate::object::{StableId, TASK_REF_PREFIX};
-use git2::{Commit, Oid, Repository, Signature};
+use crate::object::{self, StableId, TASK_REF_PREFIX};
+use git2::{Commit, Oid, Repository};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -154,7 +154,7 @@ fn merge_strategy(
         return Ok(ReconKind::Conflict);
     }
     let tree_oid = idx.write_tree_to(repo)?;
-    let sig = signature(repo);
+    let sig = object::signature(repo);
     let local_commit = repo.find_commit(local)?;
     let remote_commit = repo.find_commit(remote)?;
     let parents: Vec<&Commit> = vec![&local_commit, &remote_commit];
@@ -188,7 +188,7 @@ fn rebase_strategy(
         cur = parent;
     }
     to_replay.reverse();
-    let committer = signature(repo);
+    let committer = object::signature(repo);
     let mut current = remote;
     for c_oid in to_replay {
         let c = repo.find_commit(c_oid)?;
@@ -213,12 +213,6 @@ fn rebase_strategy(
     }
     repo.reference(&stable.refname(), current, true, "rebase")?;
     Ok(ReconKind::Rebased)
-}
-
-fn signature(repo: &Repository) -> Signature<'static> {
-    repo.signature()
-        .map(|s| s.to_owned())
-        .unwrap_or_else(|_| Signature::now("tsk", "tsk@local").unwrap())
 }
 
 /// One namespace's reconciliation outcome at pull time.
@@ -327,7 +321,7 @@ fn reconcile_namespace_one(
             let tree_oid = namespace::build_tree(repo, &merged)?;
             let local_commit = repo.find_commit(l)?;
             let remote_commit = repo.find_commit(r)?;
-            let sig = signature(repo);
+            let sig = object::signature(repo);
             let msg = if renumbers.is_empty() {
                 format!("merge-namespace {name}")
             } else {
@@ -381,6 +375,7 @@ pub fn fast_forward_non_task_refs(repo: &Repository, remote: &str) -> Result<()>
 mod test {
     use super::*;
     use crate::object::{self, Task};
+    use git2::Signature;
     use std::path::Path;
 
     fn init_repo(p: &Path) -> Repository {
