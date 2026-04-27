@@ -523,6 +523,33 @@ impl Workspace {
         Ok(updated)
     }
 
+    /// Re-save every task in the active namespace whose property blobs are
+    /// in the legacy line-split encoding, rewriting them as size-prefixed.
+    /// Returns the number of tasks rewritten. Idempotent — already-migrated
+    /// tasks have a tree that matches the rewrite, so `object::update`
+    /// no-ops for them.
+    pub fn migrate_property_encoding(&self) -> Result<usize> {
+        let repo = self.repo()?;
+        let ns = namespace::read(&repo, &self.namespace())?;
+        let mut rewritten = 0usize;
+        for (human, _stable) in ns.mapping.iter() {
+            let task = self.task(TaskIdentifier::Id(Id(*human)))?;
+            let head_before = repo
+                .find_reference(&task.stable.refname())
+                .ok()
+                .and_then(|r| r.target());
+            self.save_task(&task)?;
+            let head_after = repo
+                .find_reference(&task.stable.refname())
+                .ok()
+                .and_then(|r| r.target());
+            if head_before != head_after {
+                rewritten += 1;
+            }
+        }
+        Ok(rewritten)
+    }
+
     /// Drop a task from the active queue and mark it `status=done`. The
     /// namespace binding is kept so the task remains addressable by its
     /// human id (and discoverable via `tsk prop find status done`); the

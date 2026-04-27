@@ -9,6 +9,7 @@
 //!   <prop-key>  → blob: property value (one file per property)
 
 use crate::errors::Result;
+use crate::propvalue;
 use git2::{Oid, Repository, Signature};
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -84,8 +85,8 @@ fn build_tree(
         if k == CONTENT_FILE || k == TITLE_FILE {
             continue;
         }
-        let body: String = values.iter().map(|v| format!("{v}\n")).collect();
-        let oid = repo.blob(body.as_bytes())?;
+        let body = propvalue::encode(values);
+        let oid = repo.blob(&body)?;
         tb.insert(k.as_str(), oid, 0o100644)?;
     }
     Ok(tb.write()?)
@@ -156,8 +157,7 @@ pub fn read(repo: &Repository, id: &StableId) -> Result<Option<Task>> {
             CONTENT_FILE => task.content = val,
             TITLE_FILE => {} // cache only; canonical title is content's first line
             _ => {
-                let values: Vec<String> =
-                    val.lines().map(str::to_string).collect();
+                let values = propvalue::decode(blob.content());
                 task.properties.insert(name, values);
             }
         }

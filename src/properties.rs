@@ -9,6 +9,7 @@
 
 use crate::errors::Result;
 use crate::object::StableId;
+use crate::propvalue;
 use git2::{Oid, Repository, Signature};
 use std::collections::BTreeMap;
 
@@ -37,10 +38,7 @@ pub fn read(repo: &Repository, key: &str) -> Result<BTreeMap<StableId, Vec<Strin
     for entry in tree.iter() {
         let Some(name) = entry.name() else { continue };
         let blob = entry.to_object(repo)?.peel_to_blob()?;
-        let values: Vec<String> = String::from_utf8_lossy(blob.content())
-            .lines()
-            .map(str::to_string)
-            .collect();
+        let values = propvalue::decode(blob.content());
         out.insert(StableId(name.to_string()), values);
     }
     Ok(out)
@@ -61,8 +59,8 @@ fn write_index(
     }
     let mut tb = repo.treebuilder(None)?;
     for (stable, values) in entries {
-        let body: String = values.iter().map(|v| format!("{v}\n")).collect();
-        let oid = repo.blob(body.as_bytes())?;
+        let body = propvalue::encode(values);
+        let oid = repo.blob(&body)?;
         tb.insert(stable.0.as_str(), oid, 0o100644)?;
     }
     let tree_oid: Oid = tb.write()?;

@@ -4,6 +4,7 @@ mod namespace;
 mod merge;
 mod object;
 mod patch;
+mod propvalue;
 mod properties;
 mod queue;
 mod task;
@@ -372,6 +373,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             let ws = Workspace::from_path(dir)?;
             let n = ws.backfill_status()?;
             println!("backfill-status: set status=open on {n} task(s)");
+            let m = ws.migrate_property_encoding()?;
+            println!("migrate-property-encoding: rewrote {m} task(s)");
             Ok(())
         }
         Commands::GitSetup { remote } => {
