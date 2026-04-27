@@ -145,7 +145,7 @@ pub fn assign_id(
     let human = ns.next;
     ns.next += 1;
     ns.mapping.insert(human, stable);
-    write(repo, name, &ns, message)?;
+    write(repo, name, &ns, &format!("{message} {name}-{human}"))?;
     Ok(human)
 }
 
@@ -153,7 +153,7 @@ pub fn assign_id(
 pub fn unassign_id(repo: &Repository, name: &str, human: u32, message: &str) -> Result<()> {
     let mut ns = read(repo, name)?;
     if ns.mapping.remove(&human).is_some() {
-        write(repo, name, &ns, message)?;
+        write(repo, name, &ns, &format!("{message} {name}-{human}"))?;
     }
     Ok(())
 }

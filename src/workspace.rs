@@ -992,7 +992,8 @@ mod test {
         let log = ws.log_namespace("tsk").unwrap();
         // Two id-assignments.
         assert!(log.len() >= 2, "got {}", log.len());
-        assert_eq!(log[0].summary, "assign-id");
+        assert_eq!(log[0].summary, "assign-id tsk-2");
+        assert_eq!(log[1].summary, "assign-id tsk-1");
     }
 
     #[test]
