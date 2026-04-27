@@ -63,6 +63,7 @@ impl From<u32> for Id {
     }
 }
 
+#[derive(Clone)]
 pub enum TaskIdentifier {
     Id(Id),
     /// Index into the active queue's stack (0 = top).
@@ -455,40 +456,65 @@ impl Workspace {
     /// Export a task as an mbox-format patch series. With `bind=true`, the
     /// root entry carries the active namespace's human id so the recipient
     /// can opt in to mirroring the binding on import.
+    #[allow(dead_code)] // single-task wrapper, kept for callers that don't care about batch
     pub fn export_task(&self, identifier: TaskIdentifier, bind: bool) -> Result<String> {
-        let (id, stable) = self.resolve(identifier)?;
-        let opts = patch::ExportOpts {
-            bind: if bind {
-                Some((self.namespace(), id.0))
-            } else {
-                None
-            },
-        };
+        self.export_tasks(&[identifier], bind)
+    }
+
+    /// Export multiple tasks as a single concatenated mbox stream.
+    /// Each task's full commit chain is emitted in order; the importer
+    /// groups them back by stable id.
+    pub fn export_tasks(
+        &self,
+        identifiers: &[TaskIdentifier],
+        bind: bool,
+    ) -> Result<String> {
         let repo = self.repo()?;
-        patch::export_task(&repo, &stable, &opts)
+        let mut out = String::new();
+        for ident in identifiers {
+            let (id, stable) = self.resolve(ident.clone())?;
+            let opts = patch::ExportOpts {
+                bind: if bind {
+                    Some((self.namespace(), id.0))
+                } else {
+                    None
+                },
+            };
+            out.push_str(&patch::export_task(&repo, &stable, &opts)?);
+        }
+        Ok(out)
     }
 
     /// Import a task from an mbox patch series produced by `export_task`.
     /// On `bind=true`, also bind the imported stable id into the active
     /// namespace (reusing the existing human id if already bound).
-    pub fn import_task(&self, mbox: &str, bind: bool) -> Result<ImportOutcome> {
+    pub fn import_task(&self, mbox: &str, bind: bool) -> Result<Vec<ImportOutcome>> {
         let repo = self.repo()?;
-        let res = patch::import_task(&repo, mbox)?;
-        let bound_human = if bind {
-            let ns = self.namespace();
-            let human = match namespace::human_for(&repo, &ns, &res.stable)? {
-                Some(h) => h,
-                None => namespace::assign_id(&repo, &ns, res.stable.clone(), "import-bind")?,
+        let results = patch::import_mbox(&repo, mbox)?;
+        let mut out = Vec::with_capacity(results.len());
+        for res in results {
+            let bound_human = if bind {
+                let ns = self.namespace();
+                let human = match namespace::human_for(&repo, &ns, &res.stable)? {
+                    Some(h) => h,
+                    None => namespace::assign_id(
+                        &repo,
+                        &ns,
+                        res.stable.clone(),
+                        "import-bind",
+                    )?,
+                };
+                Some(human)
+            } else {
+                None
             };
-            Some(human)
-        } else {
-            None
-        };
-        Ok(ImportOutcome {
-            stable: res.stable,
-            commits_imported: res.commits_imported,
-            bound_human,
-        })
+            out.push(ImportOutcome {
+                stable: res.stable,
+                commits_imported: res.commits_imported,
+                bound_human,
+            });
+        }
+        Ok(out)
     }
 
     /// History of edits to a single task.

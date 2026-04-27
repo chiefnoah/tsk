@@ -113,13 +113,21 @@ enum Commands {
     /// Currently: backfill `status=open` on tasks without a status property.
     /// New migrations land here as they're added.
     FixUp,
-    /// Export a task as an mbox-format patch series (one entry per commit).
+    /// Export one or more tasks as a concatenated mbox-format patch series.
+    /// With no -T / --where / --all, drops into fzf for a single-task pick.
     /// Pipe to a file for offline transfer; recipient runs `tsk import`.
     Export {
-        #[command(flatten)]
-        task_id: TaskId,
-        /// Embed the task's namespace+human-id so the recipient can opt in
-        /// to binding it on import.
+        /// Specific task by tsk-id. Repeatable for multi-task export.
+        #[arg(short = 'T', value_parser = parse_id)]
+        ids: Vec<Id>,
+        /// Property filter: `--where status=open`. Combines with -T flags.
+        #[arg(long, value_name = "KEY=VALUE")]
+        r#where: Option<String>,
+        /// Export every task bound in the active namespace.
+        #[arg(long)]
+        all: bool,
+        /// Embed each task's namespace+human-id in its root entry so the
+        /// recipient can opt in to mirroring the bindings on import.
         #[arg(long)]
         bind: bool,
     },
@@ -400,7 +408,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             Workspace::from_path(dir)?.deprioritize(task_id.into())
         }
         Commands::Clean => Workspace::from_path(dir)?.clean(),
-        Commands::Export { task_id, bind } => command_export(dir, task_id, bind),
+        Commands::Export {
+            ids,
+            r#where,
+            all,
+            bind,
+        } => command_export(dir, ids, r#where, all, bind),
         Commands::Import { bind } => command_import(dir, bind),
         Commands::Log { target } => command_log(dir, target),
         Commands::FixUp => {
@@ -699,10 +712,44 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
     Ok(())
 }
 
-fn command_export(dir: PathBuf, task_id: TaskId, bind: bool) -> Result<()> {
+fn command_export(
+    dir: PathBuf,
+    ids: Vec<Id>,
+    where_: Option<String>,
+    all: bool,
+    bind: bool,
+) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    let identifier = task_id.resolve_or_pick(&ws)?;
-    let mbox = ws.export_task(identifier, bind)?;
+    let mut identifiers: Vec<TaskIdentifier> = ids.into_iter().map(Into::into).collect();
+    if all {
+        for entry in ws.list_namespace_tasks(&ws.namespace())? {
+            identifiers.push(TaskIdentifier::Id(entry.id));
+        }
+    }
+    if let Some(spec) = where_ {
+        let (key, value) = spec
+            .split_once('=')
+            .ok_or_else(|| errors::Error::Parse("expected --where KEY=VALUE".into()))?;
+        for (id, _stable, _title) in ws.find_by_property(key, Some(value))? {
+            identifiers.push(TaskIdentifier::Id(id));
+        }
+    }
+    if identifiers.is_empty() {
+        // Interactive fallback: fzf single-pick.
+        let picker = TaskId {
+            id: None,
+            tsk_id: None,
+            relative_id: None,
+        };
+        identifiers.push(picker.resolve_or_pick(&ws)?);
+    }
+    // Dedupe while preserving order.
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    identifiers.retain(|i| match i {
+        TaskIdentifier::Id(id) => seen.insert(id.0),
+        _ => true,
+    });
+    let mbox = ws.export_tasks(&identifiers, bind)?;
     print!("{mbox}");
     Ok(())
 }
@@ -711,16 +758,18 @@ fn command_import(dir: PathBuf, bind: bool) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let mut buf = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
-    let res = ws.import_task(&buf, bind)?;
-    let bound = if let Some(id) = res.bound_human {
-        format!(" bound as {}-{}", ws.namespace(), id)
-    } else {
-        String::new()
-    };
-    println!(
-        "Imported {} commit(s) for task {}{bound}",
-        res.commits_imported, res.stable
-    );
+    let outcomes = ws.import_task(&buf, bind)?;
+    for res in &outcomes {
+        let bound = if let Some(id) = res.bound_human {
+            format!(" bound as {}-{}", ws.namespace(), id)
+        } else {
+            String::new()
+        };
+        println!(
+            "Imported {} commit(s) for task {}{bound}",
+            res.commits_imported, res.stable
+        );
+    }
     Ok(())
 }
 

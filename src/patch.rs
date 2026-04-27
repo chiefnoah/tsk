@@ -200,18 +200,52 @@ pub struct ImportResult {
     pub ns_bind: Option<(String, u32)>,
 }
 
+/// Convenience wrapper for the single-task path: parse the mbox, expect
+/// exactly one task's chain, import it.
+#[allow(dead_code)] // kept for tests and external callers that want strict single-task semantics
 pub fn import_task(repo: &Repository, mbox: &str) -> Result<ImportResult> {
+    let mut all = import_mbox(repo, mbox)?;
+    if all.len() > 1 {
+        return Err(Error::Parse(format!(
+            "expected one task; mbox contained {}",
+            all.len()
+        )));
+    }
+    all.pop()
+        .ok_or_else(|| Error::Parse("no patch entries found".into()))
+}
+
+/// Import every task in an mbox stream. Entries are grouped by their
+/// `X-Tsk-Stable-Id` header (consecutive entries with the same stable id
+/// belong to the same task's chain) and each group is imported in order.
+pub fn import_mbox(repo: &Repository, mbox: &str) -> Result<Vec<ImportResult>> {
     let entries = parse_mbox(mbox)?;
     if entries.is_empty() {
         return Err(Error::Parse("no patch entries found".into()));
     }
+    // Group consecutive entries by stable id.
+    let mut groups: Vec<Vec<Entry>> = Vec::new();
+    for e in entries {
+        match groups.last_mut() {
+            Some(g) if g[0].stable == e.stable => g.push(e),
+            _ => groups.push(vec![e]),
+        }
+    }
+    let mut out = Vec::with_capacity(groups.len());
+    for group in groups {
+        out.push(import_one_chain(repo, &group)?);
+    }
+    Ok(out)
+}
+
+fn import_one_chain(repo: &Repository, entries: &[Entry]) -> Result<ImportResult> {
     let stable_hex = entries[0].stable.clone();
     let ns_bind = entries[0].ns_bind.clone();
     let mut prev: Option<Oid> = None;
     for (idx, e) in entries.iter().enumerate() {
         if e.stable != stable_hex {
             return Err(Error::Parse(format!(
-                "stable id mismatch across entries: {} vs {}",
+                "stable id mismatch within chain: {} vs {}",
                 stable_hex, e.stable
             )));
         }
@@ -647,6 +681,35 @@ mod test {
             "Alice",
             "the root commit's author must still be Alice across two hops"
         );
+    }
+
+    #[test]
+    fn multi_task_mbox_imports_all_chains() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = init_repo(dir.path());
+        let s1 = object::create(&src, &Task::new("first task"), "create").unwrap();
+        let s2 = object::create(&src, &Task::new("second task"), "create").unwrap();
+        // Add an edit to s2 so it has a multi-commit chain — the grouping
+        // logic must keep both of s2's entries together.
+        let mut t2 = object::read(&src, &s2).unwrap().unwrap();
+        t2.properties.insert("priority".into(), vec!["low".into()]);
+        object::update(&src, &s2, &t2, "edit-second").unwrap();
+
+        let mbox1 = export_task(&src, &s1, &ExportOpts { bind: None }).unwrap();
+        let mbox2 = export_task(&src, &s2, &ExportOpts { bind: None }).unwrap();
+        let combined = format!("{mbox1}{mbox2}");
+
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst = init_repo(dst_dir.path());
+        let outcomes = import_mbox(&dst, &combined).unwrap();
+        assert_eq!(outcomes.len(), 2, "two chains must yield two outcomes");
+        assert_eq!(outcomes[0].stable, s1);
+        assert_eq!(outcomes[0].commits_imported, 1);
+        assert_eq!(outcomes[1].stable, s2);
+        assert_eq!(outcomes[1].commits_imported, 2);
+        // Both task refs landed in the destination repo.
+        assert!(dst.find_reference(&s1.refname()).is_ok());
+        assert!(dst.find_reference(&s2.refname()).is_ok());
     }
 
     #[test]
