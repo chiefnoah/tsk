@@ -613,6 +613,42 @@ impl Workspace {
         Ok(rewritten)
     }
 
+    /// Prune empty / orphan refs under `refs/tsk/*`. Specifically:
+    /// - empty queues (no index, no inbox) other than the default `tsk`
+    ///   queue, which always exists by convention;
+    /// - property index entries pointing at task refs that no longer
+    ///   resolve (the index ref itself is auto-deleted by `properties::set`
+    ///   when its last entry goes).
+    /// Task object refs and namespace refs are left alone — task history is
+    /// preserved intentionally, and namespace `next` counters are valid even
+    /// when no live binding uses the latest id.
+    pub fn gc_refs(&self) -> Result<(usize, usize)> {
+        let repo = self.repo()?;
+        let mut queues_pruned = 0usize;
+        let mut prop_orphans_pruned = 0usize;
+        for name in queue::list_names(&repo)? {
+            if name == queue::DEFAULT_QUEUE {
+                continue;
+            }
+            let q = queue::read(&repo, &name)?;
+            if q.index.is_empty() && q.inbox.is_empty() {
+                if let Ok(mut r) = repo.find_reference(&queue::refname(&name)) {
+                    r.delete()?;
+                    queues_pruned += 1;
+                }
+            }
+        }
+        for key in properties::list_keys(&repo)? {
+            for (stable, _vals) in properties::read(&repo, &key)? {
+                if repo.find_reference(&stable.refname()).is_err() {
+                    properties::set(&repo, &key, &stable, &[], "gc-orphan")?;
+                    prop_orphans_pruned += 1;
+                }
+            }
+        }
+        Ok((queues_pruned, prop_orphans_pruned))
+    }
+
     /// Drop a task from the active queue and mark it `status=done`. The
     /// namespace binding is kept so the task remains addressable by its
     /// human id (and discoverable via `tsk prop find status done`); the
@@ -1392,6 +1428,33 @@ mod test {
             again.id, id,
             "rebinding allocates a fresh human id from `next`"
         );
+    }
+
+    #[test]
+    fn gc_refs_prunes_empty_queues_and_orphan_prop_entries() {
+        let (_d, ws) = fresh_workspace();
+        let repo = ws.repo().unwrap();
+
+        // 1. Empty non-default queue → should be pruned.
+        ws.create_queue("empty", None).unwrap();
+        assert!(repo.find_reference(&queue::refname("empty")).is_ok());
+
+        // 2. Orphan property index entry: write a property into the index
+        //    pointing at a stable id whose task ref doesn't exist.
+        let orphan = StableId("0".repeat(40));
+        properties::set(&repo, "ghost", &orphan, &["x".into()], "test").unwrap();
+        assert!(repo.find_reference(&properties::refname("ghost")).is_ok());
+
+        let (queues, props) = ws.gc_refs().unwrap();
+        assert_eq!(queues, 1);
+        assert_eq!(props, 1);
+        assert!(repo.find_reference(&queue::refname("empty")).is_err());
+        // The orphan was the index's only entry, so the index ref is dropped too.
+        assert!(repo.find_reference(&properties::refname("ghost")).is_err());
+
+        // Idempotent: a second pass changes nothing.
+        let (q2, p2) = ws.gc_refs().unwrap();
+        assert_eq!((q2, p2), (0, 0));
     }
 
     #[test]

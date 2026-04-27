@@ -436,6 +436,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("backfill-status: set status=open on {n} task(s)");
             let m = ws.migrate_property_encoding()?;
             println!("migrate-property-encoding: rewrote {m} task(s)");
+            let (q, p) = ws.gc_refs()?;
+            println!("gc-refs: pruned {q} empty queue(s), {p} orphan property entries");
             Ok(())
         }
         Commands::GitSetup { remote } => {
