@@ -1,0 +1,8 @@
+Make patch body truly mbox-safe
+
+patch::write_entry emits file content verbatim between length headers. If the content contains a line starting with 'From ', a strict mbox reader (mailx, procmail) will split the message there, even though tsk's own importer reads it fine via the size: prefix. Two fixes worth considering:
+
+1. Quote any line starting with 'From ' in file content as '>From ' on export, and unquote on import. This is the standard mbox 'From-mangling' behavior.
+2. Or base64-encode the body. Bullet-proof but loses human-readability of the diff.
+
+Pick (1) for the v1 wire format. Add a test: export a task whose content contains 'From the desk of...' at start of a line, run the result through  or just split on '\nFrom ' ourselves, confirm only the real entry boundaries are detected.
