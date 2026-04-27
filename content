@@ -1,1 +1,9 @@
 CLI flag for queue
+
+Allow manually specifying the queue that CLI commands interact with when relevant. This
+includes, but is not limited to the push, pop, swap, tor, rot, append, export, import,
+inbox, and assign commands. Because this is *very* common, it should be done with
+resusable components to the best extent possible. Any refactoring necessary to
+accomplish this efficiently (in terms of lines of code) is in-scope. If that's too large
+for a single task, create intermediate subtasks (whose parent property is a link to this
+task) to be worked on as part of this.
