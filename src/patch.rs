@@ -334,6 +334,19 @@ fn parse_mbox(s: &str) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
+/// Consume one `\n`-terminated line; trailing `\r` is stripped.
+fn pop_line<'a>(rest: &mut &'a [u8], eof_msg: &str) -> Result<&'a str> {
+    let nl = rest
+        .iter()
+        .position(|b| *b == b'\n')
+        .ok_or_else(|| Error::Parse(eof_msg.into()))?;
+    let line = std::str::from_utf8(&rest[..nl])
+        .map_err(|e| Error::Parse(e.to_string()))?
+        .trim_end_matches('\r');
+    *rest = &rest[nl + 1..];
+    Ok(line)
+}
+
 fn parse_entry(chunk: &str) -> Result<Entry> {
     let mut lines = chunk.split_inclusive('\n');
     // First line: "From <oid> Mon Sep 17 ..."
@@ -402,35 +415,21 @@ fn parse_entry(chunk: &str) -> Result<Entry> {
     } else {
         unmangle_from(message.trim_end_matches('\n'))
     };
-    // Parse file blocks until END_DELIM.
+    // Parse file blocks until END_DELIM. We need byte-level reads for the
+    // size-prefixed bodies, so switch from `lines` to slice indexing.
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    // We need byte-level reads for sizes, so switch back to slice indexing.
-    // Compute remaining input from `lines`.
     let remaining = lines.collect::<String>();
     let mut rest = remaining.as_bytes();
     loop {
-        // Read line.
-        let nl = rest
-            .iter()
-            .position(|b| *b == b'\n')
-            .ok_or_else(|| Error::Parse("unexpected eof in tree".into()))?;
-        let line = std::str::from_utf8(&rest[..nl]).map_err(|e| Error::Parse(e.to_string()))?;
-        let line_trim = line.trim_end_matches('\r');
-        rest = &rest[nl + 1..];
-        if line_trim == END_DELIM {
+        let line = pop_line(&mut rest, "unexpected eof in tree")?;
+        if line == END_DELIM {
             break;
         }
-        let name = line_trim
+        let name = line
             .strip_prefix("file: ")
-            .ok_or_else(|| Error::Parse(format!("expected 'file:' got: {line_trim:?}")))?
+            .ok_or_else(|| Error::Parse(format!("expected 'file:' got: {line:?}")))?
             .to_string();
-        let nl = rest
-            .iter()
-            .position(|b| *b == b'\n')
-            .ok_or_else(|| Error::Parse("unexpected eof reading size".into()))?;
-        let size_line = std::str::from_utf8(&rest[..nl]).map_err(|e| Error::Parse(e.to_string()))?;
-        let size_line = size_line.trim_end_matches('\r');
-        rest = &rest[nl + 1..];
+        let size_line = pop_line(&mut rest, "unexpected eof reading size")?;
         let size: usize = size_line
             .strip_prefix("size: ")
             .ok_or_else(|| Error::Parse(format!("expected 'size:' got: {size_line:?}")))?
@@ -441,13 +440,11 @@ fn parse_entry(chunk: &str) -> Result<Entry> {
         }
         let mangled = std::str::from_utf8(&rest[..size])
             .map_err(|e| Error::Parse(e.to_string()))?;
-        let bytes = unmangle_from(mangled).into_bytes();
-        // Trailing \n separator (not part of size).
         if rest[size] != b'\n' {
             return Err(Error::Parse("missing newline after file body".into()));
         }
         rest = &rest[size + 1..];
-        files.insert(name, bytes);
+        files.insert(name, unmangle_from(mangled).into_bytes());
     }
     Ok(Entry {
         author_name,

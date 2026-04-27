@@ -177,6 +177,19 @@ pub fn lookup(repo: &Repository, name: &str, human: u32) -> Result<Option<Stable
     Ok(read(repo, name)?.mapping.get(&human).cloned())
 }
 
+/// Existing human id for `stable` in `name`, or a freshly-assigned one.
+pub fn ensure_bound(
+    repo: &Repository,
+    name: &str,
+    stable: StableId,
+    message: &str,
+) -> Result<u32> {
+    match human_for(repo, name, &stable)? {
+        Some(h) => Ok(h),
+        None => assign_id(repo, name, stable, message),
+    }
+}
+
 /// Reverse lookup: stable → human in the given namespace, if present.
 pub fn human_for(repo: &Repository, name: &str, stable: &StableId) -> Result<Option<u32>> {
     Ok(read(repo, name)?

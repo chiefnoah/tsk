@@ -316,7 +316,7 @@ struct Title {
     title_simple: Option<Vec<String>>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 #[group(required = false, multiple = false)]
 struct TaskId {
     #[arg(short = 't', value_name = "ID")]
@@ -375,6 +375,13 @@ fn effective_remote(supplied: Option<String>) -> Option<String> {
     supplied
         .map(|s| if s.is_empty() { None } else { Some(s) })
         .unwrap_or_else(|| Some("origin".to_string()))
+}
+
+/// Scoped push (best-effort, silent on `-R ""`).
+fn auto_push_refs(ws: &Workspace, remote: Option<String>, refs: Vec<String>) {
+    if let Some(r) = effective_remote(remote) {
+        let _ = ws.git_push_refs(&r, &refs);
+    }
 }
 
 fn dispatch(cli: Cli) -> Result<()> {
@@ -630,10 +637,7 @@ fn command_assign(
     let ws = Workspace::from_path(dir)?;
     let (key, stable) = ws.assign_to_queue(task_id.into(), &target)?;
     println!("Assigned to {target} as {key}");
-    if let Some(r) = effective_remote(remote) {
-        let refs = ws.refs_for_assign_out(&target, &stable)?;
-        let _ = ws.git_push_refs(&r, &refs);
-    }
+    auto_push_refs(&ws, remote, ws.refs_for_assign_out(&target, &stable)?);
     Ok(())
 }
 
@@ -682,10 +686,7 @@ fn command_accept(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
     let key = pick_inbox_key(&ws, key)?;
     let id = ws.accept_inbox(&key)?;
     println!("Accepted as {id}");
-    if let Some(r) = effective_remote(remote) {
-        let refs = ws.refs_for_accept_inbox();
-        let _ = ws.git_push_refs(&r, &refs);
-    }
+    auto_push_refs(&ws, remote, ws.refs_for_accept_inbox());
     Ok(())
 }
 
@@ -693,17 +694,13 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
     let ws = Workspace::from_path(dir)?;
     let key = pick_inbox_key(&ws, key)?;
     ws.reject_inbox(&key)?;
-    if let Some((src, _)) = key.rsplit_once('-') {
-        println!("Rejected {key} (returned to '{src}' inbox)");
-    } else {
-        println!("Rejected {key}");
+    let source = key.rsplit_once('-').map(|(s, _)| s.to_string());
+    match &source {
+        Some(src) => println!("Rejected {key} (returned to '{src}' inbox)"),
+        None => println!("Rejected {key}"),
     }
-    if let Some(r) = effective_remote(remote) {
-        let source = key.rsplit_once('-').map(|(s, _)| s.to_string());
-        if let Some(src) = source {
-            let refs = ws.refs_for_reject_inbox(&src);
-            let _ = ws.git_push_refs(&r, &refs);
-        }
+    if let Some(src) = source {
+        auto_push_refs(&ws, remote, ws.refs_for_reject_inbox(&src));
     }
     Ok(())
 }
@@ -732,19 +729,11 @@ fn command_export(
     }
     if identifiers.is_empty() {
         // Interactive fallback: fzf single-pick.
-        let picker = TaskId {
-            id: None,
-            tsk_id: None,
-            relative_id: None,
-        };
-        identifiers.push(picker.resolve_or_pick(&ws)?);
+        identifiers.push(TaskId::default().resolve_or_pick(&ws)?);
     }
     // Dedupe while preserving order.
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    identifiers.retain(|i| match i {
-        TaskIdentifier::Id(id) => seen.insert(id.0),
-        _ => true,
-    });
+    identifiers.retain(|i| !matches!(i, TaskIdentifier::Id(id) if !seen.insert(id.0)));
     let mbox = ws.export_tasks(&identifiers, bind)?;
     print!("{mbox}");
     Ok(())
@@ -843,16 +832,8 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
             key,
             value,
         } => ws.unset_property(task_id.into(), &key, value.as_deref())?,
-        PropAction::Keys => {
-            for k in ws.property_keys()? {
-                println!("{k}");
-            }
-        }
-        PropAction::Values { key } => {
-            for v in ws.property_values(&key)? {
-                println!("{v}");
-            }
-        }
+        PropAction::Keys => print_lines(ws.property_keys()?),
+        PropAction::Values { key } => print_lines(ws.property_values(&key)?),
         PropAction::Find { key, value } => {
             let key = match key {
                 Some(k) => k,
@@ -888,14 +869,16 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
     Ok(())
 }
 
+fn print_lines<I: std::fmt::Display>(items: impl IntoIterator<Item = I>) {
+    for i in items {
+        println!("{i}");
+    }
+}
+
 fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
-        NamespaceAction::List => {
-            for n in ws.list_namespaces()? {
-                println!("{n}");
-            }
-        }
+        NamespaceAction::List => print_lines(ws.list_namespaces()?),
         NamespaceAction::Current => println!("{}", ws.namespace()),
         NamespaceAction::Switch { name } => return resolve_and_switch_namespace(&ws, name),
         NamespaceAction::Tasks { name } => {
@@ -911,11 +894,7 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
 fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
-        QueueAction::List => {
-            for n in ws.list_queues()? {
-                println!("{n}");
-            }
-        }
+        QueueAction::List => print_lines(ws.list_queues()?),
         QueueAction::Current => println!("{}", ws.queue()),
         QueueAction::Create { name, can_pull } => {
             ws.create_queue(&name, Some(can_pull))?;

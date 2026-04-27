@@ -241,6 +241,12 @@ impl Workspace {
             .ok_or_else(|| Error::Parse(format!("task {stable} content missing")))
     }
 
+    fn title_for(repo: &Repository, stable: &StableId) -> Result<String> {
+        Ok(object::read(repo, stable)?
+            .map(|t| t.title().to_string())
+            .unwrap_or_default())
+    }
+
     /// Create a task — or, when the content matches an existing task,
     /// reopen / re-bind it instead of clobbering.
     ///
@@ -412,22 +418,11 @@ impl Workspace {
         value: Option<&str>,
     ) -> Result<Vec<(Id, StableId, String)>> {
         let repo = self.repo()?;
-        let stables = properties::find(&repo, key, value)?;
-        let ns = namespace::read(&repo, &self.namespace())?;
-        let mut by_stable: BTreeMap<&StableId, u32> = BTreeMap::new();
-        for (h, s) in &ns.mapping {
-            by_stable.insert(s, *h);
-        }
+        let by_stable = ns_reverse(&namespace::read(&repo, &self.namespace())?);
         let mut out = Vec::new();
-        for stable in stables {
-            // Only return tasks visible in the active namespace.
-            let Some(&human) = by_stable.get(&stable) else {
-                continue;
-            };
-            let title = object::read(&repo, &stable)?
-                .map(|t| t.title().to_string())
-                .unwrap_or_default();
-            out.push((Id(human), stable, title));
+        for stable in properties::find(&repo, key, value)? {
+            let Some(&human) = by_stable.get(&stable) else { continue };
+            out.push((Id(human), stable.clone(), Self::title_for(&repo, &stable)?));
         }
         Ok(out)
     }
@@ -442,27 +437,13 @@ impl Workspace {
 
     pub fn read_stack(&self) -> Result<Vec<StackEntry>> {
         let repo = self.repo()?;
-        let q = queue::read(&repo, &self.queue())?;
-        let ns_name = self.namespace();
-        let ns = namespace::read(&repo, &ns_name)?;
-        let mut by_stable: BTreeMap<&StableId, u32> = BTreeMap::new();
-        for (h, s) in &ns.mapping {
-            by_stable.insert(s, *h);
-        }
-        let mut out = Vec::with_capacity(q.index.len());
-        for stable in q.index {
+        let by_stable = ns_reverse(&namespace::read(&repo, &self.namespace())?);
+        let mut out = Vec::new();
+        for stable in queue::read(&repo, &self.queue())?.index {
             // Skip tasks not visible in the active namespace (different ns owns them).
-            let Some(&human) = by_stable.get(&stable) else {
-                continue;
-            };
-            let title = object::read(&repo, &stable)?
-                .map(|t| t.title().to_string())
-                .unwrap_or_default();
-            out.push(StackEntry {
-                id: Id(human),
-                stable,
-                title,
-            });
+            let Some(&human) = by_stable.get(&stable) else { continue };
+            let title = Self::title_for(&repo, &stable)?;
+            out.push(StackEntry { id: Id(human), stable, title });
         }
         Ok(out)
     }
@@ -471,17 +452,10 @@ impl Workspace {
     /// sorted by human id ascending. Independent of any queue.
     pub fn list_namespace_tasks(&self, name: &str) -> Result<Vec<StackEntry>> {
         let repo = self.repo()?;
-        let ns = namespace::read(&repo, name)?;
-        let mut out = Vec::with_capacity(ns.mapping.len());
-        for (human, stable) in ns.mapping {
-            let title = object::read(&repo, &stable)?
-                .map(|t| t.title().to_string())
-                .unwrap_or_default();
-            out.push(StackEntry {
-                id: Id(human),
-                stable,
-                title,
-            });
+        let mut out = Vec::new();
+        for (human, stable) in namespace::read(&repo, name)?.mapping {
+            let title = Self::title_for(&repo, &stable)?;
+            out.push(StackEntry { id: Id(human), stable, title });
         }
         Ok(out)
     }
@@ -554,17 +528,12 @@ impl Workspace {
         let mut out = Vec::with_capacity(results.len());
         for res in results {
             let bound_human = if bind {
-                let ns = self.namespace();
-                let human = match namespace::human_for(&repo, &ns, &res.stable)? {
-                    Some(h) => h,
-                    None => namespace::assign_id(
-                        &repo,
-                        &ns,
-                        res.stable.clone(),
-                        "import-bind",
-                    )?,
-                };
-                Some(human)
+                Some(namespace::ensure_bound(
+                    &repo,
+                    &self.namespace(),
+                    res.stable.clone(),
+                    "import-bind",
+                )?)
             } else {
                 None
             };
@@ -774,22 +743,14 @@ impl Workspace {
 
     pub fn list_inbox(&self) -> Result<Vec<InboxItem>> {
         let repo = self.repo()?;
-        let q = queue::read(&repo, &self.queue())?;
-        let mut out = Vec::with_capacity(q.inbox.len());
-        for (key, stable) in q.inbox {
+        let mut out = Vec::new();
+        for (key, stable) in queue::read(&repo, &self.queue())?.inbox {
             let source_queue = key
                 .rsplit_once('-')
                 .map(|(s, _)| s.to_string())
                 .unwrap_or_else(|| key.clone());
-            let title = object::read(&repo, &stable)?
-                .map(|t| t.title().to_string())
-                .unwrap_or_default();
-            out.push(InboxItem {
-                key,
-                source_queue,
-                stable,
-                title,
-            });
+            let title = Self::title_for(&repo, &stable)?;
+            out.push(InboxItem { key, source_queue, stable, title });
         }
         Ok(out)
     }
@@ -800,11 +761,8 @@ impl Workspace {
         let repo = self.repo()?;
         let stable = queue::take_from_inbox(&repo, &self.queue(), key, "accept")?
             .ok_or_else(|| Error::Parse(format!("Inbox item '{key}' not found")))?;
-        let ns_name = self.namespace();
-        let human = match namespace::human_for(&repo, &ns_name, &stable)? {
-            Some(h) => h,
-            None => namespace::assign_id(&repo, &ns_name, stable.clone(), "accept-bind")?,
-        };
+        let human =
+            namespace::ensure_bound(&repo, &self.namespace(), stable.clone(), "accept-bind")?;
         queue::push_top(&repo, &self.queue(), stable, "accept-push")?;
         Ok(Id(human))
     }
@@ -849,11 +807,7 @@ impl Workspace {
         }
         queue::remove(&repo, source_queue, &stable, "pulled-out")?;
         queue::push_top(&repo, &cur, stable.clone(), "pull")?;
-        let ns_name = self.namespace();
-        let human = match namespace::human_for(&repo, &ns_name, &stable)? {
-            Some(h) => h,
-            None => namespace::assign_id(&repo, &ns_name, stable, "pull-bind")?,
-        };
+        let human = namespace::ensure_bound(&repo, &self.namespace(), stable, "pull-bind")?;
         Ok(Id(human))
     }
 
@@ -1013,6 +967,11 @@ impl Workspace {
         merge::fast_forward_non_task_refs(&repo, remote)?;
         Ok(merge::PullOutcome { tasks, namespaces })
     }
+}
+
+/// `stable → human` reverse of a namespace mapping for O(log n) visibility checks.
+fn ns_reverse(ns: &namespace::Namespace) -> BTreeMap<StableId, u32> {
+    ns.mapping.iter().map(|(h, s)| (s.clone(), *h)).collect()
 }
 
 pub fn find_git_dir(start: &std::path::Path) -> Option<PathBuf> {

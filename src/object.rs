@@ -65,10 +65,8 @@ impl Task {
     }
 }
 
-/// Local user's git signature, with a `tsk@local` fallback when the
-/// surrounding repo has no `user.name`/`user.email` configured. Shared
-/// across the namespace / queue / properties / merge writers so they all
-/// stamp commits the same way.
+/// Local user's git signature, with a `tsk@local` fallback. Shared by
+/// every writer so commits all carry the same author/committer.
 pub(crate) fn signature(repo: &Repository) -> Signature<'static> {
     repo.signature()
         .map(|s| s.to_owned())
