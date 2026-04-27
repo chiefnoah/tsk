@@ -9,12 +9,20 @@
 
 use crate::errors::{Error, Result};
 use crate::object::{self, StableId, Task as TaskObj};
+use crate::patch;
 use crate::{namespace, properties, queue};
 use git2::Repository;
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::str::FromStr;
+
+#[derive(Debug)]
+pub struct ImportOutcome {
+    pub stable: StableId,
+    pub commits_imported: usize,
+    pub bound_human: Option<u32>,
+}
 
 const NAMESPACE_FILE: &str = "namespace";
 const QUEUE_FILE: &str = "queue";
@@ -456,6 +464,45 @@ impl Workspace {
             current = c.parent(0).ok();
         }
         Ok(out)
+    }
+
+    /// Export a task as an mbox-format patch series. With `bind=true`, the
+    /// root entry carries the active namespace's human id so the recipient
+    /// can opt in to mirroring the binding on import.
+    pub fn export_task(&self, identifier: TaskIdentifier, bind: bool) -> Result<String> {
+        let (id, stable) = self.resolve(identifier)?;
+        let opts = patch::ExportOpts {
+            bind: if bind {
+                Some((self.namespace(), id.0))
+            } else {
+                None
+            },
+        };
+        let repo = self.repo()?;
+        patch::export_task(&repo, &stable, &opts)
+    }
+
+    /// Import a task from an mbox patch series produced by `export_task`.
+    /// On `bind=true`, also bind the imported stable id into the active
+    /// namespace (reusing the existing human id if already bound).
+    pub fn import_task(&self, mbox: &str, bind: bool) -> Result<ImportOutcome> {
+        let repo = self.repo()?;
+        let res = patch::import_task(&repo, mbox)?;
+        let bound_human = if bind {
+            let ns = self.namespace();
+            let human = match namespace::human_for(&repo, &ns, &res.stable)? {
+                Some(h) => h,
+                None => namespace::assign_id(&repo, &ns, res.stable.clone(), "import-bind")?,
+            };
+            Some(human)
+        } else {
+            None
+        };
+        Ok(ImportOutcome {
+            stable: res.stable,
+            commits_imported: res.commits_imported,
+            bound_human,
+        })
     }
 
     /// History of edits to a single task.

@@ -2,6 +2,7 @@ pub mod errors;
 mod fzf;
 mod namespace;
 mod object;
+mod patch;
 mod properties;
 mod queue;
 mod task;
@@ -110,6 +111,24 @@ enum Commands {
     /// Currently: backfill `status=open` on tasks without a status property.
     /// New migrations land here as they're added.
     FixUp,
+    /// Export a task as an mbox-format patch series (one entry per commit).
+    /// Pipe to a file for offline transfer; recipient runs `tsk import`.
+    Export {
+        #[command(flatten)]
+        task_id: TaskId,
+        /// Embed the task's namespace+human-id so the recipient can opt in
+        /// to binding it on import.
+        #[arg(long)]
+        bind: bool,
+    },
+    /// Import a task from an mbox-format patch series (read from stdin).
+    /// Verifies stable id; rejects tampered patches.
+    Import {
+        /// Bind the imported task into the active namespace, allocating a
+        /// fresh human id (or reusing an existing binding to the same stable id).
+        #[arg(long)]
+        bind: bool,
+    },
     /// Print the commit history of a tsk ref. Newest commit first.
     Log {
         #[command(subcommand)]
@@ -336,6 +355,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             Workspace::from_path(dir)?.deprioritize(task_id.into())
         }
         Commands::Clean => Workspace::from_path(dir)?.clean(),
+        Commands::Export { task_id, bind } => command_export(dir, task_id.into(), bind),
+        Commands::Import { bind } => command_import(dir, bind),
         Commands::Log { target } => command_log(dir, target),
         Commands::FixUp => {
             let ws = Workspace::from_path(dir)?;
@@ -598,6 +619,34 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
     if let Some(r) = effective_remote(remote) {
         let _ = ws.git_push(&r);
     }
+    Ok(())
+}
+
+fn command_export(
+    dir: PathBuf,
+    identifier: TaskIdentifier,
+    bind: bool,
+) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let mbox = ws.export_task(identifier, bind)?;
+    print!("{mbox}");
+    Ok(())
+}
+
+fn command_import(dir: PathBuf, bind: bool) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let mut buf = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+    let res = ws.import_task(&buf, bind)?;
+    let bound = if let Some(id) = res.bound_human {
+        format!(" bound as {}-{}", ws.namespace(), id)
+    } else {
+        String::new()
+    };
+    println!(
+        "Imported {} commit(s) for task {}{bound}",
+        res.commits_imported, res.stable
+    );
     Ok(())
 }
 

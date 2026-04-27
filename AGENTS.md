@@ -96,6 +96,20 @@ tsk git-pull              # fetch + force-update local refs/tsk/*
 tsk inbox                 # auto-pulls then lists pending inbox items
 ```
 
+## Offline transfer (email, etc.)
+
+Export a task as an mbox-format patch series and pipe it anywhere:
+
+```
+tsk export -T tsk-N [--bind] > task.mbox    # one mbox entry per commit
+tsk import [--bind] < task.mbox             # rebuild + verify on receiver
+```
+
+`--bind` on export embeds your namespace+human-id; `--bind` on import binds
+the task into the receiver's active namespace. Stable ids are content-
+addressed, so the receiver verifies the SHA on import — tampered patches
+are rejected.
+
 ## Conventions for agents working this repo
 
 - Always `tsk list` first. Don't invent work; pick the top task or ask.
