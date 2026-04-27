@@ -613,40 +613,75 @@ impl Workspace {
         Ok(rewritten)
     }
 
-    /// Prune empty / orphan refs under `refs/tsk/*`. Specifically:
+    /// Prune empty / orphan refs under `refs/tsk/*` and recover from
+    /// partial multi-ref writes. Returns
+    /// `(queues_dropped, prop_orphans_dropped, ghost_bindings_dropped, orphan_queue_entries_dropped)`.
+    ///
+    /// Recovers:
     /// - empty queues (no index, no inbox) other than the default `tsk`
     ///   queue, which always exists by convention;
     /// - property index entries pointing at task refs that no longer
     ///   resolve (the index ref itself is auto-deleted by `properties::set`
-    ///   when its last entry goes).
-    /// Task object refs and namespace refs are left alone — task history is
-    /// preserved intentionally, and namespace `next` counters are valid even
-    /// when no live binding uses the latest id.
-    pub fn gc_refs(&self) -> Result<(usize, usize)> {
+    ///   when its last entry goes);
+    /// - ghost namespace bindings (`human → stable` where stable's task
+    ///   ref doesn't resolve) — left behind if a crash hit between
+    ///   `object::create` and `namespace::assign_id` and the task object
+    ///   was later GC'd, or if a remote namespace ref was force-pushed
+    ///   ahead of its task refs;
+    /// - queue index entries pointing at missing task refs (same root
+    ///   cause); also covered by `tsk clean` for the active queue.
+    ///
+    /// Task object refs are left alone — task history is preserved
+    /// intentionally — and namespace `next` counters are valid even when
+    /// no live binding uses the latest id.
+    pub fn gc_refs(&self) -> Result<(usize, usize, usize, usize)> {
         let repo = self.repo()?;
-        let mut queues_pruned = 0usize;
-        let mut prop_orphans_pruned = 0usize;
+        let task_exists = |s: &StableId| repo.find_reference(&s.refname()).is_ok();
+        let mut queues_pruned = 0;
+        let mut prop_orphans = 0;
+        let mut ghost_bindings = 0;
+        let mut orphan_queue_entries = 0;
+
+        // Empty queues + orphan queue index entries.
         for name in queue::list_names(&repo)? {
-            if name == queue::DEFAULT_QUEUE {
-                continue;
+            let mut q = queue::read(&repo, &name)?;
+            let before = q.index.len();
+            q.index.retain(&task_exists);
+            if q.index.len() != before {
+                let removed = before - q.index.len();
+                orphan_queue_entries += removed;
+                queue::write(&repo, &name, &q, "gc-orphan-queue")?;
             }
-            let q = queue::read(&repo, &name)?;
-            if q.index.is_empty() && q.inbox.is_empty() {
+            if name != queue::DEFAULT_QUEUE && q.index.is_empty() && q.inbox.is_empty() {
                 if let Ok(mut r) = repo.find_reference(&queue::refname(&name)) {
                     r.delete()?;
                     queues_pruned += 1;
                 }
             }
         }
+
+        // Orphan property index entries.
         for key in properties::list_keys(&repo)? {
             for (stable, _vals) in properties::read(&repo, &key)? {
-                if repo.find_reference(&stable.refname()).is_err() {
+                if !task_exists(&stable) {
                     properties::set(&repo, &key, &stable, &[], "gc-orphan")?;
-                    prop_orphans_pruned += 1;
+                    prop_orphans += 1;
                 }
             }
         }
-        Ok((queues_pruned, prop_orphans_pruned))
+
+        // Ghost namespace bindings (human → stable with no task ref).
+        for ns_name in namespace::list_names(&repo)? {
+            let mut ns = namespace::read(&repo, &ns_name)?;
+            let before = ns.mapping.len();
+            ns.mapping.retain(|_, s| task_exists(s));
+            if ns.mapping.len() != before {
+                ghost_bindings += before - ns.mapping.len();
+                namespace::write(&repo, &ns_name, &ns, "gc-ghost-bindings")?;
+            }
+        }
+
+        Ok((queues_pruned, prop_orphans, ghost_bindings, orphan_queue_entries))
     }
 
     /// Drop a task from the active queue and mark it `status=done`. The
@@ -1431,30 +1466,35 @@ mod test {
     }
 
     #[test]
-    fn gc_refs_prunes_empty_queues_and_orphan_prop_entries() {
+    fn gc_refs_prunes_all_drift_classes() {
         let (_d, ws) = fresh_workspace();
         let repo = ws.repo().unwrap();
 
-        // 1. Empty non-default queue → should be pruned.
+        // 1. Empty non-default queue → pruned.
         ws.create_queue("empty", None).unwrap();
-        assert!(repo.find_reference(&queue::refname("empty")).is_ok());
 
-        // 2. Orphan property index entry: write a property into the index
-        //    pointing at a stable id whose task ref doesn't exist.
+        // 2. Orphan property index entry pointing at a missing task ref.
         let orphan = StableId("0".repeat(40));
         properties::set(&repo, "ghost", &orphan, &["x".into()], "test").unwrap();
-        assert!(repo.find_reference(&properties::refname("ghost")).is_ok());
 
-        let (queues, props) = ws.gc_refs().unwrap();
-        assert_eq!(queues, 1);
-        assert_eq!(props, 1);
+        // 3. Ghost namespace binding: assign_id binds before the task ref
+        //    exists (simulating a partial multi-ref write).
+        namespace::assign_id(&repo, "tsk", orphan.clone(), "ghost-bind").unwrap();
+
+        // 4. Orphan queue index entry pointing at the same missing stable.
+        queue::push_top(&repo, "tsk", orphan.clone(), "orphan-push").unwrap();
+
+        let (queues, props, ghosts, qe) = ws.gc_refs().unwrap();
+        assert_eq!(queues, 1, "empty queue pruned");
+        assert_eq!(props, 1, "orphan property entry pruned");
+        assert_eq!(ghosts, 1, "ghost namespace binding dropped");
+        assert_eq!(qe, 1, "orphan queue index entry dropped");
         assert!(repo.find_reference(&queue::refname("empty")).is_err());
-        // The orphan was the index's only entry, so the index ref is dropped too.
         assert!(repo.find_reference(&properties::refname("ghost")).is_err());
+        assert!(namespace::human_for(&repo, "tsk", &orphan).unwrap().is_none());
 
-        // Idempotent: a second pass changes nothing.
-        let (q2, p2) = ws.gc_refs().unwrap();
-        assert_eq!((q2, p2), (0, 0));
+        // Idempotent: second pass changes nothing.
+        assert_eq!(ws.gc_refs().unwrap(), (0, 0, 0, 0));
     }
 
     #[test]
