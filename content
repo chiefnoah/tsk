@@ -1,0 +1,7 @@
+Auto-renumber on namespace binding conflict using rebase-like semantics
+
+Two clones can each allocate the same human id (e.g. both pick tsk-5) before syncing, then push. Today the second push force-overwrites and one binding silently disappears.
+
+Detect on git-pull: a remote namespace ref's mapping for human id N points at a different stable id than the local mapping for N. Auto-renumber the local conflicting binding by moving it to the next free human id (pick max(local.next, remote.next) and assign), then commit the namespace tree with a 'rebase-bind' message that records the renumber. The remote's binding wins the original human id.
+
+Print the renumber map at pull time so the user sees 'tsk-5 → tsk-12 (conflict with origin)'. Update the active queue index to point at the new ids. Tests: two clones, both run new_task to get tsk-5, push from clone-A first, clone-B pulls and verifies its task moved to tsk-6 with full content/history intact.
