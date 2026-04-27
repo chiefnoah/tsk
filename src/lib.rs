@@ -1,6 +1,7 @@
 pub mod errors;
 mod fzf;
 mod namespace;
+mod merge;
 mod object;
 mod patch;
 mod properties;
@@ -144,9 +145,13 @@ enum Commands {
     GitPush {
         remote: Option<String>,
     },
-    /// Fetch tsk refs from a git remote (default: origin).
+    /// Fetch tsk refs from a git remote (default: origin) and reconcile
+    /// divergent task histories. Default strategy is merge; pass --rebase
+    /// to replay local-only commits onto the remote tip instead.
     GitPull {
         remote: Option<String>,
+        #[arg(long)]
+        rebase: bool,
     },
     /// Share a task into another namespace (binds same stable id under that namespace's next human id).
     Share {
@@ -372,9 +377,21 @@ fn dispatch(cli: Cli) -> Result<()> {
             let r = remote.unwrap_or_else(|| "origin".to_string());
             Workspace::from_path(dir)?.git_push(&r)
         }
-        Commands::GitPull { remote } => {
+        Commands::GitPull { remote, rebase } => {
             let r = remote.unwrap_or_else(|| "origin".to_string());
-            Workspace::from_path(dir)?.git_pull(&r)
+            let strategy = if rebase {
+                merge::Strategy::Rebase
+            } else {
+                merge::Strategy::Merge
+            };
+            let recs = Workspace::from_path(dir)?.git_pull_with_strategy(&r, strategy)?;
+            for rec in &recs {
+                if !matches!(rec.kind, merge::ReconKind::Unchanged) {
+                    let short = &rec.stable.0[..12.min(rec.stable.0.len())];
+                    println!("{:?} {short}", rec.kind);
+                }
+            }
+            Ok(())
         }
         Commands::Share { target, task_id } => command_share(dir, target, task_id),
         Commands::Assign {

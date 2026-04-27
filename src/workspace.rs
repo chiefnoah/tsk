@@ -8,7 +8,7 @@
 use crate::errors::{Error, Result};
 use crate::object::{self, StableId, Task as TaskObj};
 use crate::patch;
-use crate::{namespace, properties, queue};
+use crate::{merge, namespace, properties, queue};
 use git2::Repository;
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -785,15 +785,37 @@ impl Workspace {
     }
 
     pub fn git_pull(&self, remote: &str) -> Result<()> {
+        self.git_pull_with_strategy(remote, merge::Strategy::default())?;
+        Ok(())
+    }
+
+    /// Fetch into a non-clobbering shadow namespace, then reconcile each
+    /// task ref under the chosen strategy (default `merge`). Non-task refs
+    /// (namespaces/queues/property indices) still force-update from the
+    /// remote — better merging for those is tracked separately.
+    pub fn git_pull_with_strategy(
+        &self,
+        remote: &str,
+        strategy: merge::Strategy,
+    ) -> Result<Vec<merge::Reconciliation>> {
+        // `--refmap=` disables the remote's configured fetch refspec so our
+        // explicit refspec is the *only* one applied; otherwise git also
+        // performs the configured `+refs/tsk/*:refs/tsk/*` mapping and
+        // clobbers local task refs before we get a chance to reconcile.
+        let refspec = format!("+refs/tsk/*:{}{remote}/*", merge::FETCH_PREFIX);
         let s = std::process::Command::new("git")
             .arg("--git-dir")
             .arg(&self.git_dir)
-            .args(["fetch", "--prune", remote, "+refs/tsk/*:refs/tsk/*"])
+            .args(["fetch", "--prune", "--refmap=", remote])
+            .arg(&refspec)
             .status()?;
         if !s.success() {
             return Err(Error::Parse("git fetch failed".into()));
         }
-        Ok(())
+        let repo = self.repo()?;
+        let recs = merge::reconcile_task_refs(&repo, remote, strategy)?;
+        merge::fast_forward_non_task_refs(&repo, remote)?;
+        Ok(recs)
     }
 }
 

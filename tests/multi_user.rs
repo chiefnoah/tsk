@@ -259,3 +259,53 @@ fn share_into_namespace_round_trip() {
     assert_eq!(code, 0, "show should succeed: stderr={stderr}");
     assert!(stdout.contains("to share"), "got {stdout}");
 }
+
+#[test]
+fn divergent_task_edits_merge_on_pull() {
+    let (_dir, alice, bob) = setup_two_clones();
+
+    // Alice creates a task, pushes; Bob pulls so they share the same
+    // root commit on the task ref.
+    tsk_ok(&alice, &["push", "shared task"]);
+    tsk_ok(&alice, &["git-push"]);
+    tsk_ok(&bob, &["git-pull"]);
+
+    // Both edit the same task, touching different properties (no overlap).
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "priority", "high"]);
+    tsk_ok(&bob, &["prop", "add", "-T", "tsk-1", "owner", "bob"]);
+
+    // Alice pushes first; Bob's push would be non-fast-forward, so he pulls.
+    tsk_ok(&alice, &["git-push"]);
+    tsk_ok(&bob, &["git-pull"]);
+
+    // After the merge pull, Bob should see both his and Alice's edits on
+    // the task.
+    let listing = tsk_ok(&bob, &["prop", "list", "-T", "tsk-1"]);
+    eprintln!("LISTING: {listing}");
+    assert!(listing.contains("priority\thigh"), "alice's edit lost: {listing}");
+    assert!(listing.contains("owner\tbob"), "bob's edit lost: {listing}");
+}
+
+#[test]
+fn divergent_task_edits_rebase_on_pull() {
+    let (_dir, alice, bob) = setup_two_clones();
+
+    tsk_ok(&alice, &["push", "shared task"]);
+    tsk_ok(&alice, &["git-push"]);
+    tsk_ok(&bob, &["git-pull"]);
+
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "priority", "high"]);
+    tsk_ok(&bob, &["prop", "add", "-T", "tsk-1", "owner", "bob"]);
+
+    tsk_ok(&alice, &["git-push"]);
+    let pull_out = tsk_ok(&bob, &["git-pull", "--rebase"]);
+    assert!(
+        pull_out.contains("Rebased") || pull_out.is_empty(),
+        "expected rebase summary, got {pull_out}"
+    );
+
+    // Both edits survived.
+    let listing = tsk_ok(&bob, &["prop", "list", "-T", "tsk-1"]);
+    assert!(listing.contains("priority\thigh"), "alice's edit lost: {listing}");
+    assert!(listing.contains("owner\tbob"), "bob's edit lost: {listing}");
+}

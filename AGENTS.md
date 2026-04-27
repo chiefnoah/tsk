@@ -92,7 +92,8 @@ Local refs aren't visible to the user until pushed:
 
 ```
 tsk git-push              # push refs/tsk/* to origin (also runs after assign/reject)
-tsk git-pull              # fetch + force-update local refs/tsk/*
+tsk git-pull              # fetch + reconcile divergent task histories
+tsk git-pull --rebase     # replay local commits on the remote tip instead of merging
 tsk inbox                 # auto-pulls then lists pending inbox items
 ```
 
