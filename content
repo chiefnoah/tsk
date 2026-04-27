@@ -1,0 +1,12 @@
+Rebase/merge handling for divergent task histories
+
+Today refs/tsk/tasks/<sha> is force-overwritten on push, so two clones that both edit a task end up with last-push-wins. We need real merge handling, supporting both merge-commit and rebase-style strategies, leaning on git machinery where possible.
+
+Approach:
+- On 'tsk git-pull', detect when a local task ref has diverged from the fetched remote (common-ancestor exists, neither is descendant of the other).
+- Strategy 'merge': use git2's merge_trees on the two task tree objects (content + per-property blobs). For non-conflicting property/content changes the merge is automatic. Write a merge commit with two parents, both ancestors preserved.
+- Strategy 'rebase': replay local commits on top of remote tip using git2 cherry_pick / merge_commits. Yields a linear history with the original author preserved per commit (mirrors git rebase behavior).
+- Strategy is configurable via tsk config or per-pull flag (--merge / --rebase). Default: merge (safer, no history rewrite).
+- Genuine content conflicts (same line edited differently): mark the task with a 'conflict' property, write both versions into the tree under content.ours / content.theirs, and require user resolution via tsk edit or a new tsk resolve.
+
+Tests: simulate two clones via the multi_user.rs harness; both edit the same task; pull with each strategy; verify expected ref shape and authorship retention.
