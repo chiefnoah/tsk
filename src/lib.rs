@@ -315,8 +315,42 @@ struct TaskId {
     id: Option<u32>,
     #[arg(short = 'T', value_name = "TSK-ID", value_parser = parse_id)]
     tsk_id: Option<Id>,
-    #[arg(short = 'r', value_name = "RELATIVE", default_value_t = 0)]
-    relative_id: u32,
+    #[arg(short = 'r', value_name = "RELATIVE")]
+    relative_id: Option<u32>,
+}
+
+impl TaskId {
+    /// True when the user passed none of `-t`, `-T`, or `-r`. Commands
+    /// that fall back to a fuzzy finder use this to decide whether to
+    /// prompt; commands that prefer "top of stack" silently treat this
+    /// as `Relative(0)` via the `From` impl.
+    fn is_empty(&self) -> bool {
+        self.id.is_none() && self.tsk_id.is_none() && self.relative_id.is_none()
+    }
+
+    /// Resolve to a `TaskIdentifier`, dropping into an fzf picker when no
+    /// flag was supplied. Use when interactive selection is the desired
+    /// fallback (e.g. `tsk export`); otherwise prefer `Into`, which
+    /// silently picks the top of the stack.
+    fn resolve_or_pick(self, ws: &Workspace) -> Result<TaskIdentifier> {
+        if !self.is_empty() {
+            return Ok(self.into());
+        }
+        let entries = ws.list_namespace_tasks(&ws.namespace())?;
+        if entries.is_empty() {
+            return Err(errors::Error::NoTasks);
+        }
+        let lines: Vec<String> = entries
+            .iter()
+            .map(|e| format!("{}\t{}", e.id, e.title))
+            .collect();
+        let picked: Option<String> = fzf::select(lines, ["--prompt=task> "])?;
+        let picked = picked.ok_or(errors::Error::NoTasks)?;
+        let id_str = picked.split('\t').next().unwrap_or("");
+        let id: Id =
+            parse_id(id_str).map_err(|e| errors::Error::Parse(e.to_string()))?;
+        Ok(TaskIdentifier::Id(id))
+    }
 }
 
 impl From<TaskId> for TaskIdentifier {
@@ -324,7 +358,7 @@ impl From<TaskId> for TaskIdentifier {
         if let Some(id) = v.id.map(Id::from).or(v.tsk_id) {
             TaskIdentifier::Id(id)
         } else {
-            TaskIdentifier::Relative(v.relative_id)
+            TaskIdentifier::Relative(v.relative_id.unwrap_or(0))
         }
     }
 }
@@ -366,7 +400,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             Workspace::from_path(dir)?.deprioritize(task_id.into())
         }
         Commands::Clean => Workspace::from_path(dir)?.clean(),
-        Commands::Export { task_id, bind } => command_export(dir, task_id.into(), bind),
+        Commands::Export { task_id, bind } => command_export(dir, task_id, bind),
         Commands::Import { bind } => command_import(dir, bind),
         Commands::Log { target } => command_log(dir, target),
         Commands::FixUp => {
@@ -665,12 +699,9 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
     Ok(())
 }
 
-fn command_export(
-    dir: PathBuf,
-    identifier: TaskIdentifier,
-    bind: bool,
-) -> Result<()> {
+fn command_export(dir: PathBuf, task_id: TaskId, bind: bool) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
+    let identifier = task_id.resolve_or_pick(&ws)?;
     let mbox = ws.export_task(identifier, bind)?;
     print!("{mbox}");
     Ok(())
