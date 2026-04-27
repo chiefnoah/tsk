@@ -684,6 +684,18 @@ impl Workspace {
         Ok((queues_pruned, prop_orphans, ghost_bindings, orphan_queue_entries))
     }
 
+    /// Flip a task back to `status=open` and push it to the top of the
+    /// active queue. Idempotent — already-open tasks are unchanged on
+    /// disk; the queue push deduplicates on the existing entry.
+    pub fn reopen(&self, identifier: TaskIdentifier) -> Result<Id> {
+        let mut task = self.task(identifier)?;
+        task.attributes
+            .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
+        self.save_task(&task)?;
+        queue::push_top(&self.repo()?, &self.queue(), task.stable, "reopen")?;
+        Ok(task.id)
+    }
+
     /// Drop a task from the active queue and mark it `status=done`. The
     /// namespace binding is kept so the task remains addressable by its
     /// human id (and discoverable via `tsk prop find status done`); the

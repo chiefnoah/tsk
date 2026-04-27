@@ -97,6 +97,11 @@ enum Commands {
         #[command(flatten)]
         task_id: TaskId,
     },
+    /// Flip a `done` task back to `open` and push it onto the active queue.
+    Reopen {
+        #[command(flatten)]
+        task_id: TaskId,
+    },
     /// Swap the top two tasks.
     Swap,
     /// Rotate top 3: third → top.
@@ -412,6 +417,11 @@ fn dispatch(cli: Cli) -> Result<()> {
         } => command_show(dir, task_id, show_attrs, raw),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Drop { task_id } => command_drop(dir, task_id),
+        Commands::Reopen { task_id } => {
+            let id = Workspace::from_path(dir)?.reopen(task_id.into())?;
+            println!("Reopened {id}");
+            Ok(())
+        }
         Commands::Swap => Workspace::from_path(dir)?.swap_top(),
         Commands::Rot => Workspace::from_path(dir)?.rot(),
         Commands::Tor => Workspace::from_path(dir)?.tor(),
