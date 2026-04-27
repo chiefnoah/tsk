@@ -1,0 +1,10 @@
+Reopen on duplicate content instead of clobbering
+
+new_task today calls object::create which uses the content blob's SHA as the stable id. If a user pushes a task whose content matches an existing (typically dropped) task, the create succeeds silently and overwrites the namespace binding for that stable id, effectively losing the old binding's history pointer.
+
+Detect the collision: before create, check whether refs/tsk/tasks/<sha> already exists.
+- If it does and the task is currently bound in the active namespace with status=done: flip status back to open, push to the active queue, return the existing human id (i.e. 'reopen').
+- If it does and is bound elsewhere: error, suggest 'tsk share' or explicit 'tsk reopen -T tsk-N'.
+- If it does and is unbound in the active namespace: bind it (assign a fresh human id) and push.
+
+This makes pushing a duplicate body the natural way to revive a finished task — no separate command needed. The dedicated 'tsk reopen' (tsk-14) becomes a convenience wrapper that takes an explicit task id.
