@@ -1,0 +1,10 @@
+Atomic multi-ref operations
+
+A single tsk operation (new_task, drop, accept_inbox, share, etc.) writes to several refs in sequence: refs/tsk/tasks/<sha>, refs/tsk/namespaces/<ns>, refs/tsk/queues/<q>, and refs/tsk/properties/<key>. A crash or push failure mid-sequence leaves inconsistent state (task exists but no namespace binding, or namespace binding but no queue index entry, or stale property index).
+
+Investigate options:
+1. Wrap each operation in a single 'unit-of-work' commit that updates a top-level tree pointing at all involved refs (heavy; rewrites the storage model).
+2. Cheaper: an idempotent reconcile pass tsk fix-up runs on every command start, detecting and patching the common drift cases.
+3. Order writes so the last write is the user-visible one; partial state is recoverable from the others.
+
+Pick a direction, document the chosen invariant, and add tests that simulate mid-operation failure (drop a write, run reconcile, assert convergence).
