@@ -1,0 +1,3 @@
+Fuzzy finder for tsk export
+
+When tsk export is run with no -T, drop into the fzf picker (same wrapper used by tsk switch) showing all tasks in the active namespace as 'tsk-N\ttitle'. Multi-select with fzf's tab-binding so the user can pick several tasks at once for the multi-task export work in tsk-NN. Use list_namespace_tasks for the source list — it includes done tasks too, which is correct for export.
