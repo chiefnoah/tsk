@@ -598,7 +598,8 @@ fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool) -> Result
 }
 
 fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool, raw: bool) -> Result<()> {
-    let task = Workspace::from_path(dir)?.task(task_id.into())?;
+    let ws = Workspace::from_path(dir)?;
+    let task = ws.task(task_id.into())?;
     if show_attrs && !task.attributes.is_empty() {
         println!("---");
         for (k, vs) in &task.attributes {
@@ -611,14 +612,33 @@ fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool, raw: bool) -> R
     let plain = task.to_string();
     match (raw, task::parse(&plain)) {
         (false, Some(parsed)) => {
-            // Re-attach the title — the parser is fed the body-side text and
-            // produces a styled body; the title is rendered as-is on top.
             print!("{}", parsed.content);
+            // Footnote section: resolve each [[...]] link against the active
+            // namespace (or just echo for foreign / external links).
+            if !parsed.links.is_empty() {
+                println!();
+                for (i, link) in parsed.links.iter().enumerate() {
+                    println!("\n{} {}", task::super_num(i + 1), render_link(&ws, link));
+                }
+            }
         }
         _ => print!("{plain}"),
     }
     println!();
     Ok(())
+}
+
+fn render_link(ws: &Workspace, link: &task::ParsedLink) -> String {
+    use task::ParsedLink::*;
+    match link {
+        Internal(id) => match ws.task((*id).into()) {
+            Ok(t) => format!("{id}: {}", t.title),
+            Err(_) => format!("{id}: <not bound in '{}'>", ws.namespace()),
+        },
+        Namespaced { namespace, id } => format!("{namespace}/{id}"),
+        Foreign { prefix, id } => format!("{prefix}-{id} (foreign)"),
+        External(url) => url.to_string(),
+    }
 }
 
 fn command_edit(dir: PathBuf, task_id: TaskId) -> Result<()> {

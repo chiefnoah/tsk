@@ -272,7 +272,7 @@ pub(crate) fn parse(s: &str) -> Option<ParsedTask> {
 }
 
 /// Converts a unsigned integer into a superscripted string
-fn super_num(num: usize) -> String {
+pub(crate) fn super_num(num: usize) -> String {
     let num_str = num.to_string();
     let mut out = String::with_capacity(num_str.len());
     for char in num_str.chars() {
