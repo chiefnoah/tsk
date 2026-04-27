@@ -1,0 +1,11 @@
+Scope assign/inbox push and pull to relevant refs only
+
+'git push' and 'git fetch' currently ship all refs/tsk/* on every assign and reject. For one-off operations we only need:
+- assign-out: push refs/tsk/queues/<target> (target's inbox got the new entry) and refs/tsk/tasks/<stable> (so target can read the body) and any property indices touching <stable>.
+- accept-inbox: push refs/tsk/queues/<active> (active queue gained an entry, inbox lost one) and the active namespace.
+- reject-inbox: push refs/tsk/queues/<active> and refs/tsk/queues/<source> (we just bounced an entry back).
+- inbox auto-pull: fetch only refs/tsk/queues/<active>.
+
+Build a small refspec helper that takes an operation kind + parameters and returns the minimal set of refs to push/fetch. Use git2 RemoteCallbacks to limit the wire transfer. Full 'tsk git-push' / 'tsk git-pull' still send everything; this is an optimization for the auto-push paths after assign/reject and the auto-pull path before inbox.
+
+Test by counting refs transferred (mock or inspect post-push log) before and after.
