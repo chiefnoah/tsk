@@ -1,0 +1,3 @@
+Drop the title blob from task trees
+
+Each task tree carries both a 'content' blob and a 'title' blob, where title is just content's first line. The cache adds nothing — title() is cheap, runs in microseconds, and the duplication risks drift if a writer ever updates one without the other. Remove the title blob from build_tree, stop reading it on read(), and update the tree-iteration in patch::write_entry (already skips it). Add a fix-up migration that strips title blobs from existing task trees on next save (or eagerly via tsk fix-up).
