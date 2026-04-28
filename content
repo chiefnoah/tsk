@@ -1,0 +1,12 @@
+Validate namespace/queue names as git ref names
+
+Workspace::queue() / Workspace::namespace() return raw selector-file
+contents (and the global -q override) without re-validating against git
+ref-name rules. Not exploitable today (git2 rejects bad names at write
+time, read paths fail safely) but the next code path that bypasses git2
+loses the invariant. Tighten at the boundary.
+
+Plan: call namespace::validate_name / queue::validate_name in the
+Workspace::namespace() / Workspace::queue() readers (after the selector-
+file read or -q override). Same for the remote selector. Add tests
+that malformed selector files error cleanly.
