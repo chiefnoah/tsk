@@ -73,7 +73,7 @@ enum Commands {
         all: bool,
         #[arg(short = 'c', default_value_t = 10)]
         count: usize,
-        #[arg(short = 'q', default_value_t = false)]
+        #[arg(short = 'i', default_value_t = false)]
         ids_only: bool,
     },
     /// Show a task by id.
