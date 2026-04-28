@@ -1,0 +1,15 @@
+Trust-model paragraph in ARCHITECTURE.md
+
+A 3rd-party reviewer assumed Option A (immutable content) when the
+design is Option B: object::update rewrites the content blob, tsk edit
+opens $EDITOR on the body, sync propagates edits. Documenting this
+forecloses repeat misreads and tells future contributors what stable
+id actually promises.
+
+Plan: add a Trust model section to ARCHITECTURE.md stating: stable id
+is the SHA of the birth content blob, not an immutability guarantee;
+fetched refs are untrusted-but-accepted bytes (same trust grain as
+git itself); the server is not a trust boundary; common hosts (GitHub,
+Forgejo, Tangled, GitLab) don't support per-refspace permissions, so
+any integrity story must live client-side. Cross-link from AGENTS.md
+if helpful.
