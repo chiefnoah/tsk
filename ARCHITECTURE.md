@@ -123,6 +123,46 @@ state because the most-derived ref (queue) is written last.
 pass that drops orphan property entries, ghost namespace bindings,
 empty queues, and dangling queue index entries.
 
+## Trust model
+
+`tsk` borrows git's trust grain: if you accept a remote, you accept
+its bytes. The stable id is the SHA-1 of the **birth** content blob —
+the thing the task started life as — not a promise of immutability.
+`object::update` rewrites the content blob whenever someone runs
+`tsk edit`, and `git-pull` propagates those edits like any other
+commit. A teammate with push access to your shared origin can
+rewrite a task's body and the next pull will accept it. That's the
+feature, not a bug.
+
+What stable id *does* guarantee:
+
+- The same content always hashes to the same id, on every clone,
+  forever. That's why `new_task` short-circuits to a reopen on
+  duplicate content (`Workspace::new_task`).
+- An mbox patch series carries `X-Tsk-Stable-Id` and the receiver
+  verifies that the **first** commit's content blob hashes to it
+  (`patch::import_one_chain`). Tampered birth content is rejected.
+- Per-namespace human ids (`tsk-N`) are minted client-side and can
+  collide across clones; `git-pull` resolves collisions by
+  renumbering local bindings (see the reconciliation matrix below).
+
+What it does *not* guarantee:
+
+- Immutability of the body after birth. Edits are commits on the
+  task ref's chain; `object::read` returns the tip's tree.
+- Authenticity of the editor. Git author/committer fields are
+  self-asserted; tsk does not sign or verify them.
+- Server-side enforcement. None of the common hosts (GitHub,
+  Forgejo, Tangled, GitLab) expose per-refspace permissions —
+  branch/tag protection only covers `refs/heads/*` and
+  `refs/tags/*`. Any stronger integrity story has to live in the
+  tsk client.
+
+If your project needs body-level immutability or signed edits,
+build it on top: pin a property like `signature: <sig>` on every
+write and reject pulls that don't carry one. The current code base
+deliberately doesn't.
+
 ## Sync flow: `tsk git-pull`
 
 ```mermaid
