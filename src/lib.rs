@@ -181,7 +181,8 @@ enum Commands {
     },
     /// Move a task from the active queue's index into another queue's inbox.
     Assign {
-        target: String,
+        /// Target queue. Omit to fzf-pick from existing queues.
+        target: Option<String>,
         #[command(flatten)]
         task_id: TaskId,
         /// Auto-push refs to this remote after assigning. Empty string skips. Default: origin.
@@ -699,15 +700,35 @@ fn command_share(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {
 
 fn command_assign(
     dir: PathBuf,
-    target: String,
+    target: Option<String>,
     task_id: TaskId,
     remote: Option<String>,
 ) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
+    let target = match target {
+        Some(t) => t,
+        None => pick_assign_target(&ws)?,
+    };
     let (key, stable) = ws.assign_to_queue(task_id.into(), &target)?;
     println!("Assigned to {target} as {key}");
     auto_push_refs(&ws, remote, ws.refs_for_assign_out(&target, &stable)?);
     Ok(())
+}
+
+fn pick_assign_target(ws: &Workspace) -> Result<String> {
+    let cur = ws.queue();
+    let candidates: Vec<String> = ws
+        .list_queues()?
+        .into_iter()
+        .filter(|q| q != &cur)
+        .collect();
+    if candidates.is_empty() {
+        return Err(errors::Error::Parse(
+            "No other queues to assign to".into(),
+        ));
+    }
+    fzf::select::<_, String, _>(candidates, ["--prompt=assign to> "])?
+        .ok_or_else(|| errors::Error::Parse("No queue selected".into()))
 }
 
 fn command_pull(dir: PathBuf, source: String, task_id: TaskId) -> Result<()> {
