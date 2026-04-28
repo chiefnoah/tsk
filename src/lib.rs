@@ -256,6 +256,9 @@ enum LogTarget {
     /// Edit history of a namespace tree (id assignments, drops, shares).
     /// Defaults to the active namespace.
     Namespace { name: Option<String> },
+    /// Edit history of a queue tree (pushes, drops, inbox moves).
+    /// Defaults to the active queue.
+    Queue { name: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -831,6 +834,7 @@ fn command_log(dir: PathBuf, target: LogTarget) -> Result<()> {
         LogTarget::Namespace { name } => {
             ws.log_namespace(&name.unwrap_or_else(|| ws.namespace()))?
         }
+        LogTarget::Queue { name } => ws.log_queue(&name.unwrap_or_else(|| ws.queue()))?,
     };
     for c in commits {
         // git-log --oneline-style: short oid, summary, then author + date below.

@@ -74,6 +74,7 @@ auditable:
 ```
 tsk log task -T tsk-N            # all commits on a task's tree
 tsk log namespace [<name>]       # id assignments / drops in a namespace
+tsk log queue [<name>]           # pushes / drops / inbox moves in a queue
 ```
 
 ## Migrations

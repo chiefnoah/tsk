@@ -616,6 +616,11 @@ impl Workspace {
         self.log_ref(&namespace::refname(name))
     }
 
+    /// History of edits to a queue's tree (pushes, drops, inbox moves).
+    pub fn log_queue(&self, name: &str) -> Result<Vec<LogCommit>> {
+        self.log_ref(&queue::refname(name))
+    }
+
     /// Set `status=open` on every task in the active namespace that has no
     /// status yet. Skips tasks already marked done. Returns the number of
     /// tasks updated. One-shot migration for tasks created before
