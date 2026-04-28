@@ -902,10 +902,8 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
     match action {
         PropAction::List { task_id } => {
             let task = ws.task(task_id.into())?;
-            for (k, vs) in &task.attributes {
-                for v in vs {
-                    println!("{k}\t{v}");
-                }
+            for k in task.attributes.keys() {
+                println!("{k}");
             }
         }
         PropAction::Add {

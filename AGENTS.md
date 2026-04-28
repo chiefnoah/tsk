@@ -26,7 +26,7 @@ Every task has zero or more text values per property. Status is auto-managed
 tsk prop add  -T tsk-N <key> <value>     # append a value
 tsk prop set  -T tsk-N <key> <values...> # replace the whole list
 tsk prop unset -T tsk-N <key> [<value>]  # drop one value, or the whole key
-tsk prop list -T tsk-N                   # all (key, value) lines on a task
+tsk prop list -T tsk-N                   # property keys set on a task
 tsk prop find <key> [<value>]            # tasks with that key (= value)
 tsk prop find status open                # all in-progress tasks
 ```
