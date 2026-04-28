@@ -320,7 +320,9 @@ enum QueueAction {
         #[arg(short = 'p', default_value_t = false)]
         can_pull: bool,
     },
-    Switch { name: String },
+    /// Switch active queue. With no name, fzf-picks from existing queues
+    /// (plus a `<new>` sentinel for creating one on the fly).
+    Switch { name: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -976,7 +978,7 @@ fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
             ws.create_queue(&name, Some(can_pull))?;
             println!("Created queue '{name}' (can-pull={can_pull})");
         }
-        QueueAction::Switch { name } => ws.switch_queue(&name)?,
+        QueueAction::Switch { name } => return resolve_and_switch_queue(&ws, name),
     }
     Ok(())
 }
@@ -986,24 +988,38 @@ const NEW_NS_SENTINEL: &str = "<new>";
 fn resolve_and_switch_namespace(ws: &Workspace, name: Option<String>) -> Result<()> {
     let target = match name {
         Some(n) => n,
-        None => pick_namespace(ws)?,
+        None => pick_with_new(&ws.list_namespaces()?, &ws.namespace(), "namespace")?,
     };
     ws.switch_namespace(&target)?;
     println!("Switched to namespace '{target}'");
     Ok(())
 }
 
-fn pick_namespace(ws: &Workspace) -> Result<String> {
-    let cur = ws.namespace();
-    let existing = ws.list_namespaces()?;
-    let entries = namespace_picker_entries(&existing, &cur);
-    let picked = fzf::select::<_, String, _>(entries, ["--prompt=namespace> "])?
-        .ok_or_else(|| errors::Error::Parse("No namespace selected".into()))?;
+fn resolve_and_switch_queue(ws: &Workspace, name: Option<String>) -> Result<()> {
+    let target = match name {
+        Some(n) => n,
+        None => {
+            let picked = pick_with_new(&ws.list_queues()?, &ws.queue(), "queue")?;
+            if !ws.list_queues()?.iter().any(|q| q == &picked) {
+                ws.create_queue(&picked, None)?;
+            }
+            picked
+        }
+    };
+    ws.switch_queue(&target)?;
+    println!("Switched to queue '{target}'");
+    Ok(())
+}
+
+fn pick_with_new(existing: &[String], current: &str, label: &str) -> Result<String> {
+    let entries = picker_entries(existing, current);
+    let picked = fzf::select::<_, String, _>(entries, [format!("--prompt={label}> ")])?
+        .ok_or_else(|| errors::Error::Parse(format!("No {label} selected")))?;
     let picked = strip_picker_marker(&picked);
     if picked == NEW_NS_SENTINEL {
-        let name = prompt_line("New namespace name: ")?;
+        let name = prompt_line(&format!("New {label} name: "))?;
         if name.is_empty() {
-            return Err(errors::Error::Parse("Empty namespace name".into()));
+            return Err(errors::Error::Parse(format!("Empty {label} name")));
         }
         Ok(name)
     } else {
@@ -1011,11 +1027,11 @@ fn pick_namespace(ws: &Workspace) -> Result<String> {
     }
 }
 
-/// Build the fzf input lines for namespace selection: every existing
-/// namespace (active marked with `* `, others with `  `) plus a trailing
-/// `<new>` sentinel for creating one on the fly. The active namespace is
-/// always present even when no refs have been written yet.
-fn namespace_picker_entries(existing: &[String], current: &str) -> Vec<String> {
+/// Build the fzf input lines: every existing entry (active marked with
+/// `* `, others with `  `) plus a trailing `<new>` sentinel for creating
+/// one on the fly. The active entry is always present even when no refs
+/// have been written yet.
+fn picker_entries(existing: &[String], current: &str) -> Vec<String> {
     let mut entries: Vec<String> = existing
         .iter()
         .map(|n| {
@@ -1064,7 +1080,7 @@ mod tests {
 
     #[test]
     fn picker_marks_current_and_appends_sentinel() {
-        let entries = namespace_picker_entries(
+        let entries = picker_entries(
             &["alpha".to_string(), "tsk".to_string()],
             "tsk",
         );
@@ -1073,7 +1089,7 @@ mod tests {
 
     #[test]
     fn picker_includes_current_when_missing_from_list() {
-        let entries = namespace_picker_entries(&[], "tsk");
+        let entries = picker_entries(&[], "tsk");
         assert_eq!(entries, vec!["* tsk", "<new>"]);
     }
 
