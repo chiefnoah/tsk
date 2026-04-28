@@ -1,0 +1,10 @@
+Drop unused open crate dependency
+
+The open crate is in Cargo.toml but no source uses it. Carrying an
+unused dep widens supply-chain surface and pulls in transitive code
+that has to be re-audited on every cargo update.
+
+Plan: cargo rm open, verify build still passes. When external link
+opening is wired (ParsedLink::External is parsed but not opened),
+revisit with an explicit https/http-only allowlist and a confirm-
+before-spawn step.
