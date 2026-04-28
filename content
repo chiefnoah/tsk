@@ -1,1 +1,279 @@
 Address 3rd party review
+
+See the review below:
+
+# tsk git-backend: notes from a read-through
+
+Took a pass through `noah/git-backend-2` — really nice rewrite,
+the content-addressed model is the right call and the module
+boundaries are clean. A few things stood out that seem worth
+thinking about while the design is still settling. Not a security
+audit so much as design feedback; some of these are probably
+already on your list.
+
+I'm assuming you want the integrity story to actually hold up
+against an untrusted remote — i.e., a teammate with push access
+to the shared origin shouldn't be able to silently rewrite tasks
+on my clone. If that's not the threat model you're targeting yet,
+some of these become non-issues.
+
+## The big one: what does "stable id" actually promise?
+
+The architecture doc says stable id = SHA of the root content
+blob, and `patch.rs` says "tampered patches are rejected." Both
+imply content immutability, but the implementation lands somewhere
+in between immutable and mutable in a way that I don't think is
+intentional.
+
+In `patch::import_one_chain`:
+
+```rust
+if idx == 0 {
+    if content_oid.to_string() != stable_hex {
+        return Err(...);
+    }
+}
+```
+
+The check only fires on the first commit. Every later commit's
+`content` blob is taken on faith. And `object::read` reads the
+*tip* commit's tree, not the root's. So an mbox with one valid
+root entry and one tampered follow-up entry imports cleanly and
+`tsk show` returns the attacker's bytes.
+
+The `tamper_detected_via_stable_id_check` test passes because it
+only exercises a single-commit chain — the multi-commit case
+isn't covered.
+
+`git-pull` is a stronger version of the same thing: there's no
+content check at all. `merge_strategy` runs `merge_trees` and
+writes whatever comes out; `rebase_strategy` replays onto the
+remote tip; the `(None, Some(r))` arm just copies the remote ref
+verbatim. So anyone who can push to `refs/tsk/*` on the shared
+origin can rewrite any task on every other clone.
+
+I think you have two coherent options here, and the current code
+accidentally implements neither cleanly:
+
+**Option A: content is immutable, properties carry mutation.**
+Stable id stays SHA-of-root. Every commit on the chain has the
+same `content` blob (verified). Edits happen by adding/changing
+properties — which is already how `status` works. This matches
+what the docs say and what the `new_task` reopen-on-duplicate
+logic suggests.
+
+**Option B: content is mutable, stable id is just a birth-name.**
+Then drop the integrity language from the docs. Anyone who pushes
+to a task ref can change its body, intentionally. You'd want some
+other mechanism — signed commits, a separate audit ref, *something* —
+if you still want the multi-user story to be safe.
+
+A is much closer to where you are. The fix is small: hoist that
+check out of the `if idx == 0` guard so it runs on every commit
+in the chain, and add the same check at the boundaries in
+`merge.rs` (after each reconciliation arm produces a candidate
+tip, verify the tip's content blob hashes to the stable id; if
+not, leave the local ref alone and surface a `Rejected` outcome).
+
+A `tsk verify` subcommand that walks every task ref's chain and
+reports mismatches would basically fall out of the same code, and
+you could fold it into `tsk fix-up`. Worth it as a regression
+guard for whichever option you pick.
+
+## Why the host doesn't help you
+
+I went to check whether Tangled's permission model could backstop
+this — surely `refs/tsk/*` could be protected somehow — and the
+answer is no, and won't be unless they add per-ref permissions to
+the RBAC layer.
+
+Reading `core/rbac/rbac.go`, the policy grain is
+`(subject, domain, repo, action)` with actions like `repo:push`,
+`repo:settings`, `repo:owner`. There's no per-ref or per-refspace
+discrimination — once a user has `repo:push`, they can push any
+ref in the repo. The SSH guard (`core/guard/guard.go`) authorizes
+on `(user, repo, gitCommand)` and then invokes `git-receive-pack`
+directly; there's no `pre-receive` hook layer exposed.
+
+This is the same story on every other host you might mirror to
+(GitHub, Forgejo, GitLab) — branch protection only covers
+`refs/heads/*` and tag protection only covers `refs/tags/*`. So
+the integrity story really does have to live in the tsk client.
+
+Worth a one-paragraph "trust model" section in
+`ARCHITECTURE.md` saying something like "tsk treats every fetched
+ref as untrusted until verified locally; the server is not a
+trust boundary." It changes how someone reads the rest of the
+architecture.
+
+(Also worth filing an upstream issue on tangled.org/core
+requesting per-refspace permissions in the RBAC layer. Probably
+not a tsk-blocker, but defense-in-depth would help any project
+using custom refspaces, not just yours. Small upstream, your
+issue probably gets read.)
+
+## Terminal escape passthrough in `task::parse`
+
+`task::parse` walks content character by character into the
+output buffer, decorates with `colored`, and the various
+print sites send the result straight to stdout — no filtering of
+C0 / ESC bytes. So a task body containing
+`\x1b]0;...\x07` retitles the terminal, OSC 8 produces hyperlinks
+where displayed text disagrees with the URL, OSC 52 writes to the
+clipboard on permissive terminals, and so on.
+
+`tsk list` is the worst offender because it prints titles for the
+whole queue on a routine command and bypasses `task::parse`
+entirely (it formats `entry.title` directly). You don't even need
+to navigate to the malicious task for the payload to fire.
+
+This is the kind of thing that's only exploitable to the extent
+that *something else* (the integrity stuff above) lets attacker
+bytes into a task body. So if you fix that, this becomes
+self-poisoning only — much less interesting. Still worth doing
+though, because:
+
+- `tsk import` of an mbox you got from someone is its own
+  attacker-controlled channel even after the integrity story is
+  fixed (a maliciously-authored mbox can have any content under a
+  legitimate stable id; the stable id verifies that the *content*
+  matches the *id*, not that either is benign).
+- A small `sanitize_for_display` helper that maps C0 / DEL /
+  unpaired ESC to `U+FFFD` and gets called on every span sourced
+  from task content is maybe ten lines and avoids needing to
+  think about it again.
+
+The `-R` raw flag on `tsk show` is fine to leave unsanitized as
+an opt-in.
+
+## Smaller things
+
+A few other things I noticed; flagging in case any of them are
+useful but none of them are critical:
+
+**StableId is a newtype around an arbitrary string.** Every
+construction site outside `object::create` takes external data
+verbatim — `merge.rs`, `queue.rs`, `namespace.rs`, `patch.rs`,
+`properties.rs`. None check that it's 40 chars of hex. Probably
+fine in practice (git's ref-format rules block the worst
+characters, and human ids resolve through namespace bindings
+anyway), but a fallible `StableId::parse(s)` constructor would
+make the integrity invariant locally checkable wherever stable
+ids cross a trust boundary. Folds naturally into the same change
+as the integrity fix.
+
+**`tsk -q <name>` and `read_selector` skip name validation.**
+The write paths all revalidate via `queue::validate_name` /
+`namespace::validate_name`, and the read paths fail safely
+(git2 rejects malformed refnames), so I don't think this is
+exploitable today. But it's a "next person to add a code path
+forgets to revalidate and the gap punches through" situation.
+Validating in `Workspace::queue()` / `Workspace::namespace()`
+before returning would make it not a thing.
+
+**Argument injection on remote names.** `git push <remote>` and
+`git fetch <remote>` are invoked without `--end-of-options`. A
+remote name beginning with `-` would be treated as a flag.
+`set_default_remote` already validates against `git remote`
+output for the persisted path, so this only bites the explicit
+CLI argument paths. Two-line fix per call site:
+`cmd.args(["push", "--end-of-options", remote, ...])`. Not a
+local RCE primitive — `--upload-pack=` and `--receive-pack=` run
+on the remote side — but it does enable surprising flag
+interpretation. Pure hardening.
+
+**`namespace::next` parser falls back to 1 on parse failure.**
+If a remote plants an unparseable `next` blob, the local clone
+would treat it as 1 and start re-allocating ids. The merge
+driver in `merge.rs:319-321` already re-derives `next` from
+`max(mapping.keys()) + 1`, so the merge path is self-healing —
+but the `(None, Some(r))` arm at `merge.rs:280-283` copies the
+remote ref verbatim without the merge driver. One-line fix to
+apply the same re-derivation there.
+
+**`from_utf8_lossy` on remote-supplied blobs.** `object::read`,
+`namespace::read_at_commit`, `queue::read_at_commit` all use the
+lossy form. Display paths can keep it; the parsing-from-remote
+paths probably want strict `from_utf8` so a malicious remote
+can't silently mutate a byte sequence into `U+FFFD` on round
+trip. `patch::parse_entry` is already inconsistent — strict for
+file bodies, lossy for size headers — worth picking one.
+
+**`open` crate is in `Cargo.toml` but not used yet.** When you
+wire it up for `ParsedLink::External`, allowlist `https`/`http`
+only and confirm before spawning. `url::Url::parse` accepts
+`javascript:`, `file:`, `gopher:`, etc., none of which you want
+to hand to `xdg-open`.
+
+**`Cargo.toml` repository URL is stale** — points at codeberg,
+actual repo is on tangled. (Also: README says "Task-level
+metadata requires Linux's xattr(7) API" but I don't see any
+`xattr::` calls in the source. Either it got removed or the
+docs are ahead of the code.)
+
+## tl;dr
+
+If I had to rank these in the order I'd actually fix them:
+
+1. Decide what stable id means (option A above is much closer to
+   where you are), enforce it in `patch.rs` per-commit and at
+   every reconciliation arm in `merge.rs`. This is the one that
+   actually matters for the multi-user story.
+2. Add a `sanitize_for_display` helper for `task::parse` and
+   `command_list`. Small, and mbox import remains an exposure
+   even after #1.
+3. The smaller items are mostly polish — `--end-of-options`,
+   `StableId::parse`, the `next` re-derivation in the empty-local
+   arm. Probably batch into one defense-in-depth pass.
+
+The architecture is solid. None of this is a "stop everything"
+finding — it's the kind of thing that's much easier to get right
+during the rewrite than after, which is why I figured I'd flag
+it now while you're still in the design phase.
+
+Happy to dig into any of these further, or look at the patches
+once you've taken a swing at the integrity stuff if that's
+useful.
+
+---
+
+PoC for the import case, if you want to drop it into a test:
+
+```python
+import hashlib
+
+def git_blob_sha(b):
+    return hashlib.sha1(f"blob {len(b)}\0".encode() + b).hexdigest()
+
+root = b"original content\n"
+stable = git_blob_sha(root)
+malicious = b"replaced content\n"
+
+entry = """From {oid} Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: 1735689600 +0000
+Subject: [PATCH tsk] {summary}
+X-Tsk-Stable-Id: {stable}
+X-Tsk-Parent: {parent}
+
+{summary}
+
+---tsk-tree---
+file: content
+size: {size}
+{body}
+---end---
+
+"""
+out  = entry.format(oid="a"*40, summary="create", stable=stable,
+                    parent="none", size=len(root), body=root.decode())
+out += entry.format(oid="b"*40, summary="edit",   stable=stable,
+                    parent="a"*40, size=len(malicious),
+                    body=malicious.decode())
+print(out)
+```
+
+Pipe into `tsk import` on a vulnerable build, then `tsk show -T tsk-N`
+returns "replaced content". Same shape works against `git-pull` by
+appending a malicious commit to the task ref instead of putting it
+in an mbox.
