@@ -88,15 +88,26 @@ tsk fix-up
 
 ## Sync with the user
 
-Local refs aren't visible to the user until pushed:
-
 ```
+tsk git-setup [-r <remote>]   # one-time per clone: configure refspecs so plain
+                              # git push/fetch will carry refs/tsk/* (default remote
+                              # is "origin"). Mutates .git/config; opt-in.
 tsk remote set-default <name> # use this git remote for git-push/pull and the auto-push paths
 tsk git-push              # push refs/tsk/* to default remote (also runs after assign/reject)
-tsk git-pull              # fetch + reconcile divergent task histories
+tsk git-pull              # fetch + reconcile divergent task histories (with merge driver)
 tsk git-pull --rebase     # replay local commits on the remote tip instead of merging
 tsk inbox                 # auto-pulls then lists pending inbox items
 ```
+
+Use `tsk git-pull` (not plain `git fetch`) when local task / queue /
+namespace refs may have diverged from the remote — only the tsk command
+runs the 3-way merge driver. Plain `git fetch` force-overwrites them.
+
+Note: `tsk git-setup` adds `remote.<name>.push = refs/tsk/*:refs/tsk/*`
+which OVERRIDES `push.default`. After running it, `git push` with no
+args pushes the configured refspecs only (i.e. tsk refs) — branches
+need an explicit `git push <remote> <branch>`. If that's not what you
+want, just keep using `tsk git-push` and skip the setup.
 
 ## Offline transfer (email, etc.)
 
