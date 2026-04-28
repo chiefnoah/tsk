@@ -28,13 +28,8 @@ and in the shell's PATH.
 
     https://github.com/junegunn/fzf
 
-tsk workspaces must be created on filesystems that support symlinking.
-
-Task-level metadata requires Linux's xattr(7) API and a filesystem that supports
-it. Patches that implement this for other operating systems are welcome.
-
-tsk expects to run on POSIX-like systems. Microsoft Windows and other
-non-UNIX-ey operating systems will never be directly supported.
+tsk stores its data in git refs (`refs/tsk/*`) inside the host repository, so
+any filesystem git itself runs on will work.
 
 
 Installation
