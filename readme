@@ -60,11 +60,9 @@ tsk uses virtual text files tracked by special refs in a git repo for its
 functionality. Any git repo can be made into a tsk workspace.
 
 New tasks are created with the `tsk push` command. A title is always required,
-but can be modified later. A unique identifier is selected automatically and a
-file with the title and any body contents supplied are stored in the
-.tsk/archive folder. A symlink is then created in the .tsk/tasks folder marking
-the task as "open." The task is then added to the top of the "stack" by having
-its tsk-ID and title added to the .tsk/index file.
+but can be modified later. A unique, human-readable identifer is selected
+scoped to the namespace and may be used to as a stable reference within that
+namespace.
 
 The contents of the stack may be printed using the `tsk list` command.
 
