@@ -28,7 +28,7 @@ and in the shell's PATH.
 
     https://github.com/junegunn/fzf
 
-tsk stores its data in git refs (`refs/tsk/*`) inside the host repository, so
+tsk stores its data in git refs (`refs/tsk/*`) inside a host git repository, so
 any filesystem git itself runs on will work.
 
 
@@ -178,12 +178,12 @@ file within the .tsk folder.
 
 A quick overview of the format:
 
-- \!Bolded\! text is surrounded by exclamation marks (!)
-- \*Italicized\* text is surrounded by single asterisks (*)
-- \_Underlined\_ text is surrounded by underscores (_)
-- \~Strikethrough\~ text is surrounded by tildes (~)
-- \=Highlighted\= text is surrounded by equals signs (=)
-- \`Inline code\` is surrounded by backticks (`)
+- !Bolded! text is surrounded by exclamation marks (!)
+- *Italicized* text is surrounded by single asterisks (*)
+- _Underlined_ text is surrounded by underscores (_)
+- ~Strikethrough~ text is surrounded by tildes (~)
+- =Highlighted= text is surrounded by equals signs (=)
+- `Inline code` is surrounded by backticks (`)
 
 Links like in Markdown, along with the wiki-style links documented above.
 Raw links can also be written as \<https://example.com\>.
