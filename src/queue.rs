@@ -58,7 +58,11 @@ impl Queue {
 }
 
 pub fn read(repo: &Repository, name: &str) -> Result<Queue> {
-    let Some(target) = repo.find_reference(&refname(name)).ok().and_then(|r| r.target()) else {
+    let Some(target) = repo
+        .find_reference(&refname(name))
+        .ok()
+        .and_then(|r| r.target())
+    else {
         return Ok(Queue::new(name));
     };
     read_at_commit(repo, name, target)
@@ -97,11 +101,7 @@ pub fn read_at_commit(repo: &Repository, name: &str, commit_oid: Oid) -> Result<
 
 pub fn build_tree(repo: &Repository, q: &Queue) -> Result<Oid> {
     let mut tb = repo.treebuilder(None)?;
-    let index_text: String = q
-        .index
-        .iter()
-        .map(|s| format!("{}\n", s.0))
-        .collect();
+    let index_text: String = q.index.iter().map(|s| format!("{}\n", s.0)).collect();
     let index_oid = repo.blob(index_text.as_bytes())?;
     tb.insert(INDEX_FILE, index_oid, 0o100644)?;
     let cp = if q.can_pull { "true\n" } else { "false\n" };
@@ -169,12 +169,7 @@ pub fn push_top(repo: &Repository, name: &str, stable: StableId, message: &str) 
     write(repo, name, &q, message)
 }
 
-pub fn push_bottom(
-    repo: &Repository,
-    name: &str,
-    stable: StableId,
-    message: &str,
-) -> Result<()> {
+pub fn push_bottom(repo: &Repository, name: &str, stable: StableId, message: &str) -> Result<()> {
     let mut q = read(repo, name)?;
     q.index.retain(|s| s != &stable);
     q.index.push(stable);

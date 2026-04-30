@@ -1,11 +1,11 @@
 pub mod errors;
 mod fzf;
-mod namespace;
 mod merge;
+mod namespace;
 mod object;
 mod patch;
-mod propvalue;
 mod properties;
+mod propvalue;
 mod queue;
 mod task;
 mod workspace;
@@ -162,9 +162,7 @@ enum Commands {
         remote: Option<String>,
     },
     /// Push tsk refs to a git remote (default: origin).
-    GitPush {
-        remote: Option<String>,
-    },
+    GitPush { remote: Option<String> },
     /// Fetch tsk refs from a git remote (default: origin) and reconcile
     /// divergent task histories. Default strategy is merge; pass --rebase
     /// to replay local-only commits onto the remote tip instead.
@@ -308,10 +306,14 @@ enum NamespaceAction {
     Current,
     /// Switch active namespace. With no name, fzf-picks from existing
     /// namespaces (plus a `<new>` sentinel for creating one on the fly).
-    Switch { name: Option<String> },
+    Switch {
+        name: Option<String>,
+    },
     /// List every task bound in a namespace (defaults to active),
     /// regardless of which queue (if any) it's on. One row per id.
-    Tasks { name: Option<String> },
+    Tasks {
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -326,7 +328,9 @@ enum QueueAction {
     },
     /// Switch active queue. With no name, fzf-picks from existing queues
     /// (plus a `<new>` sentinel for creating one on the fly).
-    Switch { name: Option<String> },
+    Switch {
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -387,8 +391,7 @@ impl TaskId {
         let picked: Option<String> = fzf::select(lines, ["--prompt=task> "])?;
         let picked = picked.ok_or(errors::Error::NoTasks)?;
         let id_str = picked.split('\t').next().unwrap_or("");
-        let id: Id =
-            parse_id(id_str).map_err(|e| errors::Error::Parse(e.to_string()))?;
+        let id: Id = parse_id(id_str).map_err(|e| errors::Error::Parse(e.to_string()))?;
         Ok(TaskIdentifier::Id(id))
     }
 }
@@ -446,9 +449,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Swap => Workspace::from_path(dir)?.swap_top(),
         Commands::Rot => Workspace::from_path(dir)?.rot(),
         Commands::Tor => Workspace::from_path(dir)?.tor(),
-        Commands::Prioritize { task_id } => {
-            Workspace::from_path(dir)?.prioritize(task_id.into())
-        }
+        Commands::Prioritize { task_id } => Workspace::from_path(dir)?.prioritize(task_id.into()),
         Commands::Deprioritize { task_id } => {
             Workspace::from_path(dir)?.deprioritize(task_id.into())
         }
@@ -723,9 +724,7 @@ fn pick_assign_target(ws: &Workspace) -> Result<String> {
         .filter(|q| q != &cur)
         .collect();
     if candidates.is_empty() {
-        return Err(errors::Error::Parse(
-            "No other queues to assign to".into(),
-        ));
+        return Err(errors::Error::Parse("No other queues to assign to".into()));
     }
     fzf::select::<_, String, _>(candidates, ["--prompt=assign to> "])?
         .ok_or_else(|| errors::Error::Parse("No queue selected".into()))
@@ -926,11 +925,8 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
         PropAction::Find { key, value } => {
             let key = match key {
                 Some(k) => k,
-                None => fzf::select::<_, String, _>(
-                    ws.property_keys()?,
-                    ["--prompt=key> "],
-                )?
-                .ok_or_else(|| errors::Error::Parse("No key selected".into()))?,
+                None => fzf::select::<_, String, _>(ws.property_keys()?, ["--prompt=key> "])?
+                    .ok_or_else(|| errors::Error::Parse("No key selected".into()))?,
             };
             let value = match value {
                 Some(v) if v == "<any>" => None,
@@ -938,11 +934,8 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
                 None => {
                     let mut choices = ws.property_values(&key)?;
                     choices.insert(0, "<any>".to_string());
-                    let picked = fzf::select::<_, String, _>(
-                        choices,
-                        ["--prompt=value> "],
-                    )?
-                    .ok_or_else(|| errors::Error::Parse("No value selected".into()))?;
+                    let picked = fzf::select::<_, String, _>(choices, ["--prompt=value> "])?
+                        .ok_or_else(|| errors::Error::Parse("No value selected".into()))?;
                     if picked == "<any>" {
                         None
                     } else {
@@ -1073,7 +1066,9 @@ fn picker_entries(existing: &[String], current: &str) -> Vec<String> {
 }
 
 fn strip_picker_marker(s: &str) -> &str {
-    s.strip_prefix("* ").or_else(|| s.strip_prefix("  ")).unwrap_or(s)
+    s.strip_prefix("* ")
+        .or_else(|| s.strip_prefix("  "))
+        .unwrap_or(s)
 }
 
 fn prompt_line(prompt: &str) -> Result<String> {
@@ -1103,10 +1098,7 @@ mod tests {
 
     #[test]
     fn picker_marks_current_and_appends_sentinel() {
-        let entries = picker_entries(
-            &["alpha".to_string(), "tsk".to_string()],
-            "tsk",
-        );
+        let entries = picker_entries(&["alpha".to_string(), "tsk".to_string()], "tsk");
         assert_eq!(entries, vec!["  alpha", "* tsk", "<new>"]);
     }
 

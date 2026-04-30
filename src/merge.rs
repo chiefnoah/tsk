@@ -88,7 +88,10 @@ pub fn reconcile_task_refs(
     }
     for r in repo.references_glob(&format!("{fetched_tasks}*"))? {
         let r = r?;
-        if let Some(name) = r.name().and_then(|n| n.strip_prefix(fetched_tasks.as_str())) {
+        if let Some(name) = r
+            .name()
+            .and_then(|n| n.strip_prefix(fetched_tasks.as_str()))
+        {
             stables.insert(name.to_string());
         }
     }
@@ -330,14 +333,8 @@ fn reconcile_namespace_one(
                 format!("rebase-bind {name}")
             };
             let parents: Vec<&Commit> = vec![&local_commit, &remote_commit];
-            let new_oid = repo.commit(
-                None,
-                &sig,
-                &sig,
-                &msg,
-                &repo.find_tree(tree_oid)?,
-                &parents,
-            )?;
+            let new_oid =
+                repo.commit(None, &sig, &sig, &msg, &repo.find_tree(tree_oid)?, &parents)?;
             repo.reference(&namespace::refname(name), new_oid, true, &msg)?;
             Ok(Some(NamespaceReconciliation {
                 namespace: name.to_string(),
@@ -369,10 +366,7 @@ pub struct QueueReconciliation {
 ///
 /// `can_pull`: 3-way bool. Local change wins if it differs from base;
 /// otherwise take remote.
-pub fn reconcile_queue_refs(
-    repo: &Repository,
-    remote: &str,
-) -> Result<Vec<QueueReconciliation>> {
+pub fn reconcile_queue_refs(repo: &Repository, remote: &str) -> Result<Vec<QueueReconciliation>> {
     let fetched = format!("{}queues/", fetched_prefix(remote));
     let mut names: BTreeSet<String> = BTreeSet::new();
     for r in repo.references_glob(&format!("{QUEUE_REF_PREFIX}*"))? {
@@ -448,7 +442,9 @@ fn reconcile_queue_one(
                 &parents,
             )?;
             repo.reference(&queue::refname(name), new_oid, true, "merge")?;
-            Ok(Some(QueueReconciliation { name: name.to_string() }))
+            Ok(Some(QueueReconciliation {
+                name: name.to_string(),
+            }))
         }
     }
 }
@@ -468,7 +464,11 @@ fn three_way_queue_merge(base: &Queue, local: &Queue, remote: &Queue) -> Queue {
             let in_remote = remote_set.contains(*s);
             // present in base → kept iff neither side removed it.
             // not in base → added by either side, keep.
-            if in_base { in_local && in_remote } else { in_local || in_remote }
+            if in_base {
+                in_local && in_remote
+            } else {
+                in_local || in_remote
+            }
         })
         .collect();
 
@@ -510,7 +510,11 @@ fn three_way_queue_merge(base: &Queue, local: &Queue, remote: &Queue) -> Queue {
         local.can_pull
     };
 
-    Queue { index, can_pull, inbox }
+    Queue {
+        index,
+        can_pull,
+        inbox,
+    }
 }
 
 /// After task refs are reconciled, copy every other fetched ref
@@ -748,7 +752,8 @@ mod test {
         let content_oid = repo.blob(b"v0").unwrap();
         let mut tb = repo.treebuilder(None).unwrap();
         tb.insert("content", content_oid, 0o100644).unwrap();
-        tb.insert("title", repo.blob(b"v0").unwrap(), 0o100644).unwrap();
+        tb.insert("title", repo.blob(b"v0").unwrap(), 0o100644)
+            .unwrap();
         tb.insert("status", repo.blob(b"open\n").unwrap(), 0o100644)
             .unwrap();
         let tree_oid = tb.write().unwrap();

@@ -181,7 +181,14 @@ mod test {
         let s1 = object::create(&repo, &object::Task::new("a"), "c").unwrap();
         let s2 = object::create(&repo, &object::Task::new("b"), "c").unwrap();
         set(&repo, "priority", &s1, &["high".into()], "x").unwrap();
-        set(&repo, "priority", &s2, &["low".into(), "medium".into()], "x").unwrap();
+        set(
+            &repo,
+            "priority",
+            &s2,
+            &["low".into(), "medium".into()],
+            "x",
+        )
+        .unwrap();
         let high = find(&repo, "priority", Some("high")).unwrap();
         assert_eq!(high, vec![s1.clone()]);
         let any_priority = find(&repo, "priority", None).unwrap();

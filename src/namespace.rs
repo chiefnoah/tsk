@@ -136,12 +136,7 @@ pub fn write(repo: &Repository, name: &str, ns: &Namespace, message: &str) -> Re
 
 /// Allocate the next human id, insert the binding, and persist. Returns the
 /// human id assigned.
-pub fn assign_id(
-    repo: &Repository,
-    name: &str,
-    stable: StableId,
-    message: &str,
-) -> Result<u32> {
+pub fn assign_id(repo: &Repository, name: &str, stable: StableId, message: &str) -> Result<u32> {
     let mut ns = read(repo, name)?;
     let human = ns.next;
     ns.next += 1;
@@ -178,12 +173,7 @@ pub fn lookup(repo: &Repository, name: &str, human: u32) -> Result<Option<Stable
 }
 
 /// Existing human id for `stable` in `name`, or a freshly-assigned one.
-pub fn ensure_bound(
-    repo: &Repository,
-    name: &str,
-    stable: StableId,
-    message: &str,
-) -> Result<u32> {
+pub fn ensure_bound(repo: &Repository, name: &str, stable: StableId, message: &str) -> Result<u32> {
     match human_for(repo, name, &stable)? {
         Some(h) => Ok(h),
         None => assign_id(repo, name, stable, message),

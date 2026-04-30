@@ -56,12 +56,8 @@ A summary of commands and their functionality can be seen with:
 
     tsk help
 
-tsk uses plain text files for all of its functionality. A workspace is a folder
-that contains a .tsk/ directory created with the `tsk init` command. The
-presence of a .tsk/ folder is searched recursively upwards until a filesystem
-boundary or root is encountered. This means you can nest workspaces and use
-folders to namespace tasks while also using tsk commands at any location within
-a workspace.
+tsk uses virtual text files tracked by special refs in a git repo for its
+functionality. Any git repo can be made into a tsk workspace.
 
 New tasks are created with the `tsk push` command. A title is always required,
 but can be modified later. A unique identifier is selected automatically and a

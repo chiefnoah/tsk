@@ -57,13 +57,11 @@ pub struct ExportOpts {
     pub bind: Option<(String, u32)>,
 }
 
-pub fn export_task(
-    repo: &Repository,
-    stable: &StableId,
-    opts: &ExportOpts,
-) -> Result<String> {
+pub fn export_task(repo: &Repository, stable: &StableId, opts: &ExportOpts) -> Result<String> {
     let r = repo.find_reference(&stable.refname())?;
-    let tip = r.target().ok_or_else(|| Error::Parse("task ref empty".into()))?;
+    let tip = r
+        .target()
+        .ok_or_else(|| Error::Parse("task ref empty".into()))?;
     // Collect root → tip.
     let mut chain: Vec<Oid> = Vec::new();
     let mut cur = Some(repo.find_commit(tip)?);
@@ -139,7 +137,9 @@ fn write_entry(
     writeln!(
         out,
         "X-Tsk-Parent: {}",
-        parent.map(|o| o.to_string()).unwrap_or_else(|| "none".into())
+        parent
+            .map(|o| o.to_string())
+            .unwrap_or_else(|| "none".into())
     )
     .unwrap();
     if let Some((ns, human)) = bind {
@@ -163,8 +163,7 @@ fn write_entry(
         }
         let blob = entry.to_object(repo)?.peel_to_blob()?;
         let bytes = blob.content();
-        let as_str =
-            std::str::from_utf8(bytes).map_err(|e| Error::Parse(e.to_string()))?;
+        let as_str = std::str::from_utf8(bytes).map_err(|e| Error::Parse(e.to_string()))?;
         let mangled = mangle_from(as_str);
         writeln!(out, "file: {name}").unwrap();
         writeln!(out, "size: {}", mangled.len()).unwrap();
@@ -286,7 +285,10 @@ fn import_one_chain(repo: &Repository, entries: &[Entry]) -> Result<ImportResult
         // history records who applied the import while preserving authorship.
         let author = Signature::new(&e.author_name, &e.author_email, &e.when)?;
         let committer = crate::object::signature(repo);
-        let parents: Vec<git2::Commit> = prev.into_iter().map(|o| repo.find_commit(o).unwrap()).collect();
+        let parents: Vec<git2::Commit> = prev
+            .into_iter()
+            .map(|o| repo.find_commit(o).unwrap())
+            .collect();
         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
         let commit_oid = repo.commit(
             None,
@@ -438,8 +440,8 @@ fn parse_entry(chunk: &str) -> Result<Entry> {
         if rest.len() < size + 1 {
             return Err(Error::Parse("truncated file body".into()));
         }
-        let mangled = std::str::from_utf8(&rest[..size])
-            .map_err(|e| Error::Parse(e.to_string()))?;
+        let mangled =
+            std::str::from_utf8(&rest[..size]).map_err(|e| Error::Parse(e.to_string()))?;
         if rest[size] != b'\n' {
             return Err(Error::Parse("missing newline after file body".into()));
         }
@@ -530,8 +532,7 @@ mod test {
     fn tamper_detected_via_stable_id_check() {
         let dir = tempfile::tempdir().unwrap();
         let src = init_repo(dir.path());
-        let stable =
-            object::create(&src, &Task::new("original content"), "create").unwrap();
+        let stable = object::create(&src, &Task::new("original content"), "create").unwrap();
         let mbox = export_task(&src, &stable, &ExportOpts { bind: None }).unwrap();
         // Flip the content body without updating the stable id header.
         // Equal-length substitution so size-prefix parsing still aligns; only
@@ -554,8 +555,7 @@ mod test {
         let s = "preamble\nFrom the desk of...\n>From me\nbody\n";
         let mangled = mangle_from(s);
         assert_eq!(
-            mangled,
-            "preamble\n>From the desk of...\n>>From me\nbody\n",
+            mangled, "preamble\n>From the desk of...\n>>From me\nbody\n",
             "every ^>*From  line gets one extra '>'",
         );
         assert_eq!(unmangle_from(&mangled), s);
@@ -607,8 +607,7 @@ mod test {
         // Alice creates → exports. Bob imports.
         let alice_dir = tempfile::tempdir().unwrap();
         let alice_repo = init_repo_as(alice_dir.path(), "Alice", "a@x");
-        let stable =
-            object::create(&alice_repo, &Task::new("from alice"), "create").unwrap();
+        let stable = object::create(&alice_repo, &Task::new("from alice"), "create").unwrap();
         let mbox = export_task(&alice_repo, &stable, &ExportOpts { bind: None }).unwrap();
 
         let bob_dir = tempfile::tempdir().unwrap();
@@ -631,10 +630,8 @@ mod test {
         // second commit authored by Bob.
         let alice_dir = tempfile::tempdir().unwrap();
         let alice_repo = init_repo_as(alice_dir.path(), "Alice", "a@x");
-        let stable =
-            object::create(&alice_repo, &Task::new("from alice"), "create").unwrap();
-        let alice_mbox =
-            export_task(&alice_repo, &stable, &ExportOpts { bind: None }).unwrap();
+        let stable = object::create(&alice_repo, &Task::new("from alice"), "create").unwrap();
+        let alice_mbox = export_task(&alice_repo, &stable, &ExportOpts { bind: None }).unwrap();
 
         let bob_dir = tempfile::tempdir().unwrap();
         let bob_repo = init_repo_as(bob_dir.path(), "Bob", "b@x");

@@ -333,8 +333,7 @@ impl Workspace {
                 .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
             let stable = object::create(&repo, &obj, "create")?;
             properties::reindex_task(&repo, &stable, &obj.properties)?;
-            let human =
-                namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
+            let human = namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
             return Ok(Self::make_task(Id(human), stable, obj));
         }
 
@@ -480,7 +479,9 @@ impl Workspace {
         let by_stable = ns_reverse(&namespace::read(&repo, &self.namespace())?);
         let mut out = Vec::new();
         for stable in properties::find(&repo, key, value)? {
-            let Some(&human) = by_stable.get(&stable) else { continue };
+            let Some(&human) = by_stable.get(&stable) else {
+                continue;
+            };
             out.push((Id(human), stable.clone(), Self::title_for(&repo, &stable)?));
         }
         Ok(out)
@@ -500,9 +501,15 @@ impl Workspace {
         let mut out = Vec::new();
         for stable in queue::read(&repo, &self.queue())?.index {
             // Skip tasks not visible in the active namespace (different ns owns them).
-            let Some(&human) = by_stable.get(&stable) else { continue };
+            let Some(&human) = by_stable.get(&stable) else {
+                continue;
+            };
             let title = Self::title_for(&repo, &stable)?;
-            out.push(StackEntry { id: Id(human), stable, title });
+            out.push(StackEntry {
+                id: Id(human),
+                stable,
+                title,
+            });
         }
         Ok(out)
     }
@@ -514,7 +521,11 @@ impl Workspace {
         let mut out = Vec::new();
         for (human, stable) in namespace::read(&repo, name)?.mapping {
             let title = Self::title_for(&repo, &stable)?;
-            out.push(StackEntry { id: Id(human), stable, title });
+            out.push(StackEntry {
+                id: Id(human),
+                stable,
+                title,
+            });
         }
         Ok(out)
     }
@@ -557,11 +568,7 @@ impl Workspace {
     /// Export multiple tasks as a single concatenated mbox stream.
     /// Each task's full commit chain is emitted in order; the importer
     /// groups them back by stable id.
-    pub fn export_tasks(
-        &self,
-        identifiers: &[TaskIdentifier],
-        bind: bool,
-    ) -> Result<String> {
+    pub fn export_tasks(&self, identifiers: &[TaskIdentifier], bind: bool) -> Result<String> {
         let repo = self.repo()?;
         let mut out = String::new();
         for ident in identifiers {
@@ -726,7 +733,12 @@ impl Workspace {
             }
         }
 
-        Ok((queues_pruned, prop_orphans, ghost_bindings, orphan_queue_entries))
+        Ok((
+            queues_pruned,
+            prop_orphans,
+            ghost_bindings,
+            orphan_queue_entries,
+        ))
     }
 
     /// Flip a task back to `status=open` and push it to the top of the
@@ -811,7 +823,11 @@ impl Workspace {
                     idx.push(stable);
                 }
             },
-            if to_front { "prioritize" } else { "deprioritize" },
+            if to_front {
+                "prioritize"
+            } else {
+                "deprioritize"
+            },
         )
     }
 
@@ -886,7 +902,12 @@ impl Workspace {
                 .map(|(s, _)| s.to_string())
                 .unwrap_or_else(|| key.clone());
             let title = Self::title_for(&repo, &stable)?;
-            out.push(InboxItem { key, source_queue, stable, title });
+            out.push(InboxItem {
+                key,
+                source_queue,
+                stable,
+                title,
+            });
         }
         Ok(out)
     }
@@ -1063,10 +1084,7 @@ impl Workspace {
     /// Refs to push after `reject_inbox`: the active queue (entry left the
     /// inbox) and the source queue (entry was bounced back into its inbox).
     pub fn refs_for_reject_inbox(&self, source_queue: &str) -> Vec<String> {
-        vec![
-            queue::refname(&self.queue()),
-            queue::refname(source_queue),
-        ]
+        vec![queue::refname(&self.queue()), queue::refname(source_queue)]
     }
 
     /// Refs to fetch before listing the inbox: just the active queue.
@@ -1102,7 +1120,11 @@ impl Workspace {
         let namespaces = merge::reconcile_namespace_refs(&repo, remote)?;
         let queues = merge::reconcile_queue_refs(&repo, remote)?;
         merge::fast_forward_non_task_refs(&repo, remote)?;
-        Ok(merge::PullOutcome { tasks, namespaces, queues })
+        Ok(merge::PullOutcome {
+            tasks,
+            namespaces,
+            queues,
+        })
     }
 }
 
@@ -1261,7 +1283,10 @@ mod test {
         ws.switch_queue("review").unwrap();
         ws.reject_inbox(&assign_key).unwrap();
         let inbox_here = ws.list_inbox().unwrap();
-        assert!(inbox_here.is_empty(), "rejected item must leave receiver inbox");
+        assert!(
+            inbox_here.is_empty(),
+            "rejected item must leave receiver inbox"
+        );
         ws.switch_queue("tsk").unwrap();
         let returned = ws.list_inbox().unwrap();
         assert_eq!(returned.len(), 1, "rejected item must land in sender inbox");
@@ -1281,7 +1306,9 @@ mod test {
         let r = ws.pull_from_queue("private", TaskIdentifier::Id(id));
         assert!(r.is_err(), "pull from can-pull=false queue must fail");
         ws.create_queue("private", Some(true)).unwrap();
-        let pulled = ws.pull_from_queue("private", TaskIdentifier::Id(id)).unwrap();
+        let pulled = ws
+            .pull_from_queue("private", TaskIdentifier::Id(id))
+            .unwrap();
         assert_eq!(pulled.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
@@ -1407,9 +1434,7 @@ mod test {
         ws.push_task(t).unwrap();
 
         // Index reflects the new open task.
-        let opens = ws
-            .find_by_property(STATUS_KEY, Some(STATUS_OPEN))
-            .unwrap();
+        let opens = ws.find_by_property(STATUS_KEY, Some(STATUS_OPEN)).unwrap();
         assert_eq!(opens.len(), 1);
         assert_eq!(opens[0].0, id);
 
@@ -1422,9 +1447,7 @@ mod test {
             Some(&vec![STATUS_DONE.to_string()])
         );
         assert!(ws.read_stack().unwrap().is_empty());
-        let dones = ws
-            .find_by_property(STATUS_KEY, Some(STATUS_DONE))
-            .unwrap();
+        let dones = ws.find_by_property(STATUS_KEY, Some(STATUS_DONE)).unwrap();
         assert_eq!(dones.len(), 1);
         assert_eq!(dones[0].0, id);
     }
@@ -1516,7 +1539,10 @@ mod test {
         namespace::unassign_id(&repo, "tsk", id.0, "test-unbind").unwrap();
         // Same content again should re-bind into active ns with a new id.
         let again = ws.new_task("legacy task".into(), "".into()).unwrap();
-        assert_eq!(again.stable, stable, "stable id must match the orphaned ref");
+        assert_eq!(
+            again.stable, stable,
+            "stable id must match the orphaned ref"
+        );
         assert_ne!(
             again.id, id,
             "rebinding allocates a fresh human id from `next`"
@@ -1549,7 +1575,11 @@ mod test {
         assert_eq!(qe, 1, "orphan queue index entry dropped");
         assert!(repo.find_reference(&queue::refname("empty")).is_err());
         assert!(repo.find_reference(&properties::refname("ghost")).is_err());
-        assert!(namespace::human_for(&repo, "tsk", &orphan).unwrap().is_none());
+        assert!(
+            namespace::human_for(&repo, "tsk", &orphan)
+                .unwrap()
+                .is_none()
+        );
 
         // Idempotent: second pass changes nothing.
         assert_eq!(ws.gc_refs().unwrap(), (0, 0, 0, 0));

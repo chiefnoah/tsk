@@ -48,7 +48,12 @@ fn tsk_ok(dir: &Path, args: &[&str]) -> String {
 
 fn make_clone(origin: &Path, dest: &Path, name: &str, email: &str) {
     let _ = Command::new("git")
-        .args(["clone", "-q", origin.to_str().unwrap(), dest.to_str().unwrap()])
+        .args([
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            dest.to_str().unwrap(),
+        ])
         .status()
         .expect("git clone");
     git(dest, &["config", "user.name", name]);
@@ -111,7 +116,10 @@ fn assign_to_other_queue_visible_after_push_pull() {
     tsk_ok(&alice, &["git-pull"]);
     tsk_ok(&alice, &["push", "needs review"]);
     let assign_out = tsk_ok(&alice, &["assign", "review", "-R", ""]);
-    assert!(assign_out.contains("Assigned to review"), "got {assign_out}");
+    assert!(
+        assign_out.contains("Assigned to review"),
+        "got {assign_out}"
+    );
     tsk_ok(&alice, &["git-push"]);
 
     // Bob switches to review, pulls, sees inbox.
@@ -193,7 +201,10 @@ fn property_set_find_round_trip_via_binary() {
     assert!(list.contains("tag\tbeta"), "beta survives: {list}");
 
     // Replace whole property.
-    tsk_ok(&alice, &["prop", "set", "-T", "tsk-1", "priority", "medium"]);
+    tsk_ok(
+        &alice,
+        &["prop", "set", "-T", "tsk-1", "priority", "medium"],
+    );
     let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
     assert!(list.contains("priority\tmedium"), "got {list}");
     assert!(!list.contains("priority\thigh"), "got {list}");
@@ -285,7 +296,10 @@ fn divergent_task_edits_merge_on_pull() {
     // the task.
     let listing = tsk_ok(&bob, &["prop", "list", "-T", "tsk-1"]);
     eprintln!("LISTING: {listing}");
-    assert!(listing.contains("priority\thigh"), "alice's edit lost: {listing}");
+    assert!(
+        listing.contains("priority\thigh"),
+        "alice's edit lost: {listing}"
+    );
     assert!(listing.contains("owner\tbob"), "bob's edit lost: {listing}");
 }
 
@@ -309,7 +323,10 @@ fn divergent_task_edits_rebase_on_pull() {
 
     // Both edits survived.
     let listing = tsk_ok(&bob, &["prop", "list", "-T", "tsk-1"]);
-    assert!(listing.contains("priority\thigh"), "alice's edit lost: {listing}");
+    assert!(
+        listing.contains("priority\thigh"),
+        "alice's edit lost: {listing}"
+    );
     assert!(listing.contains("owner\tbob"), "bob's edit lost: {listing}");
 }
 

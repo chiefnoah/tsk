@@ -99,14 +99,7 @@ pub fn create(repo: &Repository, task: &Task, message: &str) -> Result<StableId>
     let stable = StableId(content_oid.to_string());
     let tree_oid = build_tree(repo, content_oid, &task.properties)?;
     let sig = signature(repo);
-    let commit = repo.commit(
-        None,
-        &sig,
-        &sig,
-        message,
-        &repo.find_tree(tree_oid)?,
-        &[],
-    )?;
+    let commit = repo.commit(None, &sig, &sig, message, &repo.find_tree(tree_oid)?, &[])?;
     repo.reference(&stable.refname(), commit, true, message)?;
     Ok(stable)
 }
@@ -207,8 +200,7 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
         let mut t = Task::new("Hello\n\nbody text");
-        t.properties
-            .insert("priority".into(), vec!["high".into()]);
+        t.properties.insert("priority".into(), vec!["high".into()]);
         t.properties
             .insert("tag".into(), vec!["alpha".into(), "beta".into()]);
         let id = create(&repo, &t, "create").unwrap();
@@ -229,7 +221,11 @@ mod test {
         t2.content = "v2".into();
         update(&repo, &id, &t2, "edit").unwrap();
         // Two commits in the chain.
-        let head = repo.find_reference(&id.refname()).unwrap().target().unwrap();
+        let head = repo
+            .find_reference(&id.refname())
+            .unwrap()
+            .target()
+            .unwrap();
         let head_commit = repo.find_commit(head).unwrap();
         assert_eq!(head_commit.parent_count(), 1);
         let read_back = read(&repo, &id).unwrap().unwrap();
@@ -242,9 +238,17 @@ mod test {
         let repo = init_repo(dir.path());
         let t = Task::new("same");
         let id = create(&repo, &t, "create").unwrap();
-        let head1 = repo.find_reference(&id.refname()).unwrap().target().unwrap();
+        let head1 = repo
+            .find_reference(&id.refname())
+            .unwrap()
+            .target()
+            .unwrap();
         update(&repo, &id, &t, "noop").unwrap();
-        let head2 = repo.find_reference(&id.refname()).unwrap().target().unwrap();
+        let head2 = repo
+            .find_reference(&id.refname())
+            .unwrap()
+            .target()
+            .unwrap();
         assert_eq!(head1, head2);
     }
 
