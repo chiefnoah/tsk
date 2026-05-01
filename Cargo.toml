@@ -25,7 +25,6 @@ thiserror = "2"
 url = "2"
 xattr = "1"
 colored = "3"
-open = "5"
 itertools = "0"
 git2 = { version = "0.20", default-features = false }
 zip = { version = "8", default-features = false, features = ["deflate"] }
