@@ -29,7 +29,8 @@ and in the shell's PATH.
     https://github.com/junegunn/fzf
 
 tsk stores its data in git refs (`refs/tsk/*`) inside a host git repository, so
-any filesystem git itself runs on will work.
+any filesystem git itself runs on will work. Use the `tsk git-pull` and
+`tsk git-push` commands to update/push these refs.
 
 
 Installation
