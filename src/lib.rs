@@ -262,7 +262,7 @@ enum LogTarget {
 
 #[derive(Subcommand)]
 enum PropAction {
-    /// List all values for every property on a task.
+    /// List property keys set on a task.
     List {
         #[command(flatten)]
         task_id: TaskId,

@@ -178,11 +178,15 @@ fn property_set_find_round_trip_via_binary() {
     tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "tag", "beta"]);
     tsk_ok(&alice, &["prop", "add", "-T", "tsk-2", "priority", "low"]);
 
-    // List on tsk-1: priority=high, tag=alpha, tag=beta.
+    // `prop list` lists keys set on the task; use `show -x` for values.
     let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
-    assert!(list.contains("priority\thigh"), "got {list}");
-    assert!(list.contains("tag\talpha"), "got {list}");
-    assert!(list.contains("tag\tbeta"), "got {list}");
+    assert!(list.lines().any(|line| line == "priority"), "got {list}");
+    assert!(list.lines().any(|line| line == "tag"), "got {list}");
+    assert!(!list.contains('\t'), "prop list should only print keys: {list}");
+    let attrs = tsk_ok(&alice, &["show", "-T", "tsk-1", "-x"]);
+    assert!(attrs.contains("priority: \"high\""), "got {attrs}");
+    assert!(attrs.contains("tag: \"alpha\""), "got {attrs}");
+    assert!(attrs.contains("tag: \"beta\""), "got {attrs}");
 
     // Keys index has both `priority` and `tag`.
     let keys = tsk_ok(&alice, &["prop", "keys"]);
@@ -196,18 +200,21 @@ fn property_set_find_round_trip_via_binary() {
 
     // Unsetting one value on multi-value property.
     tsk_ok(&alice, &["prop", "unset", "-T", "tsk-1", "tag", "alpha"]);
-    let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
-    assert!(!list.contains("tag\talpha"), "alpha should be gone: {list}");
-    assert!(list.contains("tag\tbeta"), "beta survives: {list}");
+    let attrs = tsk_ok(&alice, &["show", "-T", "tsk-1", "-x"]);
+    assert!(
+        !attrs.contains("tag: \"alpha\""),
+        "alpha should be gone: {attrs}"
+    );
+    assert!(attrs.contains("tag: \"beta\""), "beta survives: {attrs}");
 
     // Replace whole property.
     tsk_ok(
         &alice,
         &["prop", "set", "-T", "tsk-1", "priority", "medium"],
     );
-    let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
-    assert!(list.contains("priority\tmedium"), "got {list}");
-    assert!(!list.contains("priority\thigh"), "got {list}");
+    let attrs = tsk_ok(&alice, &["show", "-T", "tsk-1", "-x"]);
+    assert!(attrs.contains("priority: \"medium\""), "got {attrs}");
+    assert!(!attrs.contains("priority: \"high\""), "got {attrs}");
 }
 
 #[test]
@@ -294,13 +301,15 @@ fn divergent_task_edits_merge_on_pull() {
 
     // After the merge pull, Bob should see both his and Alice's edits on
     // the task.
-    let listing = tsk_ok(&bob, &["prop", "list", "-T", "tsk-1"]);
-    eprintln!("LISTING: {listing}");
+    let listing = tsk_ok(&bob, &["show", "-T", "tsk-1", "-x"]);
     assert!(
-        listing.contains("priority\thigh"),
+        listing.contains("priority: \"high\""),
         "alice's edit lost: {listing}"
     );
-    assert!(listing.contains("owner\tbob"), "bob's edit lost: {listing}");
+    assert!(
+        listing.contains("owner: \"bob\""),
+        "bob's edit lost: {listing}"
+    );
 }
 
 #[test]
@@ -322,12 +331,15 @@ fn divergent_task_edits_rebase_on_pull() {
     );
 
     // Both edits survived.
-    let listing = tsk_ok(&bob, &["prop", "list", "-T", "tsk-1"]);
+    let listing = tsk_ok(&bob, &["show", "-T", "tsk-1", "-x"]);
     assert!(
-        listing.contains("priority\thigh"),
+        listing.contains("priority: \"high\""),
         "alice's edit lost: {listing}"
     );
-    assert!(listing.contains("owner\tbob"), "bob's edit lost: {listing}");
+    assert!(
+        listing.contains("owner: \"bob\""),
+        "bob's edit lost: {listing}"
+    );
 }
 
 #[test]
