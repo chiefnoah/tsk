@@ -5,6 +5,7 @@ engine: "nixery"
 dependencies:
   nixpkgs:
     - cargo
+    - gcc
 steps:
   - name: "Check"
     command: "cargo check"
