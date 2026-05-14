@@ -62,6 +62,19 @@ fn make_clone(origin: &Path, dest: &Path, name: &str, email: &str) {
     tsk_ok(dest, &["git-setup"]);
 }
 
+fn init_repo_with_commit(dir: &Path) {
+    Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(dir)
+        .status()
+        .expect("git init");
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "t@e"]);
+    std::fs::write(dir.join("README"), b"hi").unwrap();
+    git(dir, &["add", "README"]);
+    git(dir, &["commit", "-q", "-m", "init"]);
+}
+
 fn setup_two_clones() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let origin = dir.path().join("origin.git");
@@ -81,6 +94,51 @@ fn setup_two_clones() -> (tempfile::TempDir, PathBuf, PathBuf) {
     git(&alice, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
     git(&bob, &["pull", "-q", "origin", "main"]);
     (dir, alice, bob)
+}
+
+#[test]
+fn cli_works_inside_linked_git_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("main");
+    let linked = dir.path().join("linked");
+    std::fs::create_dir(&main).unwrap();
+    init_repo_with_commit(&main);
+
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "linked",
+            linked.to_str().unwrap(),
+        ],
+    );
+
+    let git_file = std::fs::read_to_string(linked.join(".git")).unwrap();
+    assert!(
+        git_file.starts_with("gitdir: "),
+        "linked worktree should use a .git pointer file, got {git_file:?}"
+    );
+
+    tsk_ok(&linked, &["push", "worktree task"]);
+    let listed = tsk_ok(&linked, &["list"]);
+    assert!(
+        listed.contains("worktree task"),
+        "task should be visible when tsk runs in a linked worktree: {listed:?}"
+    );
+
+    let gitdir = Path::new(git_file.trim().strip_prefix("gitdir: ").unwrap());
+    let gitdir = if gitdir.is_absolute() {
+        gitdir.to_path_buf()
+    } else {
+        linked.join(gitdir)
+    };
+    assert!(
+        gitdir.join("tsk/namespace").exists(),
+        "clone-local tsk state should live under the linked worktree gitdir"
+    );
 }
 
 #[test]
@@ -182,7 +240,10 @@ fn property_set_find_round_trip_via_binary() {
     let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
     assert!(list.lines().any(|line| line == "priority"), "got {list}");
     assert!(list.lines().any(|line| line == "tag"), "got {list}");
-    assert!(!list.contains('\t'), "prop list should only print keys: {list}");
+    assert!(
+        !list.contains('\t'),
+        "prop list should only print keys: {list}"
+    );
     let attrs = tsk_ok(&alice, &["show", "-T", "tsk-1", "-x"]);
     assert!(attrs.contains("priority: \"high\""), "got {attrs}");
     assert!(attrs.contains("tag: \"alpha\""), "got {attrs}");

@@ -1134,15 +1134,13 @@ fn ns_reverse(ns: &namespace::Namespace) -> BTreeMap<StableId, u32> {
 }
 
 pub fn find_git_dir(start: &std::path::Path) -> Option<PathBuf> {
-    let mut cur = Some(start.to_path_buf());
-    while let Some(p) = cur {
-        let candidate = p.join(".git");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-        cur = p.parent().map(|q| q.to_path_buf());
-    }
-    None
+    let repo = Repository::discover(start).ok()?;
+    let git_dir = repo.path();
+    Some(
+        git_dir
+            .canonicalize()
+            .unwrap_or_else(|_| git_dir.to_path_buf()),
+    )
 }
 
 #[cfg(test)]
