@@ -1,4 +1,9 @@
-# tsk Skill for Coding Agents
+---
+name: tsk
+description: Use tsk, the task tracker maintained alongside this repository, to inspect task queues, manage local task records, create agent follow-ups, audit task history, and sync refs/tsk task state. Use when Codex is working in this repo and needs to choose queued work, record TODOs, mark tasks done, or coordinate task state with users or other agents.
+---
+
+# tsk Skill for Codex
 
 Use `tsk` as the source of truth for local task work in this repository. Start by
 looking at the active queue, keep user-visible task state accurate, and prefer
