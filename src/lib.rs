@@ -243,6 +243,8 @@ enum Commands {
         #[arg(short = 's')]
         shell: Shell,
     },
+    /// Print coding-agent usage guidance for tsk.
+    Skill,
 }
 
 #[derive(Subcommand)]
@@ -532,6 +534,10 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Commands::Completion { shell } => {
             generate(shell, &mut Cli::command(), "tsk", &mut io::stdout());
+            Ok(())
+        }
+        Commands::Skill => {
+            io::stdout().write_all(include_bytes!("../SKILL.md"))?;
             Ok(())
         }
     }
