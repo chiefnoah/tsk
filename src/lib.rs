@@ -7,6 +7,7 @@ mod patch;
 mod properties;
 mod propvalue;
 mod queue;
+mod references;
 mod serv;
 mod task;
 mod workspace;
