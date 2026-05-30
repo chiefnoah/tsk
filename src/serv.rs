@@ -4,6 +4,7 @@ use crate::workspace::{Id, Workspace};
 use crate::{namespace, queue};
 use clap::{Args, Parser};
 use git2::Repository;
+use pulldown_cmark::{CowStr, Event, Options, Parser as MarkdownParser, html};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -266,29 +267,124 @@ fn render_task(ws: &Workspace, stable: &str) -> Result<String> {
     let bindings = all_bindings(ws, &repo)?;
     let mut props = String::new();
     for (key, values) in &task.properties {
-        let values = values
+        let rendered_values = values
             .iter()
-            .map(|v| format!("<code>{}</code>", h(v)))
-            .collect::<Vec<_>>()
+            .map(|v| render_tsk_markup(ws, &repo, v))
+            .collect::<Result<Vec<_>>>()?
             .join(", ");
-        props.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>", h(key), values));
+        props.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td></tr>",
+            h(key),
+            rendered_values
+        ));
     }
     if props.is_empty() {
         props.push_str("<tr><td colspan=\"2\"><em>No properties</em></td></tr>");
     }
+    let (content_class, rendered_content) = render_task_content(ws, &repo, &task.content)?;
     let body = format!(
         "<h1>{}</h1>\
          <p class=\"meta\">Stable <code>{}</code></p>\
          <p>Bindings: {}</p>\
-         <h2>Content</h2><div class=\"task-content\">{}</div>\
+         <h2>Content</h2><div class=\"{content_class}\">{rendered_content}</div>\
          <h2>Properties</h2>\
          <table><thead><tr><th>Key</th><th>Values</th></tr></thead><tbody>{props}</tbody></table>",
         h(task.title()),
         h(&stable.0),
-        binding_links(bindings.get(&stable)),
-        render_tsk_markup(ws, &repo, &task.content)?
+        binding_links(bindings.get(&stable))
     );
     Ok(page(ws, task.title(), &body))
+}
+
+fn render_task_content(
+    ws: &Workspace,
+    repo: &Repository,
+    input: &str,
+) -> Result<(&'static str, String)> {
+    if looks_like_markdown(input) {
+        Ok((
+            "task-content task-content-markdown",
+            render_markdown(ws, repo, input)?,
+        ))
+    } else {
+        Ok((
+            "task-content task-content-plain",
+            render_tsk_markup(ws, repo, input)?,
+        ))
+    }
+}
+
+fn looks_like_markdown(input: &str) -> bool {
+    input.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("# ")
+            || trimmed.starts_with("## ")
+            || trimmed.starts_with("### ")
+            || trimmed.starts_with("```")
+            || trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || is_ordered_list_item(trimmed)
+    }) || input.contains("**")
+}
+
+fn render_markdown(ws: &Workspace, repo: &Repository, input: &str) -> Result<String> {
+    let options = Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_HEADING_ATTRIBUTES;
+    let parser = MarkdownParser::new_ext(input, options);
+    let mut events = Vec::new();
+    for event in parser {
+        match event {
+            Event::Text(text) => push_markdown_text_events(ws, repo, &text, &mut events)?,
+            Event::Html(raw) | Event::InlineHtml(raw) => {
+                events.push(Event::Text(CowStr::Boxed(raw.to_string().into_boxed_str())));
+            }
+            other => events.push(other),
+        }
+    }
+    let mut out = String::new();
+    html::push_html(&mut out, events.into_iter());
+    Ok(out)
+}
+
+fn push_markdown_text_events<'a>(
+    ws: &Workspace,
+    repo: &Repository,
+    text: &str,
+    out: &mut Vec<Event<'a>>,
+) -> Result<()> {
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        if let Some((html, consumed)) = render_internal_link(ws, repo, rest)? {
+            out.push(Event::Html(CowStr::Boxed(html.into_boxed_str())));
+            i += consumed;
+            continue;
+        }
+
+        let next_link = rest.find("[[").unwrap_or(rest.len());
+        if next_link > 0 {
+            out.push(Event::Text(CowStr::Boxed(
+                rest[..next_link].to_string().into_boxed_str(),
+            )));
+            i += next_link;
+        } else {
+            let Some(ch) = rest.chars().next() else {
+                break;
+            };
+            out.push(Event::Text(CowStr::Boxed(ch.to_string().into_boxed_str())));
+            i += ch.len_utf8();
+        }
+    }
+    Ok(())
+}
+
+fn is_ordered_list_item(input: &str) -> bool {
+    let Some(dot) = input.find(". ") else {
+        return false;
+    };
+    dot > 0 && input[..dot].chars().all(|c| c.is_ascii_digit())
 }
 
 fn render_tsk_markup(ws: &Workspace, repo: &Repository, input: &str) -> Result<String> {
@@ -526,7 +622,8 @@ const PICO_CSS_URL: &str = "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pic
 const STYLE: &str = "<style>\
 nav{border-bottom:var(--pico-border-width) solid var(--pico-muted-border-color)}\
 td,th{vertical-align:top}\
-.task-content{white-space:pre-wrap}\
+.task-content-plain{white-space:pre-wrap}\
+.task-content-markdown pre{padding:1rem;overflow:auto}\
 .meta{color:var(--pico-muted-color)}\
 </style>";
 
@@ -543,6 +640,128 @@ fn h(input: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_git_init(p: &std::path::Path) {
+        let repo = Repository::init(p).expect("git init");
+        let mut config = repo.config().expect("git config");
+        for (key, value) in [("user.name", "Test"), ("user.email", "t@e")] {
+            config.set_str(key, value).expect("set git config");
+        }
+    }
+
+    fn fresh_workspace() -> (tempfile::TempDir, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        run_git_init(dir.path());
+        Workspace::init(dir.path().to_path_buf()).unwrap();
+        let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
+        (dir, ws)
+    }
+
+    #[test]
+    fn task_page_renders_links_in_property_values() {
+        let (_dir, ws) = fresh_workspace();
+        let task = ws.new_task("linked props".into(), "".into()).unwrap();
+        let id = task.id;
+        let stable = task.stable.clone();
+        ws.push_task(task).unwrap();
+        ws.add_property_value(id.into(), "url", "[site](https://example.com/path?q=1&v=2)")
+            .unwrap();
+        ws.add_property_value(id.into(), "task", "[[tsk-1]]")
+            .unwrap();
+        ws.add_property_value(id.into(), "raw", "<b>not html</b>")
+            .unwrap();
+
+        let html = render_task(&ws, &stable.0).unwrap();
+
+        assert!(
+            html.contains(
+                "<a href=\"https://example.com/path?q=1&amp;v=2\" rel=\"noreferrer\">site</a>"
+            ),
+            "external link should render in property value: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<a href=\"/tasks/{}\" class=\"task-link\">tsk-1</a>",
+                h(&stable.0)
+            )),
+            "task link should render in property value: {html}"
+        );
+        assert!(
+            html.contains("&lt;b&gt;not html&lt;/b&gt;"),
+            "plain html-looking property value should stay escaped: {html}"
+        );
+    }
+
+    #[test]
+    fn task_page_renders_markdown_body_without_tsk_inline_false_positives() {
+        let (_dir, ws) = fresh_workspace();
+        let task = ws
+            .new_task(
+                "markdown review".into(),
+                r#"## Review
+
+The `tamper_detected_via_stable_id_check` test and `if idx == 0`
+should not become tsk underline or highlight markup.
+
+```rust
+if idx == 0 {
+    if content_oid.to_string() != stable_hex {
+        return Err(...);
+    }
+}
+```
+
+- `tsk import` of an mbox you got from someone is its own
+  attacker-controlled channel.
+
+1. Decide what stable id means
+   across wrapped lines.
+"#
+                .into(),
+            )
+            .unwrap();
+        let stable = task.stable.clone();
+        ws.push_task(task).unwrap();
+
+        let html = render_task(&ws, &stable.0).unwrap();
+
+        assert!(html.contains("<h2>Review</h2>"), "heading rendered: {html}");
+        assert!(
+            html.contains("<code>tamper_detected_via_stable_id_check</code>"),
+            "inline code should protect underscores: {html}"
+        );
+        assert!(
+            html.contains("<code>if idx == 0</code>"),
+            "inline code should protect ==: {html}"
+        );
+        assert!(
+            html.contains("<pre><code class=\"language-rust\">"),
+            "fenced code should render as a block: {html}"
+        );
+        assert!(
+            html.contains("if idx == 0 {\n"),
+            "fenced code content should be preserved: {html}"
+        );
+        assert!(
+            !html.contains("<mark>") && !html.contains("<u>"),
+            "markdown code should not trigger tsk inline tags: {html}"
+        );
+        assert!(
+            html.contains(
+                "<li><code>tsk import</code> of an mbox you got from someone is its own\nattacker-controlled channel.</li>"
+            ),
+            "wrapped unordered list item should stay in one item: {html}"
+        );
+        assert!(
+            html.contains("<li>Decide what stable id means\nacross wrapped lines.</li>"),
+            "wrapped ordered list item should stay in one item: {html}"
+        );
+    }
 }
 
 fn write_redirect(stream: &mut TcpStream, location: &str, head: bool) -> Result<()> {
