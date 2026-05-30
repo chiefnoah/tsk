@@ -307,7 +307,7 @@ enum LogTarget {
 
 #[derive(Subcommand)]
 enum PropAction {
-    /// List property keys set on a task.
+    /// List properties in the active namespace, or keys set on one task.
     List {
         #[command(flatten)]
         task_id: TaskId,
@@ -1224,9 +1224,18 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
         PropAction::List { task_id } => {
-            let task = ws.task(task_id.into())?;
-            for k in task.attributes.keys() {
-                println!("{k}");
+            if task_id.is_empty() {
+                for (id, key, value) in ws.list_properties()? {
+                    match value {
+                        Some(value) => println!("{id}\t{key}\t{value}"),
+                        None => println!("{id}\t{key}"),
+                    }
+                }
+            } else {
+                let task = ws.task(task_id.into())?;
+                for k in task.attributes.keys() {
+                    println!("{k}");
+                }
             }
         }
         PropAction::Get { task_id, key } => {
