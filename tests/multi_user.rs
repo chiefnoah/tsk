@@ -485,10 +485,20 @@ fn property_set_find_round_trip_via_binary() {
     assert!(attrs.contains("tag: \"alpha\""), "got {attrs}");
     assert!(attrs.contains("tag: \"beta\""), "got {attrs}");
 
-    // Keys index has both `priority` and `tag`.
-    let keys = tsk_ok(&alice, &["prop", "keys"]);
-    assert!(keys.contains("priority"), "got {keys}");
-    assert!(keys.contains("tag"), "got {keys}");
+    // `prop keys` is task-scoped.
+    let keys = tsk_ok(&alice, &["prop", "keys", "-T", "tsk-1"]);
+    assert!(keys.lines().any(|line| line == "priority"), "got {keys}");
+    assert!(keys.lines().any(|line| line == "tag"), "got {keys}");
+    assert!(
+        !keys.contains('\t') && !keys.contains("high") && !keys.contains("alpha"),
+        "prop keys should list keys only: {keys}"
+    );
+    let keys = tsk_ok(&alice, &["prop", "keys", "-T", "tsk-2"]);
+    assert!(keys.lines().any(|line| line == "priority"), "got {keys}");
+    assert!(
+        !keys.lines().any(|line| line == "tag"),
+        "prop keys should not include keys from other tasks: {keys}"
+    );
 
     // Namespace props lists unique keys for tasks bound in that namespace.
     let props = tsk_ok(&alice, &["namespace", "props"]);

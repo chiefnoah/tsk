@@ -342,8 +342,11 @@ enum PropAction {
         key: String,
         value: Option<String>,
     },
-    /// List every property key currently in use across the workspace.
-    Keys,
+    /// List property keys set on a task.
+    Keys {
+        #[command(flatten)]
+        task_id: TaskId,
+    },
     /// List distinct values seen for a property key.
     Values { key: String },
     /// Find every task in the active namespace whose `key` is set (and equals
@@ -1305,7 +1308,10 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
             key,
             value,
         } => ws.unset_property(task_id.into(), &key, value.as_deref())?,
-        PropAction::Keys => print_lines(ws.property_keys()?),
+        PropAction::Keys { task_id } => {
+            let task = ws.task(task_id.into())?;
+            print_lines(task.attributes.keys());
+        }
         PropAction::Values { key } => print_lines(ws.property_values(&key)?),
         PropAction::Find { key, value } => {
             let key = match key {
