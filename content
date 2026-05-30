@@ -6,3 +6,7 @@ internal link [[<namepace>-<id>]]. The "depends-on" property should be correctly
 set/appended to include the newly created task link (as an internal link) and
 the newly created task should have a "blocks" property that has the ID of the
 current task's ID as an internal link.
+
+Document the [> <] syntax in the README
+
+The new depends-on and blocks properties are "protected" properties.
