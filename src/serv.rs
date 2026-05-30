@@ -10,7 +10,9 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::str::FromStr as _;
-use url::Url;
+use url::{Url, form_urlencoded};
+
+const PAGE_SIZE: usize = 25;
 
 #[derive(Args, Clone)]
 pub struct ServeArgs {
@@ -113,6 +115,7 @@ enum Rendered {
 }
 
 fn render_path(ws: &Workspace, target: &str) -> Result<Rendered> {
+    let page = page_from_target(target);
     let path = target.split('?').next().unwrap_or("/");
     let path = path.trim_end_matches('/').trim_start_matches('/');
     if path.is_empty() {
@@ -121,12 +124,12 @@ fn render_path(ws: &Workspace, target: &str) -> Result<Rendered> {
     let parts: Vec<&str> = path.split('/').collect();
     match parts.as_slice() {
         ["queues"] => render_queues(ws).map(Rendered::Html),
-        ["queues", name, "log"] => render_queue_log(ws, name).map(Rendered::Html),
-        ["queues", name] => render_queue(ws, name).map(Rendered::Html),
+        ["queues", name, "log"] => render_queue_log(ws, name, page).map(Rendered::Html),
+        ["queues", name] => render_queue(ws, name, page).map(Rendered::Html),
         ["namespaces"] => render_namespaces(ws).map(Rendered::Html),
-        ["namespaces", name, "log"] => render_namespace_log(ws, name).map(Rendered::Html),
-        ["namespaces", name] => render_namespace(ws, name).map(Rendered::Html),
-        ["tasks", stable, "log"] => render_task_log(ws, stable).map(Rendered::Html),
+        ["namespaces", name, "log"] => render_namespace_log(ws, name, page).map(Rendered::Html),
+        ["namespaces", name] => render_namespace(ws, name, page).map(Rendered::Html),
+        ["tasks", stable, "log"] => render_task_log(ws, stable, page).map(Rendered::Html),
         ["tasks", stable] => render_task(ws, stable).map(Rendered::Html),
         _ => Ok(Rendered::NotFound("not found\n".to_string())),
     }
@@ -152,17 +155,18 @@ fn render_queues(ws: &Workspace) -> Result<String> {
     page(ws, "Queues", &format!("<h1>Queues</h1><ul>{items}</ul>"))
 }
 
-fn render_queue(ws: &Workspace, name: &str) -> Result<String> {
+fn render_queue(ws: &Workspace, name: &str, page_num: usize) -> Result<String> {
     queue::validate_name(name)?;
     let repo = repo(ws)?;
     let q = queue::read(&repo, name)?;
     let bindings = all_bindings(ws, &repo)?;
+    let page_slice = paginate(&q.index, page_num);
     let mut rows = String::new();
-    for (idx, stable) in q.index.iter().enumerate() {
+    for (offset, stable) in page_slice.items.iter().enumerate() {
         let title = title_for(&repo, stable)?;
         rows.push_str(&format!(
             "<tr><td>{}</td><td>{}</td><td><a href=\"/tasks/{}\">{}</a></td><td>{}</td></tr>",
-            idx + 1,
+            page_slice.start + offset + 1,
             binding_links(bindings.get(stable)),
             h(&stable.0),
             h(&title),
@@ -186,13 +190,16 @@ fn render_queue(ws: &Workspace, name: &str) -> Result<String> {
         }
         format!("<ul>{items}</ul>")
     };
+    let pagination = pagination_nav(&format!("/queues/{}", h(name)), &page_slice);
     page(
         ws,
         &format!("Queue {name}"),
         &format!(
             "<h1>Queue {}</h1><p><a href=\"/queues/{}/log\">Log</a></p>\
              <p>can-pull: <code>{}</code></p>\
+             {pagination}\
              <table><thead><tr><th>#</th><th>Binding</th><th>Title</th><th>Stable</th></tr></thead><tbody>{rows}</tbody></table>\
+             {pagination}\
              <h2>Inbox</h2>{inbox}",
             h(name),
             h(name),
@@ -201,7 +208,7 @@ fn render_queue(ws: &Workspace, name: &str) -> Result<String> {
     )
 }
 
-fn render_queue_log(ws: &Workspace, name: &str) -> Result<String> {
+fn render_queue_log(ws: &Workspace, name: &str, page: usize) -> Result<String> {
     queue::validate_name(name)?;
     render_log_page(
         ws,
@@ -209,7 +216,9 @@ fn render_queue_log(ws: &Workspace, name: &str) -> Result<String> {
         &format!("Queue {} Log", h(name)),
         &format!("/queues/{}", h(name)),
         &format!("Queue {}", h(name)),
+        &format!("/queues/{}/log", h(name)),
         ws.log_queue(name)?,
+        page,
     )
 }
 
@@ -237,12 +246,14 @@ fn render_namespaces(ws: &Workspace) -> Result<String> {
     )
 }
 
-fn render_namespace(ws: &Workspace, name: &str) -> Result<String> {
+fn render_namespace(ws: &Workspace, name: &str, page_num: usize) -> Result<String> {
     namespace::validate_name(name)?;
     let repo = repo(ws)?;
     let ns = namespace::read(&repo, name)?;
+    let mapping: Vec<_> = ns.mapping.into_iter().collect();
+    let page_slice = paginate(&mapping, page_num);
     let mut rows = String::new();
-    for (human, stable) in ns.mapping {
+    for (human, stable) in page_slice.items {
         rows.push_str(&format!(
             "<tr><td>{}-{} </td><td><a href=\"/tasks/{}\">{}</a></td><td>{}</td></tr>",
             h(name),
@@ -255,19 +266,22 @@ fn render_namespace(ws: &Workspace, name: &str) -> Result<String> {
     if rows.is_empty() {
         rows.push_str("<tr><td colspan=\"3\"><em>No tasks</em></td></tr>");
     }
+    let pagination = pagination_nav(&format!("/namespaces/{}", h(name)), &page_slice);
     page(
         ws,
         &format!("Namespace {name}"),
         &format!(
             "<h1>Namespace {}</h1><p><a href=\"/namespaces/{}/log\">Log</a></p>\
-             <table><thead><tr><th>ID</th><th>Title</th><th>Stable</th></tr></thead><tbody>{rows}</tbody></table>",
+             {pagination}\
+             <table><thead><tr><th>ID</th><th>Title</th><th>Stable</th></tr></thead><tbody>{rows}</tbody></table>\
+             {pagination}",
             h(name),
             h(name)
         ),
     )
 }
 
-fn render_namespace_log(ws: &Workspace, name: &str) -> Result<String> {
+fn render_namespace_log(ws: &Workspace, name: &str, page: usize) -> Result<String> {
     namespace::validate_name(name)?;
     render_log_page(
         ws,
@@ -275,7 +289,9 @@ fn render_namespace_log(ws: &Workspace, name: &str) -> Result<String> {
         &format!("Namespace {} Log", h(name)),
         &format!("/namespaces/{}", h(name)),
         &format!("Namespace {}", h(name)),
+        &format!("/namespaces/{}/log", h(name)),
         ws.log_namespace(name)?,
+        page,
     )
 }
 
@@ -326,7 +342,7 @@ fn render_task(ws: &Workspace, stable: &str) -> Result<String> {
     page(ws, task.title(), &body)
 }
 
-fn render_task_log(ws: &Workspace, stable: &str) -> Result<String> {
+fn render_task_log(ws: &Workspace, stable: &str, page: usize) -> Result<String> {
     let stable = StableId(stable.to_string());
     let repo = repo(ws)?;
     let title = title_for(&repo, &stable)?;
@@ -336,7 +352,9 @@ fn render_task_log(ws: &Workspace, stable: &str) -> Result<String> {
         &format!("Task Log: {}", h(&title)),
         &format!("/tasks/{}", h(&stable.0)),
         &title,
+        &format!("/tasks/{}/log", h(&stable.0)),
         ws.log_ref(&stable.refname())?,
+        page,
     )
 }
 
@@ -346,10 +364,13 @@ fn render_log_page(
     heading: &str,
     back_href: &str,
     back_label: &str,
+    page_href: &str,
     commits: Vec<LogCommit>,
+    page_num: usize,
 ) -> Result<String> {
+    let page_slice = paginate(&commits, page_num);
     let mut rows = String::new();
-    for commit in commits {
+    for commit in page_slice.items {
         let short = &commit.oid[..commit.oid.len().min(8)];
         rows.push_str(&format!(
             "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
@@ -362,12 +383,15 @@ fn render_log_page(
     if rows.is_empty() {
         rows.push_str("<tr><td colspan=\"4\"><em>No commits</em></td></tr>");
     }
+    let pagination = pagination_nav(page_href, &page_slice);
     page(
         ws,
         title,
         &format!(
             "<h1>{heading}</h1><p><a href=\"{}\">Back to {}</a></p>\
-             <table><thead><tr><th>Commit</th><th>Summary</th><th>Author</th><th>When</th></tr></thead><tbody>{rows}</tbody></table>",
+             {pagination}\
+             <table><thead><tr><th>Commit</th><th>Summary</th><th>Author</th><th>When</th></tr></thead><tbody>{rows}</tbody></table>\
+             {pagination}",
             h(back_href),
             h(back_label)
         ),
@@ -672,6 +696,70 @@ fn include_current(names: &mut Vec<String>, current: &str) {
     names.extend(set);
 }
 
+fn page_from_target(target: &str) -> usize {
+    let Some(query) = target.split_once('?').map(|(_, query)| query) else {
+        return 1;
+    };
+    form_urlencoded::parse(query.as_bytes())
+        .find(|(key, _)| key == "page")
+        .and_then(|(_, value)| value.parse::<usize>().ok())
+        .filter(|page| *page > 0)
+        .unwrap_or(1)
+}
+
+struct PageSlice<'a, T> {
+    items: &'a [T],
+    page: usize,
+    total_pages: usize,
+    total: usize,
+    start: usize,
+}
+
+fn paginate<T>(items: &[T], requested_page: usize) -> PageSlice<'_, T> {
+    let total = items.len();
+    let total_pages = total.div_ceil(PAGE_SIZE).max(1);
+    let page = requested_page.clamp(1, total_pages);
+    let start = ((page - 1) * PAGE_SIZE).min(total);
+    let end = (start + PAGE_SIZE).min(total);
+    PageSlice {
+        items: &items[start..end],
+        page,
+        total_pages,
+        total,
+        start,
+    }
+}
+
+fn pagination_nav<T>(base_href: &str, page: &PageSlice<'_, T>) -> String {
+    if page.total <= PAGE_SIZE {
+        return String::new();
+    }
+    let prev = if page.page > 1 {
+        format!(
+            "<a href=\"{}?page={}\">Previous</a>",
+            h(base_href),
+            page.page - 1
+        )
+    } else {
+        "<span>Previous</span>".to_string()
+    };
+    let next = if page.page < page.total_pages {
+        format!(
+            "<a href=\"{}?page={}\">Next</a>",
+            h(base_href),
+            page.page + 1
+        )
+    } else {
+        "<span>Next</span>".to_string()
+    };
+    format!(
+        "<nav class=\"pagination\" aria-label=\"Pagination\"><ul>\
+         <li>{prev}</li><li>Page {} of {} ({} entries)</li><li>{next}</li>\
+         </ul></nav>",
+        page.page, page.total_pages, page.total
+    )
+}
+
 fn page(ws: &Workspace, title: &str, body: &str) -> Result<String> {
     let active_queue = ws.queue()?;
     let active_namespace = ws.namespace()?;
@@ -705,6 +793,7 @@ td,th{vertical-align:top}\
 .task-content-plain{white-space:pre-wrap}\
 .task-content-markdown pre{padding:1rem;overflow:auto}\
 .meta{color:var(--pico-muted-color)}\
+.pagination ul{align-items:center;gap:1rem}\
 </style>";
 
 fn format_unix(ts: i64) -> String {
@@ -883,13 +972,13 @@ if idx == 0 {
         ws.push_task(task).unwrap();
         ws.drop(id.into()).unwrap();
 
-        let queue_html = render_queue(&ws, "tsk").unwrap();
+        let queue_html = render_queue(&ws, "tsk", 1).unwrap();
         assert!(
             queue_html.contains("<a href=\"/queues/tsk/log\">Log</a>"),
             "queue page should link to queue log: {queue_html}"
         );
 
-        let log_html = render_queue_log(&ws, "tsk").unwrap();
+        let log_html = render_queue_log(&ws, "tsk", 1).unwrap();
         assert!(
             log_html.contains("Queue tsk Log"),
             "queue log should have a heading: {log_html}"
@@ -910,13 +999,13 @@ if idx == 0 {
         let task = ws.new_task("namespaced work".into(), "".into()).unwrap();
         ws.push_task(task).unwrap();
 
-        let namespace_html = render_namespace(&ws, "tsk").unwrap();
+        let namespace_html = render_namespace(&ws, "tsk", 1).unwrap();
         assert!(
             namespace_html.contains("<a href=\"/namespaces/tsk/log\">Log</a>"),
             "namespace page should link to namespace log: {namespace_html}"
         );
 
-        let log_html = render_namespace_log(&ws, "tsk").unwrap();
+        let log_html = render_namespace_log(&ws, "tsk", 1).unwrap();
         assert!(
             log_html.contains("Namespace tsk Log"),
             "namespace log should have a heading: {log_html}"
@@ -940,7 +1029,7 @@ if idx == 0 {
             "task page should link to task log: {task_html}"
         );
 
-        let log_html = render_task_log(&ws, &stable.0).unwrap();
+        let log_html = render_task_log(&ws, &stable.0, 1).unwrap();
         assert!(
             log_html.contains("Task Log: logged task"),
             "task log should have a heading: {log_html}"
@@ -948,6 +1037,160 @@ if idx == 0 {
         assert!(
             log_html.contains("create"),
             "task log should include create summary: {log_html}"
+        );
+    }
+
+    #[test]
+    fn queue_tasks_paginate_when_over_threshold() {
+        let (_dir, ws) = fresh_workspace();
+        for n in 0..(PAGE_SIZE + 2) {
+            let task = ws
+                .new_task(format!("queue-task-{n:02}"), "".into())
+                .unwrap();
+            ws.push_task(task).unwrap();
+        }
+
+        let first = render_queue(&ws, "tsk", 1).unwrap();
+        assert!(
+            first.contains("Page 1 of 2"),
+            "first page should show pagination: {first}"
+        );
+        assert!(
+            first.contains("queue-task-26"),
+            "newest task should be on first page: {first}"
+        );
+        assert!(
+            !first.contains("queue-task-00"),
+            "oldest task should not be on first page: {first}"
+        );
+        assert!(
+            first.contains("<a href=\"/queues/tsk?page=2\">Next</a>"),
+            "first page should link to second page: {first}"
+        );
+
+        let second = render_queue(&ws, "tsk", 2).unwrap();
+        assert!(
+            second.contains("Page 2 of 2"),
+            "second page should show pagination: {second}"
+        );
+        assert!(
+            second.contains("queue-task-00"),
+            "oldest task should be on second page: {second}"
+        );
+        assert!(
+            !second.contains("queue-task-26"),
+            "newest task should not be on second page: {second}"
+        );
+        assert!(
+            second.contains("<a href=\"/queues/tsk?page=1\">Previous</a>"),
+            "second page should link back to first page: {second}"
+        );
+    }
+
+    #[test]
+    fn render_path_uses_page_query_parameter() {
+        let (_dir, ws) = fresh_workspace();
+        for n in 0..(PAGE_SIZE + 2) {
+            let task = ws
+                .new_task(format!("route-task-{n:02}"), "".into())
+                .unwrap();
+            ws.push_task(task).unwrap();
+        }
+
+        let Rendered::Html(html) = render_path(&ws, "/queues/tsk?page=2").unwrap() else {
+            panic!("queue route should render html");
+        };
+        assert!(
+            html.contains("Page 2 of 2"),
+            "route should pass query page to renderer: {html}"
+        );
+        assert!(
+            html.contains("route-task-00"),
+            "second page should contain oldest task: {html}"
+        );
+    }
+
+    #[test]
+    fn namespace_tasks_paginate_when_over_threshold() {
+        let (_dir, ws) = fresh_workspace();
+        for n in 0..(PAGE_SIZE + 2) {
+            let task = ws
+                .new_task(format!("namespace-task-{n:02}"), "".into())
+                .unwrap();
+            ws.push_task(task).unwrap();
+        }
+
+        let first = render_namespace(&ws, "tsk", 1).unwrap();
+        assert!(
+            first.contains("Page 1 of 2"),
+            "first page should show pagination: {first}"
+        );
+        assert!(
+            first.contains("namespace-task-00"),
+            "first namespace binding should be on first page: {first}"
+        );
+        assert!(
+            !first.contains("namespace-task-26"),
+            "last namespace binding should not be on first page: {first}"
+        );
+
+        let second = render_namespace(&ws, "tsk", 2).unwrap();
+        assert!(
+            second.contains("Page 2 of 2"),
+            "second page should show pagination: {second}"
+        );
+        assert!(
+            second.contains("namespace-task-26"),
+            "last namespace binding should be on second page: {second}"
+        );
+        assert!(
+            second.contains("<a href=\"/namespaces/tsk?page=1\">Previous</a>"),
+            "second page should link back to first page: {second}"
+        );
+    }
+
+    #[test]
+    fn logs_paginate_when_over_threshold() {
+        let (_dir, ws) = fresh_workspace();
+        let task = ws.new_task("many log entries".into(), "".into()).unwrap();
+        let id = task.id;
+        let stable = task.stable.clone();
+        ws.push_task(task).unwrap();
+        for n in 0..(PAGE_SIZE + 2) {
+            let mut task = ws.task(id.into()).unwrap();
+            task.body = format!("revision {n:02}");
+            ws.save_task(&task).unwrap();
+        }
+
+        let first = render_task_log(&ws, &stable.0, 1).unwrap();
+        assert!(
+            first.contains("Page 1 of 2"),
+            "first log page should show pagination: {first}"
+        );
+        assert!(
+            first.matches("<td>edit</td>").count() >= PAGE_SIZE,
+            "first log page should contain page-size edit entries: {first}"
+        );
+        assert!(
+            !first.contains("create tsk-1"),
+            "oldest create entry should not be on first log page: {first}"
+        );
+
+        let second = render_task_log(&ws, &stable.0, 2).unwrap();
+        assert!(
+            second.contains("Page 2 of 2"),
+            "second log page should show pagination: {second}"
+        );
+        assert!(
+            second.contains("create tsk-1"),
+            "oldest create entry should be on second log page: {second}"
+        );
+        assert!(
+            second.contains(&format!(
+                "<a href=\"/tasks/{}/log?page=1\">Previous</a>",
+                h(&stable.0)
+            )),
+            "second log page should link back to first page: {second}"
         );
     }
 }
