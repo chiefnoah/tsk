@@ -603,9 +603,19 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
     init_repo_with_commit(dir.path());
     tsk_ok(
         dir.path(),
+        &["push", "open queued title\n\nopen body should not show"],
+    );
+    tsk_ok(
+        dir.path(),
         &["push", "searchable title\n\nbody needle for reopen"],
     );
-    tsk_ok(dir.path(), &["drop", "-T", "tsk-1"]);
+    tsk_ok(dir.path(), &["drop", "-T", "tsk-2"]);
+    tsk_ok(dir.path(), &["queue", "create", "review"]);
+    tsk_ok(
+        dir.path(),
+        &["push", "inboxed title\n\ninbox body should not show"],
+    );
+    tsk_ok(dir.path(), &["assign", "review", "-T", "tsk-3", "-R", ""]);
 
     let fake_bin = tempfile::tempdir().unwrap();
     let capture = fake_bin.path().join("fzf-input");
@@ -635,7 +645,7 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
         "reopen should succeed: stdout={stdout} stderr={stderr}"
     );
     assert!(
-        stdout.contains("Reopened tsk-1"),
+        stdout.contains("Reopened tsk-2"),
         "reopen should print reopened id: {stdout}"
     );
     let input = std::fs::read_to_string(capture).unwrap();
@@ -643,11 +653,19 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
         input.contains("body needle for reopen"),
         "reopen -b should include task body in fzf input: {input}"
     );
-    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-x"]);
+    assert!(
+        !input.contains("open body should not show"),
+        "reopen picker should exclude queued tasks: {input}"
+    );
+    assert!(
+        !input.contains("inbox body should not show"),
+        "reopen picker should exclude inboxed tasks: {input}"
+    );
+    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-x"]);
     assert!(attrs.contains("status: \"open\""), "got {attrs}");
     let list = tsk_ok(dir.path(), &["list"]);
     assert!(
-        list.contains("tsk-1"),
+        list.contains("tsk-2"),
         "reopened task should be queued: {list}"
     );
 }

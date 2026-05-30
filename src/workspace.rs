@@ -634,6 +634,33 @@ impl Workspace {
         Ok(out)
     }
 
+    /// Tasks in the active namespace that are not present in any queue index
+    /// or inbox. Queue membership is the authoritative signal that a task is
+    /// still active somewhere.
+    pub fn closed_tasks(&self) -> Result<Vec<StackEntry>> {
+        let repo = self.repo()?;
+        let mut active = BTreeSet::new();
+        for name in self.list_queues()? {
+            let q = queue::read(&repo, &name)?;
+            active.extend(q.index);
+            active.extend(q.inbox.into_values());
+        }
+
+        let mut out = Vec::new();
+        for (human, stable) in namespace::read(&repo, &self.namespace()?)?.mapping {
+            if active.contains(&stable) {
+                continue;
+            }
+            let title = Self::title_for(&repo, &stable)?;
+            out.push(StackEntry {
+                id: Id(human),
+                stable,
+                title,
+            });
+        }
+        Ok(out)
+    }
+
     /// Every (human id, stable id, title) bound in the given namespace,
     /// sorted by human id ascending. Independent of any queue.
     pub fn list_namespace_tasks(&self, name: &str) -> Result<Vec<StackEntry>> {

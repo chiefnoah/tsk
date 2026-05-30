@@ -823,7 +823,7 @@ fn single_line(s: &str) -> String {
 fn command_reopen(dir: PathBuf, task_id: TaskId, body: bool) -> Result<()> {
     let ws = Workspace::from_path(dir.clone())?;
     let identifier = if task_id.is_empty() {
-        let entries = ws.list_namespace_tasks(&ws.namespace()?)?;
+        let entries = ws.closed_tasks()?;
         if entries.is_empty() {
             return Err(errors::Error::NoTasks);
         }
