@@ -1,1 +1,3 @@
 Support deleting queues
+
+Be sure to support deleting them on the remote too, and pulling delete operations from remotes
