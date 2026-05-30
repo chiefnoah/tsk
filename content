@@ -1,1 +1,4 @@
 Test task with links
+
+This task has an [external link](https://tangled.org/ngp.computer/tsk),
+an internal link: [[tsk-12]], and some *miscellaneous* !formatting!.
