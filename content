@@ -1,1 +1,3 @@
 prop list should print values for properties by default
+
+Add a flag that disables printing the values and just prints the keys
