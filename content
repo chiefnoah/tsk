@@ -1,0 +1,3 @@
+Extract command output row formatting helpers
+
+Reduce repeated println! formatting in commands.rs for common tabular outputs such as task rows, property rows, inbox rows, and log rows. Keep CLI output byte-for-byte compatible where tests or users rely on it, and run the existing test suite.
