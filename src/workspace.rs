@@ -38,6 +38,12 @@ pub struct CleanReport {
     pub tasks_repaired: usize,
 }
 
+#[derive(Default)]
+struct QueuePruneReport {
+    queue_entries_pruned: usize,
+    queued: BTreeSet<StableId>,
+}
+
 const NAMESPACE_FILE: &str = "namespace";
 const QUEUE_FILE: &str = "queue";
 const REMOTE_FILE: &str = "remote";
@@ -80,6 +86,21 @@ impl From<u32> for Id {
     fn from(v: u32) -> Self {
         Id(v)
     }
+}
+
+fn prune_orphan_queue_entries(repo: &Repository, message: &str) -> Result<QueuePruneReport> {
+    let mut report = QueuePruneReport::default();
+    for queue_name in queue::list_names(repo)? {
+        let mut q = queue::read(repo, &queue_name)?;
+        let before = q.index.len();
+        q.index.retain(|stable| object::exists(repo, stable));
+        report.queue_entries_pruned += before - q.index.len();
+        report.queued.extend(q.index.iter().cloned());
+        if q.index.len() != before {
+            queue::write(repo, &queue_name, &q, message)?;
+        }
+    }
+    Ok(report)
 }
 
 #[derive(Clone)]
@@ -832,18 +853,11 @@ impl Workspace {
         let mut queues_pruned = 0;
         let mut prop_orphans = 0;
         let mut ghost_bindings = 0;
-        let mut orphan_queue_entries = 0;
 
         // Empty queues + orphan queue index entries.
+        let queue_prune = prune_orphan_queue_entries(&repo, "gc-orphan-queue")?;
         for name in queue::list_names(&repo)? {
-            let mut q = queue::read(&repo, &name)?;
-            let before = q.index.len();
-            q.index.retain(&task_exists);
-            if q.index.len() != before {
-                let removed = before - q.index.len();
-                orphan_queue_entries += removed;
-                queue::write(&repo, &name, &q, "gc-orphan-queue")?;
-            }
+            let q = queue::read(&repo, &name)?;
             if name != queue::DEFAULT_QUEUE && q.index.is_empty() && q.inbox.is_empty() {
                 if let Ok(mut r) = repo.find_reference(&queue::refname(&name)) {
                     r.delete()?;
@@ -877,7 +891,7 @@ impl Workspace {
             queues_pruned,
             prop_orphans,
             ghost_bindings,
-            orphan_queue_entries,
+            queue_prune.queue_entries_pruned,
         ))
     }
 
@@ -1020,18 +1034,8 @@ impl Workspace {
         let active_namespace = self.namespace()?;
         let task_exists = |s: &StableId| object::exists(&repo, s);
         let mut report = CleanReport::default();
-        let mut queued = BTreeSet::new();
-
-        for queue_name in queue::list_names(&repo)? {
-            let mut q = queue::read(&repo, &queue_name)?;
-            let before = q.index.len();
-            q.index.retain(&task_exists);
-            report.queue_entries_pruned += before - q.index.len();
-            queued.extend(q.index.iter().cloned());
-            if q.index.len() != before {
-                queue::write(&repo, &queue_name, &q, "clean")?;
-            }
-        }
+        let queue_prune = prune_orphan_queue_entries(&repo, "clean")?;
+        report.queue_entries_pruned = queue_prune.queue_entries_pruned;
 
         let bindings = references::binding_map(&repo, task_exists)?;
 
@@ -1067,7 +1071,7 @@ impl Workspace {
                 }
             }
 
-            let status = if queued.contains(&stable) {
+            let status = if queue_prune.queued.contains(&stable) {
                 STATUS_OPEN
             } else {
                 STATUS_DONE
