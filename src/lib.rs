@@ -7,6 +7,7 @@ mod patch;
 mod properties;
 mod propvalue;
 mod queue;
+mod serv;
 mod task;
 mod workspace;
 
@@ -245,6 +246,11 @@ enum Commands {
     },
     /// Print coding-agent usage guidance for tsk.
     Skill,
+    /// Host a read-only HTTP browser for queues, namespaces, and tasks.
+    Serv {
+        #[command(flatten)]
+        args: serv::ServeArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -540,6 +546,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             io::stdout().write_all(include_bytes!("../SKILL.md"))?;
             Ok(())
         }
+        Commands::Serv { args } => serv::serve(dir, args),
     }
 }
 
@@ -548,6 +555,17 @@ fn dispatch(cli: Cli) -> Result<()> {
 /// `std::process::exit`.
 pub fn run() -> i32 {
     match dispatch(Cli::parse()) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e}");
+            2
+        }
+    }
+}
+
+/// Dedicated entry point for the `tsk-serv` binary.
+pub fn run_serv() -> i32 {
+    match serv::run() {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");
