@@ -453,13 +453,17 @@ fn property_set_find_round_trip_via_binary() {
     tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "tag", "beta"]);
     tsk_ok(&alice, &["prop", "add", "-T", "tsk-2", "priority", "low"]);
 
-    // `prop list` lists keys set on the task; use `show -x` for values.
+    // `prop list` lists values set on the task.
     let list = tsk_ok(&alice, &["prop", "list", "-T", "tsk-1"]);
-    assert!(list.lines().any(|line| line == "priority"), "got {list}");
-    assert!(list.lines().any(|line| line == "tag"), "got {list}");
     assert!(
-        !list.contains('\t'),
-        "prop list should only print keys: {list}"
+        list.lines().any(|line| line == "priority\thigh"),
+        "got {list}"
+    );
+    assert!(list.lines().any(|line| line == "tag\talpha"), "got {list}");
+    assert!(list.lines().any(|line| line == "tag\tbeta"), "got {list}");
+    assert!(
+        !list.lines().any(|line| line == "priority" || line == "tag"),
+        "prop list should print values, not key-only rows: {list}"
     );
     assert_eq!(
         tsk_ok(&alice, &["prop", "get", "-T", "tsk-1", "priority"]),

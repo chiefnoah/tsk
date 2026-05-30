@@ -310,7 +310,7 @@ enum LogTarget {
 
 #[derive(Subcommand)]
 enum PropAction {
-    /// List property keys set on a task.
+    /// List properties set on a task.
     List {
         #[command(flatten)]
         task_id: TaskId,
@@ -1282,8 +1282,14 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
     match action {
         PropAction::List { task_id } => {
             let task = ws.task(task_id.into())?;
-            for k in task.attributes.keys() {
-                println!("{k}");
+            for (key, values) in &task.attributes {
+                if values.is_empty() {
+                    println!("{key}");
+                } else {
+                    for value in values {
+                        println!("{key}\t{value}");
+                    }
+                }
             }
         }
         PropAction::Get { task_id, key } => {
