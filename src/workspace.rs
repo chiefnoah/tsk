@@ -1486,6 +1486,30 @@ mod test {
         (dir, ws)
     }
 
+    fn corrupt_task_properties(
+        ws: &Workspace,
+        stable: &StableId,
+        message: &str,
+        mutate: impl FnOnce(&mut BTreeMap<String, Vec<String>>),
+    ) {
+        let repo = ws.repo().unwrap();
+        let mut obj = object::read(&repo, stable).unwrap().unwrap();
+        mutate(&mut obj.properties);
+        properties::update_task(&repo, stable, &obj, message).unwrap();
+    }
+
+    fn remove_task_property(ws: &Workspace, stable: &StableId, key: &str) {
+        corrupt_task_properties(ws, stable, &format!("corrupt-remove-{key}"), |properties| {
+            properties.remove(key);
+        });
+    }
+
+    fn set_task_property(ws: &Workspace, stable: &StableId, key: &str, values: Vec<String>) {
+        corrupt_task_properties(ws, stable, &format!("corrupt-set-{key}"), |properties| {
+            properties.insert(key.into(), values);
+        });
+    }
+
     #[test]
     fn push_list_drop_round_trip() {
         let (_d, ws) = fresh_workspace();
@@ -1630,24 +1654,14 @@ mod test {
         let stale_stable = stale.stable.clone();
         ws.push_task(stale).unwrap();
 
-        let repo = ws.repo().unwrap();
-        let mut source_obj = object::read(&repo, &source_stable).unwrap().unwrap();
-        source_obj.properties.remove(properties::REFERENCES_KEY);
-        object::update(&repo, &source_stable, &source_obj, "corrupt-source").unwrap();
-        properties::reindex_task(&repo, &source_stable, &source_obj.properties).unwrap();
-
-        let mut target_obj = object::read(&repo, &target_stable).unwrap().unwrap();
-        target_obj.properties.remove(properties::REFERENCED_BY_KEY);
-        object::update(&repo, &target_stable, &target_obj, "corrupt-target").unwrap();
-        properties::reindex_task(&repo, &target_stable, &target_obj.properties).unwrap();
-
-        let mut stale_obj = object::read(&repo, &stale_stable).unwrap().unwrap();
-        stale_obj.properties.insert(
-            properties::REFERENCED_BY_KEY.into(),
+        remove_task_property(&ws, &source_stable, properties::REFERENCES_KEY);
+        remove_task_property(&ws, &target_stable, properties::REFERENCED_BY_KEY);
+        set_task_property(
+            &ws,
+            &stale_stable,
+            properties::REFERENCED_BY_KEY,
             vec!["[[tsk-2]]".into()],
         );
-        object::update(&repo, &stale_stable, &stale_obj, "corrupt-stale").unwrap();
-        properties::reindex_task(&repo, &stale_stable, &stale_obj.properties).unwrap();
 
         let report = ws.clean().unwrap();
         assert_eq!(report.queue_entries_pruned, 0);
@@ -1681,20 +1695,8 @@ mod test {
         ws.push_task(done).unwrap();
         ws.drop(TaskIdentifier::Id(done_id)).unwrap();
 
-        let repo = ws.repo().unwrap();
-        let mut queued_obj = object::read(&repo, &queued_stable).unwrap().unwrap();
-        queued_obj
-            .properties
-            .insert(STATUS_KEY.into(), vec![STATUS_DONE.into()]);
-        object::update(&repo, &queued_stable, &queued_obj, "corrupt-queued-status").unwrap();
-        properties::reindex_task(&repo, &queued_stable, &queued_obj.properties).unwrap();
-
-        let mut done_obj = object::read(&repo, &done_stable).unwrap().unwrap();
-        done_obj
-            .properties
-            .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
-        object::update(&repo, &done_stable, &done_obj, "corrupt-done-status").unwrap();
-        properties::reindex_task(&repo, &done_stable, &done_obj.properties).unwrap();
+        set_task_property(&ws, &queued_stable, STATUS_KEY, vec![STATUS_DONE.into()]);
+        set_task_property(&ws, &done_stable, STATUS_KEY, vec![STATUS_OPEN.into()]);
 
         let report = ws.clean().unwrap();
         assert_eq!(report.queue_entries_pruned, 0);
