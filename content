@@ -1,0 +1,5 @@
+Add object::exists helper
+
+Centralize repeated task-ref existence checks such as repo.find_reference(&stable.refname()).is_ok() behind an object::exists(repo, stable) helper.
+
+Use it in workspace/merge paths where it improves readability. Keep behavior unchanged and run the existing test suite.
