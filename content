@@ -7,3 +7,4 @@ When recalculating, treat task bodies and queue index membership as authoritativ
 Include tests for missing forward references, missing backlinks, stale backlinks, and ambiguous cases where properties conflict with body or queue state.
 
 Use this task as an example with this link: [[tsk-1]]
+And this link: [[tsk-58]]
