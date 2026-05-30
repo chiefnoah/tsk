@@ -19,3 +19,5 @@ is returned. These scripts are *not* executed for "protected" properties, as the
 lifecycle and values for those are maintained by the tsk command itself. Example
 scripts should be supplied, but not marked executable (the tool should ignore
 these).
+
+We should create other tasks to create a UI for managing/editing these scripts
