@@ -1,1 +1,3 @@
 prop list should list all properties in the current namespace
+
+It should still only print the keys of the properties and deduplicate
