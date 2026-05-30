@@ -1,0 +1,3 @@
+Extract queue index mutation helper
+
+queue.rs has similar read/retain/mutate/write flows in push_top, push_bottom, and remove. Add a private queue index mutation helper to reduce duplicate code while preserving idempotent behavior and commit messages.
