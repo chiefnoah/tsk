@@ -16,7 +16,9 @@ tsk list
 tsk show -T tsk-12
 tsk push -- "Fix parser panic
 Reproduce with an empty input file, then add a regression test."
+tsk push -e -- "Draft task"      # open $EDITOR before saving
 tsk append -- "Follow up: document parser edge cases"
+tsk append -e -- "Follow up"     # open $EDITOR before saving
 tsk drop -T tsk-12
 ```
 
@@ -25,6 +27,7 @@ tsk drop -T tsk-12
   front matter, or `-R` for raw task text.
 - `tsk push -- "title"` creates a task at the top of the active queue.
 - `tsk append -- "title"` creates a task at the bottom of the active queue.
+- Add `-e` to `push` or `append` to open `$EDITOR` before saving the new task.
 - `tsk drop -x -T tsk-N` records the current git commit in `closed-on`, marks
   work done, and removes it from the active queue. Use plain `drop` only when
   there is no implementing commit to record.

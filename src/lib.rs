@@ -52,7 +52,13 @@ enum Commands {
     Init,
     /// Create a new task and push it onto the active queue.
     Push {
-        #[arg(short = 'e', default_value_t = false)]
+        /// Open $EDITOR before saving the new task.
+        #[arg(
+            short = 'e',
+            long = "edit",
+            default_value_t = false,
+            help = "Open $EDITOR before saving the new task"
+        )]
         edit: bool,
         #[arg(short = 'b')]
         body: Option<String>,
@@ -61,7 +67,13 @@ enum Commands {
     },
     /// Create a new task and append it to the bottom of the active queue.
     Append {
-        #[arg(short = 'e', default_value_t = false)]
+        /// Open $EDITOR before saving the new task.
+        #[arg(
+            short = 'e',
+            long = "edit",
+            default_value_t = false,
+            help = "Open $EDITOR before saving the new task"
+        )]
         edit: bool,
         #[arg(short = 'b')]
         body: Option<String>,
