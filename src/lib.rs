@@ -365,6 +365,13 @@ enum QueueAction {
         #[arg(short = 'p', default_value_t = false)]
         can_pull: bool,
     },
+    /// Delete a queue. Refuses the default queue. Use -R to also delete it remotely.
+    Delete {
+        name: String,
+        /// Also push the delete to this remote. Empty string skips.
+        #[arg(short = 'R')]
+        remote: Option<String>,
+    },
     /// Switch active queue. With no name, fzf-picks from existing queues
     /// (plus a `<new>` sentinel for creating one on the fly).
     Switch {
@@ -570,7 +577,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 }
             }
             for qr in &outcome.queues {
-                println!("merged queue {}", qr.name);
+                match qr.kind {
+                    merge::QueueReconKind::Merged => println!("merged queue {}", qr.name),
+                    merge::QueueReconKind::Deleted => println!("deleted queue {}", qr.name),
+                }
             }
             Ok(())
         }
@@ -1291,6 +1301,20 @@ fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
         QueueAction::Create { name, can_pull } => {
             ws.create_queue(&name, Some(can_pull))?;
             println!("Created queue '{name}' (can-pull={can_pull})");
+        }
+        QueueAction::Delete { name, remote } => {
+            let deleted = ws.delete_queue(&name)?;
+            if deleted {
+                println!("Deleted queue '{name}'");
+            } else {
+                println!("Queue '{name}' did not exist");
+            }
+            if deleted
+                && let Some(remote_arg) = remote
+                && let Some(r) = effective_remote(&ws, Some(remote_arg))?
+            {
+                ws.git_delete_ref(&r, &queue::refname(&name))?;
+            }
         }
         QueueAction::Switch { name } => return resolve_and_switch_queue(&ws, name),
     }

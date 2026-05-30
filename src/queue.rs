@@ -146,6 +146,16 @@ pub fn write(repo: &Repository, name: &str, q: &Queue, message: &str) -> Result<
     Ok(())
 }
 
+pub fn delete(repo: &Repository, name: &str) -> Result<bool> {
+    validate_name(name)?;
+    let refname = refname(name);
+    let Ok(mut r) = repo.find_reference(&refname) else {
+        return Ok(false);
+    };
+    r.delete()?;
+    Ok(true)
+}
+
 pub fn list_names(repo: &Repository) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for r in repo.references_glob(&format!("{QUEUE_REF_PREFIX}*"))? {
@@ -290,5 +300,27 @@ mod test {
         assert_eq!(taken, Some(s));
         let q = read(&repo, "bob").unwrap();
         assert!(q.inbox.is_empty());
+    }
+
+    #[test]
+    fn delete_missing_queue_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+
+        assert!(!delete(&repo, "missing").unwrap());
+        assert!(!delete(&repo, "missing").unwrap());
+        assert!(repo.find_reference(&refname("missing")).is_err());
+    }
+
+    #[test]
+    fn delete_rejects_invalid_queue_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+
+        let err = delete(&repo, "bad/name").expect_err("invalid queue name must fail");
+        assert!(
+            format!("{err}").contains("Queue 'bad/name'"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -384,6 +384,13 @@ fn adjust_renumbered_internal_links(
 #[derive(Debug)]
 pub struct QueueReconciliation {
     pub name: String,
+    pub kind: QueueReconKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueReconKind {
+    Merged,
+    Deleted,
 }
 
 /// 3-way merge each queue ref against its fetched counterpart.
@@ -400,7 +407,11 @@ pub struct QueueReconciliation {
 ///
 /// `can_pull`: 3-way bool. Local change wins if it differs from base;
 /// otherwise take remote.
-pub fn reconcile_queue_refs(repo: &Repository, remote: &str) -> Result<Vec<QueueReconciliation>> {
+pub fn reconcile_queue_refs_with_deletions(
+    repo: &Repository,
+    remote: &str,
+    remotely_deleted: &BTreeSet<String>,
+) -> Result<Vec<QueueReconciliation>> {
     let fetched = format!("{}queues/", fetched_prefix(remote));
     let mut names: BTreeSet<String> = BTreeSet::new();
     for r in repo.references_glob(&format!("{QUEUE_REF_PREFIX}*"))? {
@@ -429,6 +440,17 @@ pub fn reconcile_queue_refs(repo: &Repository, remote: &str) -> Result<Vec<Queue
             .find_reference(&format!("{fetched}{name}"))
             .ok()
             .and_then(|r| r.target());
+        if remote_oid.is_none()
+            && local.is_some()
+            && remotely_deleted.contains(&name)
+            && queue::delete(repo, &name)?
+        {
+            out.push(QueueReconciliation {
+                name,
+                kind: QueueReconKind::Deleted,
+            });
+            continue;
+        }
         if let Some(rec) = reconcile_queue_one(repo, &name, local, remote_oid)? {
             out.push(rec);
         }
@@ -482,6 +504,7 @@ fn reconcile_queue_one(
             repo.reference(&queue::refname(name), new_oid, true, "merge")?;
             Ok(Some(QueueReconciliation {
                 name: name.to_string(),
+                kind: QueueReconKind::Merged,
             }))
         }
     }

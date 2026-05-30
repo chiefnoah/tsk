@@ -10,7 +10,7 @@ use crate::object::{self, StableId, Task as TaskObj};
 use crate::patch;
 use crate::{merge, namespace, properties, queue};
 use git2::{Remote, Repository};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -271,6 +271,21 @@ impl Workspace {
             q.can_pull = cp;
         }
         queue::write(&repo, name, &q, "create queue")
+    }
+
+    pub fn delete_queue(&self, name: &str) -> Result<bool> {
+        queue::validate_name(name)?;
+        if name == queue::DEFAULT_QUEUE {
+            return Err(Error::Parse(format!(
+                "Refusing to delete default queue '{}'",
+                queue::DEFAULT_QUEUE
+            )));
+        }
+        let deleted = queue::delete(&self.repo()?, name)?;
+        if deleted && self.queue()? == name {
+            self.switch_queue(queue::DEFAULT_QUEUE)?;
+        }
+        Ok(deleted)
     }
 
     fn resolve(&self, identifier: TaskIdentifier) -> Result<(Id, StableId)> {
@@ -1074,6 +1089,18 @@ impl Workspace {
         Ok(())
     }
 
+    pub fn git_delete_ref(&self, remote: &str, refname: &str) -> Result<()> {
+        if !self
+            .git()
+            .args(["push", remote, &format!(":{refname}")])
+            .status()?
+            .success()
+        {
+            return Err(Error::Parse("git push failed".into()));
+        }
+        Ok(())
+    }
+
     /// Fetch only the named refs from `remote`, force-updating each. Used
     /// by paths (e.g. `tsk inbox`) that need a single ref refreshed without
     /// the wire cost of a full `git_pull`.
@@ -1144,6 +1171,8 @@ impl Workspace {
         remote: &str,
         strategy: merge::Strategy,
     ) -> Result<merge::PullOutcome> {
+        let repo = self.repo()?;
+        let old_shadow_queues = queue_shadow_names(&repo, remote)?;
         // `--refmap=` disables the remote's configured fetch refspec so our
         // explicit refspec is the *only* one applied; otherwise git also
         // performs the configured `+refs/tsk/*:refs/tsk/*` mapping and
@@ -1158,17 +1187,40 @@ impl Workspace {
         {
             return Err(Error::Parse("git fetch failed".into()));
         }
-        let repo = self.repo()?;
+        let new_shadow_queues = queue_shadow_names(&repo, remote)?;
+        let deleted_queues = old_shadow_queues
+            .difference(&new_shadow_queues)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let tasks = merge::reconcile_task_refs(&repo, remote, strategy)?;
         let namespaces = merge::reconcile_namespace_refs(&repo, remote)?;
-        let queues = merge::reconcile_queue_refs(&repo, remote)?;
+        let queues = merge::reconcile_queue_refs_with_deletions(&repo, remote, &deleted_queues)?;
         merge::fast_forward_non_task_refs(&repo, remote)?;
+        let active = self.queue()?;
+        if active != queue::DEFAULT_QUEUE && repo.find_reference(&queue::refname(&active)).is_err()
+        {
+            self.switch_queue(queue::DEFAULT_QUEUE)?;
+        }
         Ok(merge::PullOutcome {
             tasks,
             namespaces,
             queues,
         })
     }
+}
+
+fn queue_shadow_names(repo: &Repository, remote: &str) -> Result<BTreeSet<String>> {
+    let prefix = format!("{}queues/", merge::fetched_prefix(remote));
+    let mut names = BTreeSet::new();
+    for r in repo.references_glob(&format!("{prefix}*"))? {
+        let r = r?;
+        if let Ok(name) = r.name()
+            && let Some(rest) = name.strip_prefix(prefix.as_str())
+        {
+            names.insert(rest.to_string());
+        }
+    }
+    Ok(names)
 }
 
 /// `stable → human` reverse of a namespace mapping for O(log n) visibility checks.
@@ -1365,6 +1417,115 @@ mod test {
         assert_eq!(pulled.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn delete_queue_refuses_default_queue() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws.new_task("default task".into(), "".into()).unwrap();
+        ws.push_task(t).unwrap();
+
+        let err = ws
+            .delete_queue(queue::DEFAULT_QUEUE)
+            .expect_err("default queue deletion must fail");
+        assert!(
+            format!("{err}").contains("Refusing to delete default queue"),
+            "unexpected error: {err}"
+        );
+
+        let repo = ws.repo().unwrap();
+        assert!(
+            repo.find_reference(&queue::refname(queue::DEFAULT_QUEUE))
+                .is_ok()
+        );
+        assert_eq!(ws.queue().unwrap(), queue::DEFAULT_QUEUE);
+        assert_eq!(ws.read_stack().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_queue_returns_false_for_missing_queue() {
+        let (_d, ws) = fresh_workspace();
+
+        assert!(!ws.delete_queue("missing").unwrap());
+        assert!(!ws.delete_queue("missing").unwrap());
+        assert_eq!(ws.queue().unwrap(), queue::DEFAULT_QUEUE);
+        assert!(
+            ws.repo()
+                .unwrap()
+                .find_reference(&queue::refname("missing"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn delete_active_queue_falls_back_to_default_selector() {
+        let (_d, ws) = fresh_workspace();
+        ws.create_queue("review", None).unwrap();
+        ws.switch_queue("review").unwrap();
+        assert_eq!(ws.queue().unwrap(), "review");
+
+        assert!(ws.delete_queue("review").unwrap());
+
+        let repo = ws.repo().unwrap();
+        assert!(repo.find_reference(&queue::refname("review")).is_err());
+        assert_eq!(ws.queue().unwrap(), queue::DEFAULT_QUEUE);
+        assert_eq!(
+            std::fs::read_to_string(ws.path.join(QUEUE_FILE)).unwrap(),
+            queue::DEFAULT_QUEUE
+        );
+    }
+
+    #[test]
+    fn delete_queue_rejects_invalid_name() {
+        let (_d, ws) = fresh_workspace();
+        ws.create_queue("review", None).unwrap();
+
+        let err = ws
+            .delete_queue("bad/name")
+            .expect_err("invalid queue name must fail");
+        assert!(
+            format!("{err}").contains("Queue 'bad/name'"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            ws.repo()
+                .unwrap()
+                .find_reference(&queue::refname("review"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn delete_queue_does_not_delete_tasks_namespaces_or_properties() {
+        let (_d, ws) = fresh_workspace();
+        ws.create_queue("review", None).unwrap();
+        ws.create_queue("other", None).unwrap();
+        ws.switch_queue("review").unwrap();
+
+        let t = ws.new_task("keep refs".into(), "".into()).unwrap();
+        let id = t.id;
+        let stable = t.stable.clone();
+        ws.push_task(t).unwrap();
+        ws.set_property(TaskIdentifier::Id(id), "priority", vec!["high".to_string()])
+            .unwrap();
+
+        assert!(ws.delete_queue("review").unwrap());
+
+        let repo = ws.repo().unwrap();
+        assert!(repo.find_reference(&queue::refname("review")).is_err());
+        assert!(repo.find_reference(&queue::refname("other")).is_ok());
+        assert!(repo.find_reference(&stable.refname()).is_ok());
+        assert_eq!(
+            namespace::human_for(&repo, "tsk", &stable).unwrap(),
+            Some(id.0)
+        );
+        assert_eq!(
+            properties::read(&repo, "priority")
+                .unwrap()
+                .get(&stable)
+                .cloned(),
+            Some(vec!["high".to_string()])
+        );
     }
 
     #[test]

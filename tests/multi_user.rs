@@ -197,6 +197,187 @@ fn assign_to_other_queue_visible_after_push_pull() {
 }
 
 #[test]
+fn queue_delete_removes_local_ref_and_active_selector() {
+    let (_dir, alice, _bob) = setup_two_clones();
+
+    tsk_ok(&alice, &["queue", "create", "review"]);
+    tsk_ok(&alice, &["queue", "switch", "review"]);
+    tsk_ok(&alice, &["queue", "delete", "review"]);
+
+    let listed = tsk_ok(&alice, &["queue", "list"]);
+    assert!(
+        !listed.lines().any(|line| line == "review"),
+        "deleted queue must be absent from queue list: {listed}"
+    );
+    let current = tsk_ok(&alice, &["queue", "current"]);
+    assert_eq!(current.trim(), "tsk");
+}
+
+#[test]
+fn queue_delete_can_be_pushed_and_pulled() {
+    let (dir, alice, bob) = setup_two_clones();
+    let origin = dir.path().join("origin.git");
+
+    tsk_ok(&alice, &["queue", "create", "review"]);
+    tsk_ok(&alice, &["git-push"]);
+    tsk_ok(&bob, &["git-pull"]);
+    let listed = tsk_ok(&bob, &["queue", "list"]);
+    assert!(
+        listed.lines().any(|line| line == "review"),
+        "bob should see review queue before delete: {listed}"
+    );
+
+    tsk_ok(&alice, &["queue", "delete", "review", "-R", "origin"]);
+    let origin_refs = git(&origin, &["for-each-ref", "refs/tsk/queues"]);
+    assert!(
+        !origin_refs.contains("refs/tsk/queues/review"),
+        "origin queue ref should be deleted: {origin_refs}"
+    );
+
+    tsk_ok(&bob, &["queue", "switch", "review"]);
+    let pull_out = tsk_ok(&bob, &["git-pull"]);
+    assert!(
+        pull_out.contains("deleted queue review"),
+        "pull should report remote queue deletion: {pull_out}"
+    );
+    let listed = tsk_ok(&bob, &["queue", "list"]);
+    assert!(
+        !listed.lines().any(|line| line == "review"),
+        "remote-deleted queue must be absent after pull: {listed}"
+    );
+    let current = tsk_ok(&bob, &["queue", "current"]);
+    assert_eq!(current.trim(), "tsk");
+}
+
+#[test]
+fn queue_remote_delete_wins_over_unpushed_local_queue_edits() {
+    let (_dir, alice, bob) = setup_two_clones();
+
+    tsk_ok(&alice, &["queue", "create", "review"]);
+    tsk_ok(&alice, &["git-push"]);
+    tsk_ok(&bob, &["git-pull"]);
+
+    tsk_ok(&bob, &["queue", "switch", "review"]);
+    tsk_ok(&bob, &["push", "bob local review work"]);
+    let listed = tsk_ok(&bob, &["list"]);
+    assert!(
+        listed.contains("bob local review work"),
+        "bob's local queue edit should exist before remote deletion: {listed}"
+    );
+
+    tsk_ok(&alice, &["queue", "delete", "review", "-R", "origin"]);
+    let pull_out = tsk_ok(&bob, &["git-pull"]);
+    assert!(
+        pull_out.contains("deleted queue review"),
+        "pull should report deletion even when bob edited the queue locally: {pull_out}"
+    );
+
+    let listed = tsk_ok(&bob, &["queue", "list"]);
+    assert!(
+        !listed.lines().any(|line| line == "review"),
+        "remote-deleted queue must be absent after pull: {listed}"
+    );
+    let current = tsk_ok(&bob, &["queue", "current"]);
+    assert_eq!(
+        current.trim(),
+        "tsk",
+        "active selector should fall back after active queue is deleted"
+    );
+    let active_list = tsk_ok(&bob, &["list"]);
+    assert!(
+        !active_list.contains("bob local review work"),
+        "work from the deleted queue must not leak into the fallback queue: {active_list}"
+    );
+}
+
+#[test]
+fn queue_pull_prunes_deleted_queue_shadow_ref() {
+    let (_dir, alice, bob) = setup_two_clones();
+
+    tsk_ok(&alice, &["queue", "create", "review"]);
+    tsk_ok(&alice, &["git-push"]);
+    tsk_ok(&bob, &["git-pull"]);
+
+    let shadow_before = git(
+        &bob,
+        &["for-each-ref", "refs/tsk-fetched/origin/queues/review"],
+    );
+    assert!(
+        shadow_before.contains("refs/tsk-fetched/origin/queues/review"),
+        "bob should have a fetched shadow before deletion: {shadow_before}"
+    );
+
+    tsk_ok(&alice, &["queue", "delete", "review", "-R", "origin"]);
+    let pull_out = tsk_ok(&bob, &["git-pull"]);
+    assert!(
+        pull_out.contains("deleted queue review"),
+        "first pull should reconcile the remote deletion: {pull_out}"
+    );
+
+    let shadow_after = git(
+        &bob,
+        &["for-each-ref", "refs/tsk-fetched/origin/queues/review"],
+    );
+    assert!(
+        shadow_after.trim().is_empty(),
+        "fetch --prune should remove the stale queue shadow: {shadow_after}"
+    );
+
+    let second_pull = tsk_ok(&bob, &["git-pull"]);
+    assert!(
+        !second_pull.contains("deleted queue review"),
+        "deleted queue must not be reported again after its shadow is pruned: {second_pull}"
+    );
+    let listed = tsk_ok(&bob, &["queue", "list"]);
+    assert!(
+        !listed.lines().any(|line| line == "review"),
+        "deleted queue must stay absent after repeated pulls: {listed}"
+    );
+}
+
+#[test]
+fn queue_delete_refuses_default_queue_locally_and_remotely() {
+    let (dir, alice, bob) = setup_two_clones();
+    let origin = dir.path().join("origin.git");
+
+    tsk_ok(&alice, &["push", "default queue task"]);
+    tsk_ok(&alice, &["git-push"]);
+    let origin_refs = git(&origin, &["for-each-ref", "refs/tsk/queues/tsk"]);
+    assert!(
+        origin_refs.contains("refs/tsk/queues/tsk"),
+        "origin should have the default queue before delete is attempted: {origin_refs}"
+    );
+
+    let (code, stdout, stderr) = tsk(&alice, &["queue", "delete", "tsk", "-R", "origin"]);
+    assert_ne!(
+        code, 0,
+        "deleting the default queue should fail: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("Refusing to delete default queue 'tsk'"),
+        "failure should explain that the default queue is protected: {stderr}"
+    );
+
+    let local_queues = tsk_ok(&alice, &["queue", "list"]);
+    assert!(
+        local_queues.lines().any(|line| line == "tsk"),
+        "default queue should remain locally after failed delete: {local_queues}"
+    );
+    let origin_refs = git(&origin, &["for-each-ref", "refs/tsk/queues/tsk"]);
+    assert!(
+        origin_refs.contains("refs/tsk/queues/tsk"),
+        "default queue should remain on origin after failed remote delete: {origin_refs}"
+    );
+
+    tsk_ok(&bob, &["git-pull"]);
+    let listed = tsk_ok(&bob, &["list"]);
+    assert!(
+        listed.contains("default queue task"),
+        "other clones should still receive the default queue: {listed}"
+    );
+}
+
+#[test]
 fn concurrent_pushes_dont_clobber() {
     let (_dir, alice, bob) = setup_two_clones();
 
