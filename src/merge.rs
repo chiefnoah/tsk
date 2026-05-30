@@ -341,12 +341,41 @@ fn reconcile_namespace_one(
             let new_oid =
                 repo.commit(None, &sig, &sig, &msg, &repo.find_tree(tree_oid)?, &parents)?;
             repo.reference(&namespace::refname(name), new_oid, true, &msg)?;
+            if !renumbers.is_empty() {
+                adjust_renumbered_internal_links(repo, &local_ns, &renumbers)?;
+            }
             Ok(Some(NamespaceReconciliation {
                 namespace: name.to_string(),
                 renumbers,
             }))
         }
     }
+}
+
+fn adjust_renumbered_internal_links(
+    repo: &Repository,
+    local_ns: &Namespace,
+    renumbers: &[(u32, u32)],
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    for stable in local_ns.mapping.values() {
+        if !seen.insert(stable.clone()) {
+            continue;
+        }
+        let Some(mut task) = object::read(repo, stable)? else {
+            continue;
+        };
+        let original = task.content.clone();
+        for (old, new) in renumbers {
+            task.content = task
+                .content
+                .replace(&format!("[[tsk-{old}]]"), &format!("[[tsk-{new}]]"));
+        }
+        if task.content != original {
+            object::update(repo, stable, &task, "rewrite-renumbered-links")?;
+        }
+    }
+    Ok(())
 }
 
 /// One queue's reconciliation outcome at pull time. Currently we only

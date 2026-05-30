@@ -506,3 +506,34 @@ fn namespace_collision_renumbers_local_on_pull() {
         "tsk-2 must point at bob's task after renumber: {show2}"
     );
 }
+
+#[test]
+fn namespace_collision_rewrites_local_internal_links() {
+    let (_dir, alice, bob) = setup_two_clones();
+
+    // Bob's second task links to his local tsk-1 before the pull.
+    tsk_ok(&bob, &["push", "bob's task"]);
+    tsk_ok(&bob, &["push", "blocked by bob\n\nrelated to [[tsk-1]]"]);
+
+    // Alice independently claims tsk-1 and pushes it to origin.
+    tsk_ok(&alice, &["push", "alice's task"]);
+    tsk_ok(&alice, &["git-push"]);
+
+    // Bob's original tsk-1 is renumbered past his local-only tsk-2, so the
+    // link in tsk-2 must follow it to tsk-3.
+    let pull_out = tsk_ok(&bob, &["git-pull"]);
+    assert!(
+        pull_out.contains("tsk-1 → tsk-3") || pull_out.contains("tsk-1 \u{2192} tsk-3"),
+        "expected renumber message in pull output, got: {pull_out}"
+    );
+
+    let linked = tsk_ok(&bob, &["show", "-T", "tsk-2", "-R"]);
+    assert!(
+        linked.contains("[[tsk-3]]"),
+        "local link must track bob's renumbered task: {linked}"
+    );
+    assert!(
+        !linked.contains("[[tsk-1]]"),
+        "local link must not keep pointing at alice's task: {linked}"
+    );
+}
