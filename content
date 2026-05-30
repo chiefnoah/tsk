@@ -1,0 +1,5 @@
+Add test helpers for corrupting task properties
+
+Several tests manually read a task object, mutate properties, write it with object::update, and reindex properties. Add focused test helper functions for this setup code to make corruption/repair tests easier to read.
+
+Keep production behavior unchanged and run the existing test suite.
