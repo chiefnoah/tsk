@@ -5,3 +5,5 @@ Add a clean/fix-up command that scans all tasks and repairs missing or stale aut
 When recalculating, treat task bodies and queue index membership as authoritative. If calculated properties disagree with the body links or whether a task appears in a queue index, overwrite the properties rather than changing task content or queue state. Properties are primarily informational and should be repairable from canonical state.
 
 Include tests for missing forward references, missing backlinks, stale backlinks, and ambiguous cases where properties conflict with body or queue state.
+
+Use this task as an example with this link: [[tsk-1]]
