@@ -129,6 +129,7 @@ fn render_path(ws: &Workspace, target: &str) -> Result<Rendered> {
         ["namespaces"] => render_namespaces(ws).map(Rendered::Html),
         ["namespaces", name, "log"] => render_namespace_log(ws, name, page).map(Rendered::Html),
         ["namespaces", name] => render_namespace(ws, name, page).map(Rendered::Html),
+        ["properties"] => render_properties(ws, page).map(Rendered::Html),
         ["tasks", stable, "log"] => render_task_log(ws, stable, page).map(Rendered::Html),
         ["tasks", stable] => render_task(ws, stable).map(Rendered::Html),
         _ => Ok(Rendered::NotFound("not found\n".to_string())),
@@ -292,6 +293,88 @@ fn render_namespace_log(ws: &Workspace, name: &str, page: usize) -> Result<Strin
         &format!("/namespaces/{}/log", h(name)),
         ws.log_namespace(name)?,
         page,
+    )
+}
+
+struct PropertyRow {
+    id: Id,
+    stable: StableId,
+    title: String,
+    key: String,
+    value: Option<String>,
+}
+
+fn render_properties(ws: &Workspace, page_num: usize) -> Result<String> {
+    let repo = repo(ws)?;
+    let namespace_name = ws.namespace()?;
+    let ns = namespace::read(&repo, &namespace_name)?;
+    let mut entries = Vec::new();
+    for (human, stable) in ns.mapping {
+        let Some(task) = object::read(&repo, &stable)? else {
+            continue;
+        };
+        let title = task.title().to_string();
+        for (key, values) in task.properties {
+            if values.is_empty() {
+                entries.push(PropertyRow {
+                    id: Id(human),
+                    stable: stable.clone(),
+                    title: title.clone(),
+                    key,
+                    value: None,
+                });
+            } else {
+                for value in values {
+                    entries.push(PropertyRow {
+                        id: Id(human),
+                        stable: stable.clone(),
+                        title: title.clone(),
+                        key: key.clone(),
+                        value: Some(value),
+                    });
+                }
+            }
+        }
+    }
+    entries.sort_by(|a, b| {
+        a.key
+            .cmp(&b.key)
+            .then(a.id.cmp(&b.id))
+            .then(a.value.cmp(&b.value))
+    });
+
+    let page_slice = paginate(&entries, page_num);
+    let mut rows = String::new();
+    for row in page_slice.items {
+        let value = row
+            .value
+            .as_deref()
+            .map(|value| render_tsk_markup(ws, &repo, value))
+            .transpose()?
+            .unwrap_or_else(|| "<em>empty</em>".to_string());
+        rows.push_str(&format!(
+            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"/tasks/{}\">{}</a> {}</td></tr>",
+            h(&row.key),
+            value,
+            h(&row.stable.0),
+            row.id,
+            h(&row.title),
+        ));
+    }
+    if rows.is_empty() {
+        rows.push_str("<tr><td colspan=\"3\"><em>No properties</em></td></tr>");
+    }
+    let pagination = pagination_nav("/properties", &page_slice);
+    page(
+        ws,
+        "Properties",
+        &format!(
+            "<h1>Properties</h1><p class=\"meta\">Namespace <code>{}</code></p>\
+             {pagination}\
+             <table><thead><tr><th>Key</th><th>Value</th><th>Task</th></tr></thead><tbody>{rows}</tbody></table>\
+             {pagination}",
+            h(&namespace_name)
+        ),
     )
 }
 
@@ -770,7 +853,8 @@ fn page(ws: &Workspace, title: &str, body: &str) -> Result<String> {
          <link rel=\"stylesheet\" href=\"{}\">\
          <title>{}</title>{}</head><body>\
          <nav class=\"container-fluid\"><ul><li><strong>tsk</strong></li>\
-         <li><a href=\"/queues\">Queues</a></li><li><a href=\"/namespaces\">Namespaces</a></li></ul>\
+         <li><a href=\"/queues\">Queues</a></li><li><a href=\"/namespaces\">Namespaces</a></li>\
+         <li><a href=\"/properties\">Properties</a></li></ul>\
          <ul><li>queue: <a href=\"/queues/{}\">{}</a></li>\
          <li>namespace: <a href=\"/namespaces/{}\">{}</a></li></ul></nav>\
          <main class=\"container\">{}</main></body></html>",
@@ -894,6 +978,77 @@ mod tests {
         assert!(
             html.contains("&lt;b&gt;not html&lt;/b&gt;"),
             "plain html-looking property value should stay escaped: {html}"
+        );
+    }
+
+    #[test]
+    fn properties_page_lists_active_namespace_properties() {
+        let (_dir, ws) = fresh_workspace();
+        let first = ws.new_task("first task".into(), "".into()).unwrap();
+        let first_id = first.id;
+        let first_stable = first.stable.clone();
+        ws.push_task(first).unwrap();
+        ws.add_property_value(first_id.into(), "priority", "high")
+            .unwrap();
+        ws.add_property_value(first_id.into(), "link", "[[tsk-1]]")
+            .unwrap();
+
+        ws.switch_namespace("alpha").unwrap();
+        let alpha = ws.new_task("alpha task".into(), "".into()).unwrap();
+        let alpha_id = alpha.id;
+        ws.push_task(alpha).unwrap();
+        ws.add_property_value(alpha_id.into(), "owner", "alpha")
+            .unwrap();
+        ws.switch_namespace("tsk").unwrap();
+
+        let html = render_properties(&ws, 1).unwrap();
+        assert!(
+            html.contains("<h1>Properties</h1>"),
+            "properties page should render heading: {html}"
+        );
+        assert!(
+            html.contains("<td><code>priority</code></td><td>high</td>"),
+            "properties page should include priority value: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<a href=\"/tasks/{}\" class=\"task-link\">tsk-1</a>",
+                h(&first_stable.0)
+            )),
+            "properties page should render tsk markup in values: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<td><a href=\"/tasks/{}\">tsk-1</a> first task</td>",
+                h(&first_stable.0)
+            )),
+            "properties page should link to the owning task: {html}"
+        );
+        assert!(
+            !html.contains("owner") && !html.contains("alpha task"),
+            "properties page should only show active namespace tasks: {html}"
+        );
+    }
+
+    #[test]
+    fn properties_route_renders_page() {
+        let (_dir, ws) = fresh_workspace();
+        let task = ws.new_task("route props".into(), "".into()).unwrap();
+        let id = task.id;
+        ws.push_task(task).unwrap();
+        ws.set_property(id.into(), "status-note", vec!["ready".into()])
+            .unwrap();
+
+        let Rendered::Html(html) = render_path(&ws, "/properties").unwrap() else {
+            panic!("properties route should render html");
+        };
+        assert!(
+            html.contains("<h1>Properties</h1>"),
+            "route should render properties page: {html}"
+        );
+        assert!(
+            html.contains("status-note"),
+            "route should include property key: {html}"
         );
     }
 
