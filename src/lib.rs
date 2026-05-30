@@ -368,6 +368,10 @@ enum NamespaceAction {
     Tasks {
         name: Option<String>,
     },
+    /// List unique property keys on tasks in a namespace (defaults to active).
+    Props {
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1352,6 +1356,13 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
             for entry in ws.list_namespace_tasks(&target)? {
                 println!("{}\t{}", entry.id, entry.title);
             }
+        }
+        NamespaceAction::Props { name } => {
+            let target = match name {
+                Some(name) => name,
+                None => ws.namespace()?,
+            };
+            print_lines(ws.namespace_property_keys(&target)?);
         }
     }
     Ok(())

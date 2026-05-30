@@ -654,6 +654,19 @@ impl Workspace {
         Ok(out)
     }
 
+    /// Unique property keys on tasks bound in `name`, sorted alphabetically.
+    pub fn namespace_property_keys(&self, name: &str) -> Result<Vec<String>> {
+        let repo = self.repo()?;
+        let mut keys = BTreeSet::new();
+        for (_human, stable) in namespace::read(&repo, name)?.mapping {
+            let Some(task) = object::read(&repo, &stable)? else {
+                continue;
+            };
+            keys.extend(task.properties.into_keys());
+        }
+        Ok(keys.into_iter().collect())
+    }
+
     /// One commit on a tsk ref (task / namespace / queue).
     pub fn log_ref(&self, refname: &str) -> Result<Vec<LogCommit>> {
         let repo = self.repo()?;

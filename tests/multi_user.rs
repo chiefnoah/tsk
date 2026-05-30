@@ -490,6 +490,43 @@ fn property_set_find_round_trip_via_binary() {
     assert!(keys.contains("priority"), "got {keys}");
     assert!(keys.contains("tag"), "got {keys}");
 
+    // Namespace props lists unique keys for tasks bound in that namespace.
+    let props = tsk_ok(&alice, &["namespace", "props"]);
+    assert!(props.lines().any(|line| line == "priority"), "got {props}");
+    assert!(props.lines().any(|line| line == "tag"), "got {props}");
+    assert_eq!(
+        props.lines().filter(|line| *line == "priority").count(),
+        1,
+        "namespace props should deduplicate keys: {props}"
+    );
+    assert!(
+        !props.contains("high") && !props.contains("low"),
+        "namespace props should list keys only: {props}"
+    );
+
+    tsk_ok(&alice, &["namespace", "switch", "alpha"]);
+    tsk_ok(&alice, &["push", "alpha task"]);
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "owner", "alice"]);
+    let alpha_props = tsk_ok(&alice, &["namespace", "props"]);
+    assert!(
+        alpha_props.lines().any(|line| line == "owner"),
+        "active namespace props should include alpha key: {alpha_props}"
+    );
+    assert!(
+        !alpha_props.lines().any(|line| line == "priority"),
+        "active namespace props should exclude default namespace keys: {alpha_props}"
+    );
+    let default_props = tsk_ok(&alice, &["namespace", "props", "tsk"]);
+    assert!(
+        default_props.lines().any(|line| line == "priority"),
+        "explicit namespace props should include default namespace key: {default_props}"
+    );
+    assert!(
+        !default_props.lines().any(|line| line == "owner"),
+        "explicit namespace props should exclude alpha key: {default_props}"
+    );
+    tsk_ok(&alice, &["namespace", "switch", "tsk"]);
+
     // Find tasks with priority=high.
     let found = tsk_ok(&alice, &["prop", "find", "priority", "high"]);
     assert!(found.contains("tsk-1"), "got {found}");
