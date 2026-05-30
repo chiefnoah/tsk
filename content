@@ -1,3 +1,1 @@
-prop list should list only properties of a specific task
-
-It should still only print the keys of the properties and deduplicate.
+Add a namespace props subcommand that lists the unique property keys of all tasks within the namespace
