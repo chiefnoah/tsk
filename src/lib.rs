@@ -125,8 +125,13 @@ enum Commands {
     /// Drop a task (remove from queue + mark done, history retained).
     Drop {
         /// Record the enclosing git repo's current HEAD commit in `closed-on`.
-        #[arg(long, default_value_t = false)]
-        closed_on_head: bool,
+        #[arg(
+            short = 'x',
+            long = "closed-on-commit",
+            alias = "closed-on-head",
+            default_value_t = false
+        )]
+        closed_on_commit: bool,
         #[command(flatten)]
         task_id: TaskId,
     },
@@ -498,9 +503,9 @@ fn dispatch(cli: Cli) -> Result<()> {
         } => command_follow(dir, task_id, link_index, select, edit),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Drop {
-            closed_on_head,
+            closed_on_commit,
             task_id,
-        } => command_drop(dir, task_id, closed_on_head),
+        } => command_drop(dir, task_id, closed_on_commit),
         Commands::Reopen { task_id } => {
             let id = Workspace::from_path(dir)?.reopen(task_id.into())?;
             println!("Reopened {id}");
@@ -978,9 +983,9 @@ fn command_edit(dir: PathBuf, task_id: TaskId) -> Result<()> {
     Ok(())
 }
 
-fn command_drop(dir: PathBuf, task_id: TaskId, closed_on_head: bool) -> Result<()> {
+fn command_drop(dir: PathBuf, task_id: TaskId, closed_on_commit: bool) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    let dropped = if closed_on_head {
+    let dropped = if closed_on_commit {
         let closed_on = ws.head_commit()?;
         ws.drop_with_closed_on(task_id.into(), Some(closed_on))?
     } else {

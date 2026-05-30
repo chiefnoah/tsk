@@ -523,12 +523,28 @@ fn drop_can_record_current_head_commit() {
     );
 
     tsk_ok(dir.path(), &["push", "with closed-on"]);
-    tsk_ok(dir.path(), &["drop", "--closed-on-head", "-T", "tsk-2"]);
+    tsk_ok(dir.path(), &["drop", "--closed-on-commit", "-T", "tsk-2"]);
     let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-x"]);
     assert!(attrs.contains("status: \"done\""), "got {attrs}");
     assert!(
         attrs.contains(&format!("closed-on: \"{head}\"")),
-        "drop --closed-on-head should record current HEAD {head}: {attrs}"
+        "drop --closed-on-commit should record current HEAD {head}: {attrs}"
+    );
+
+    tsk_ok(dir.path(), &["push", "with closed-on shortcut"]);
+    tsk_ok(dir.path(), &["drop", "-x", "-T", "tsk-3"]);
+    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-3", "-x"]);
+    assert!(
+        attrs.contains(&format!("closed-on: \"{head}\"")),
+        "drop -x should record current HEAD {head}: {attrs}"
+    );
+
+    tsk_ok(dir.path(), &["push", "with legacy closed-on flag"]);
+    tsk_ok(dir.path(), &["drop", "--closed-on-head", "-T", "tsk-4"]);
+    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-4", "-x"]);
+    assert!(
+        attrs.contains(&format!("closed-on: \"{head}\"")),
+        "drop --closed-on-head should remain supported: {attrs}"
     );
 }
 
