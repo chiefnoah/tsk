@@ -40,6 +40,10 @@ impl Display for StableId {
     }
 }
 
+pub fn exists(repo: &Repository, id: &StableId) -> bool {
+    repo.find_reference(&id.refname()).is_ok()
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Task {
     pub content: String,
@@ -250,6 +254,16 @@ mod test {
             .target()
             .unwrap();
         assert_eq!(head1, head2);
+    }
+
+    #[test]
+    fn exists_reports_task_ref_presence() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        let id = StableId("missing".into());
+        assert!(!exists(&repo, &id));
+        let id = create(&repo, &Task::new("present"), "create").unwrap();
+        assert!(exists(&repo, &id));
     }
 
     #[test]

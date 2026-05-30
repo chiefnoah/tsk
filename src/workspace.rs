@@ -357,7 +357,7 @@ impl Workspace {
         let stable = StableId(content_oid.to_string());
         let active_ns = self.namespace()?;
 
-        if repo.find_reference(&stable.refname()).is_err() {
+        if !object::exists(&repo, &stable) {
             let mut obj = TaskObj::new(content);
             obj.properties
                 .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
@@ -828,7 +828,7 @@ impl Workspace {
     /// no live binding uses the latest id.
     pub fn gc_refs(&self) -> Result<(usize, usize, usize, usize)> {
         let repo = self.repo()?;
-        let task_exists = |s: &StableId| repo.find_reference(&s.refname()).is_ok();
+        let task_exists = |s: &StableId| object::exists(&repo, s);
         let mut queues_pruned = 0;
         let mut prop_orphans = 0;
         let mut ghost_bindings = 0;
@@ -1018,7 +1018,7 @@ impl Workspace {
     pub fn clean(&self) -> Result<CleanReport> {
         let repo = self.repo()?;
         let active_namespace = self.namespace()?;
-        let task_exists = |s: &StableId| repo.find_reference(&s.refname()).is_ok();
+        let task_exists = |s: &StableId| object::exists(&repo, s);
         let mut report = CleanReport::default();
         let mut queued = BTreeSet::new();
 
