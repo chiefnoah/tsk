@@ -1,0 +1,3 @@
+Extract shared run error handling
+
+lib.rs has nearly identical run and run_serv wrappers that convert Result errors into process exit codes. Add a small shared helper for that pattern while preserving public entry points and stderr/exit-code behavior.
