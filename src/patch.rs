@@ -121,7 +121,7 @@ fn write_entry(
     bind: Option<&(String, u32)>,
 ) -> Result<()> {
     let author = commit.author();
-    let summary = commit.summary().unwrap_or("");
+    let summary = commit.summary().ok().flatten().unwrap_or("");
     let message = commit.message().unwrap_or("");
     writeln!(out, "From {} {MBOX_DATE}", commit.id()).unwrap();
     writeln!(
@@ -156,7 +156,7 @@ fn write_entry(
     let tree = commit.tree()?;
     // Iterate in tree order (already sorted by name).
     for entry in tree.iter() {
-        let Some(name) = entry.name() else { continue };
+        let Ok(name) = entry.name() else { continue };
         if name == TITLE_FILE {
             // title is a cache; reconstructible from content. Skip.
             continue;
@@ -521,11 +521,11 @@ mod test {
             .target()
             .unwrap();
         let tip = dst.find_commit(head).unwrap();
-        assert_eq!(tip.summary().unwrap(), "edit-3");
+        assert_eq!(tip.summary().unwrap(), Some("edit-3"));
         let mid = tip.parent(0).unwrap();
-        assert_eq!(mid.summary().unwrap(), "edit-2");
+        assert_eq!(mid.summary().unwrap(), Some("edit-2"));
         let root = mid.parent(0).unwrap();
-        assert_eq!(root.summary().unwrap(), "create");
+        assert_eq!(root.summary().unwrap(), Some("create"));
     }
 
     #[test]

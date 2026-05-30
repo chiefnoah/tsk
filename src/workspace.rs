@@ -559,7 +559,7 @@ impl Workspace {
                     c.author().name().unwrap_or(""),
                     c.author().email().unwrap_or("")
                 ),
-                summary: c.summary().unwrap_or("").to_string(),
+                summary: c.summary().ok().flatten().unwrap_or("").to_string(),
             });
             current = c.parent(0).ok();
         }

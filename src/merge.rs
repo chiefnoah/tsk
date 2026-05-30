@@ -82,15 +82,16 @@ pub fn reconcile_task_refs(
     let mut stables: BTreeSet<String> = BTreeSet::new();
     for r in repo.references_glob(&format!("{TASK_REF_PREFIX}*"))? {
         let r = r?;
-        if let Some(name) = r.name().and_then(|n| n.strip_prefix(TASK_REF_PREFIX)) {
+        if let Ok(name) = r.name()
+            && let Some(name) = name.strip_prefix(TASK_REF_PREFIX)
+        {
             stables.insert(name.to_string());
         }
     }
     for r in repo.references_glob(&format!("{fetched_tasks}*"))? {
         let r = r?;
-        if let Some(name) = r
-            .name()
-            .and_then(|n| n.strip_prefix(fetched_tasks.as_str()))
+        if let Ok(name) = r.name()
+            && let Some(name) = name.strip_prefix(fetched_tasks.as_str())
         {
             stables.insert(name.to_string());
         }
@@ -245,13 +246,17 @@ pub fn reconcile_namespace_refs(
     let mut names: BTreeSet<String> = BTreeSet::new();
     for r in repo.references_glob(&format!("{NS_REF_PREFIX}*"))? {
         let r = r?;
-        if let Some(name) = r.name().and_then(|n| n.strip_prefix(NS_REF_PREFIX)) {
+        if let Ok(name) = r.name()
+            && let Some(name) = name.strip_prefix(NS_REF_PREFIX)
+        {
             names.insert(name.to_string());
         }
     }
     for r in repo.references_glob(&format!("{fetched_ns}*"))? {
         let r = r?;
-        if let Some(name) = r.name().and_then(|n| n.strip_prefix(fetched_ns.as_str())) {
+        if let Ok(name) = r.name()
+            && let Some(name) = name.strip_prefix(fetched_ns.as_str())
+        {
             names.insert(name.to_string());
         }
     }
@@ -371,13 +376,17 @@ pub fn reconcile_queue_refs(repo: &Repository, remote: &str) -> Result<Vec<Queue
     let mut names: BTreeSet<String> = BTreeSet::new();
     for r in repo.references_glob(&format!("{QUEUE_REF_PREFIX}*"))? {
         let r = r?;
-        if let Some(n) = r.name().and_then(|n| n.strip_prefix(QUEUE_REF_PREFIX)) {
+        if let Ok(n) = r.name()
+            && let Some(n) = n.strip_prefix(QUEUE_REF_PREFIX)
+        {
             names.insert(n.to_string());
         }
     }
     for r in repo.references_glob(&format!("{fetched}*"))? {
         let r = r?;
-        if let Some(n) = r.name().and_then(|n| n.strip_prefix(fetched.as_str())) {
+        if let Ok(n) = r.name()
+            && let Some(n) = n.strip_prefix(fetched.as_str())
+        {
             names.insert(n.to_string());
         }
     }
@@ -525,7 +534,7 @@ pub fn fast_forward_non_task_refs(repo: &Repository, remote: &str) -> Result<()>
     let prefix = fetched_prefix(remote);
     let names: Vec<String> = repo
         .references_glob(&format!("{prefix}*"))?
-        .filter_map(|r| r.ok().and_then(|r| r.name().map(String::from)))
+        .filter_map(|r| r.ok().and_then(|r| r.name().ok().map(String::from)))
         .collect();
     for name in names {
         let Some(rest) = name.strip_prefix(prefix.as_str()) else {

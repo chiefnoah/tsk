@@ -173,7 +173,7 @@ pub fn list_all(repo: &Repository) -> Result<Vec<StableId>> {
     let mut out = Vec::new();
     for r in repo.references_glob(&format!("{TASK_REF_PREFIX}*"))? {
         let r = r?;
-        if let Some(name) = r.name()
+        if let Ok(name) = r.name()
             && let Some(rest) = name.strip_prefix(TASK_REF_PREFIX)
         {
             out.push(StableId(rest.to_string()));

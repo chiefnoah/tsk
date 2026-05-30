@@ -78,7 +78,7 @@ pub fn read_at_commit(repo: &Repository, commit_oid: Oid) -> Result<Namespace> {
     if let Some(ids_entry) = tree.get_name(IDS_DIR) {
         let ids_tree = ids_entry.to_object(repo)?.peel_to_tree()?;
         for e in ids_tree.iter() {
-            let Some(name) = e.name() else { continue };
+            let Ok(name) = e.name() else { continue };
             let Ok(human) = name.parse::<u32>() else {
                 continue;
             };
@@ -158,7 +158,7 @@ pub fn list_names(repo: &Repository) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for r in repo.references_glob(&format!("{NS_REF_PREFIX}*"))? {
         let r = r?;
-        if let Some(name) = r.name()
+        if let Ok(name) = r.name()
             && let Some(rest) = name.strip_prefix(NS_REF_PREFIX)
         {
             out.push(rest.to_string());

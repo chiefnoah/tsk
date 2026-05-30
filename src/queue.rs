@@ -88,7 +88,7 @@ pub fn read_at_commit(repo: &Repository, name: &str, commit_oid: Oid) -> Result<
     if let Some(e) = tree.get_name(INBOX_DIR) {
         let inbox_tree = e.to_object(repo)?.peel_to_tree()?;
         for ie in inbox_tree.iter() {
-            let Some(name) = ie.name() else { continue };
+            let Ok(name) = ie.name() else { continue };
             let blob = ie.to_object(repo)?.peel_to_blob()?;
             let stable = String::from_utf8_lossy(blob.content()).trim().to_string();
             if !stable.is_empty() {
@@ -150,7 +150,7 @@ pub fn list_names(repo: &Repository) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for r in repo.references_glob(&format!("{QUEUE_REF_PREFIX}*"))? {
         let r = r?;
-        if let Some(name) = r.name()
+        if let Ok(name) = r.name()
             && let Some(rest) = name.strip_prefix(QUEUE_REF_PREFIX)
         {
             out.push(rest.to_string());

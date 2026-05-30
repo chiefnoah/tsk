@@ -30,7 +30,7 @@ pub fn read(repo: &Repository, key: &str) -> Result<BTreeMap<StableId, Vec<Strin
     };
     let tree = repo.find_commit(target)?.tree()?;
     for entry in tree.iter() {
-        let Some(name) = entry.name() else { continue };
+        let Ok(name) = entry.name() else { continue };
         let blob = entry.to_object(repo)?.peel_to_blob()?;
         let values = propvalue::decode(blob.content());
         out.insert(StableId(name.to_string()), values);
@@ -105,7 +105,7 @@ pub fn list_keys(repo: &Repository) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for r in repo.references_glob(&format!("{PROP_REF_PREFIX}*"))? {
         let r = r?;
-        if let Some(name) = r.name()
+        if let Ok(name) = r.name()
             && let Some(rest) = name.strip_prefix(PROP_REF_PREFIX)
         {
             out.push(rest.to_string());
