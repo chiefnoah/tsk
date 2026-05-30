@@ -1,0 +1,5 @@
+Extract shared queue orphan pruning
+
+Both clean and gc_refs prune queue index entries whose task refs no longer exist. Extract the shared orphan-entry pruning into a helper while preserving gc_refs' extra empty-queue cleanup behavior.
+
+Keep behavior unchanged and run the existing test suite.
