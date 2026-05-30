@@ -596,6 +596,63 @@ fn drop_can_record_current_head_commit() {
 }
 
 #[test]
+fn reopen_without_id_uses_fzf_search_with_body_option() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(
+        dir.path(),
+        &["push", "searchable title\n\nbody needle for reopen"],
+    );
+    tsk_ok(dir.path(), &["drop", "-T", "tsk-1"]);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let capture = fake_bin.path().join("fzf-input");
+    let fzf = fake_bin.path().join("fzf");
+    std::fs::write(
+        &fzf,
+        "#!/bin/sh\ntr '\\000' '\\n' > \"$FZF_CAPTURE\"\nhead -n 1 \"$FZF_CAPTURE\"\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fzf).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fzf, perms).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .env("PATH", path)
+        .env("FZF_CAPTURE", &capture)
+        .args(["reopen", "-b"]);
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(
+        code, 0,
+        "reopen should succeed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Reopened tsk-1"),
+        "reopen should print reopened id: {stdout}"
+    );
+    let input = std::fs::read_to_string(capture).unwrap();
+    assert!(
+        input.contains("body needle for reopen"),
+        "reopen -b should include task body in fzf input: {input}"
+    );
+    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-x"]);
+    assert!(attrs.contains("status: \"open\""), "got {attrs}");
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        list.contains("tsk-1"),
+        "reopened task should be queued: {list}"
+    );
+}
+
+#[test]
 fn show_renders_styled_body() {
     let (_dir, alice, _bob) = setup_two_clones();
     // Push a body that exercises every inline style.

@@ -137,6 +137,9 @@ enum Commands {
     },
     /// Flip a `done` task back to `open` and push it onto the active queue.
     Reopen {
+        /// Include task bodies in the interactive search text.
+        #[arg(short, long, default_value_t = false)]
+        body: bool,
         #[command(flatten)]
         task_id: TaskId,
     },
@@ -512,11 +515,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             closed_on_commit,
             task_id,
         } => command_drop(dir, task_id, closed_on_commit),
-        Commands::Reopen { task_id } => {
-            let id = Workspace::from_path(dir)?.reopen(task_id.into())?;
-            println!("Reopened {id}");
-            Ok(())
-        }
+        Commands::Reopen { body, task_id } => command_reopen(dir, task_id, body),
         Commands::Swap => Workspace::from_path(dir)?.swap_top(),
         Commands::Rot => Workspace::from_path(dir)?.rot(),
         Commands::Tor => Workspace::from_path(dir)?.tor(),
@@ -743,7 +742,18 @@ fn command_find(dir: PathBuf, multi: bool, all: bool, body: bool) -> Result<()> 
         return Err(errors::Error::NoTasks);
     }
 
-    let mut lines = Vec::with_capacity(entries.len());
+    for id in select_task_ids(&dir, &ws, entries, body, multi)? {
+        println!("{id}");
+    }
+    Ok(())
+}
+
+fn task_search_lines(
+    ws: &Workspace,
+    entries: impl IntoIterator<Item = workspace::StackEntry>,
+    body: bool,
+) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
     for entry in entries {
         let mut line = format!("{}\t{}", entry.id, single_line(&entry.title));
         if body {
@@ -753,7 +763,10 @@ fn command_find(dir: PathBuf, multi: bool, all: bool, body: bool) -> Result<()> 
         }
         lines.push(line);
     }
+    Ok(lines)
+}
 
+fn task_search_args(dir: &std::path::Path, body: bool, multi: bool) -> Result<Vec<OsString>> {
     let preview = format!(
         "CLICOLOR_FORCE=1 {} -C {} show -x -T {{1}}",
         shell_quote(&std::env::current_exe()?.to_string_lossy()),
@@ -777,17 +790,54 @@ fn command_find(dir: PathBuf, multi: bool, all: bool, body: bool) -> Result<()> 
     if multi {
         args.push("--multi".into());
     }
+    Ok(args)
+}
 
-    for selected in fzf::select_raw(lines, args)? {
-        if let Some(id) = selected.split('\t').next().filter(|id| !id.is_empty()) {
-            println!("{id}");
-        }
-    }
-    Ok(())
+fn select_task_ids(
+    dir: &std::path::Path,
+    ws: &Workspace,
+    entries: Vec<workspace::StackEntry>,
+    body: bool,
+    multi: bool,
+) -> Result<Vec<Id>> {
+    let lines = task_search_lines(ws, entries, body)?;
+    let args = task_search_args(dir, body, multi)?;
+
+    fzf::select_raw(lines, args)?
+        .into_iter()
+        .filter_map(|selected| {
+            selected
+                .split('\t')
+                .next()
+                .filter(|id| !id.is_empty())
+                .map(parse_id)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|err| errors::Error::Parse(err.to_string()))
 }
 
 fn single_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn command_reopen(dir: PathBuf, task_id: TaskId, body: bool) -> Result<()> {
+    let ws = Workspace::from_path(dir.clone())?;
+    let identifier = if task_id.is_empty() {
+        let entries = ws.list_namespace_tasks(&ws.namespace()?)?;
+        if entries.is_empty() {
+            return Err(errors::Error::NoTasks);
+        }
+        let picked = select_task_ids(&dir, &ws, entries, body, false)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| errors::Error::Parse("No task selected".into()))?;
+        TaskIdentifier::Id(picked)
+    } else {
+        task_id.into()
+    };
+    let id = ws.reopen(identifier)?;
+    println!("Reopened {id}");
+    Ok(())
 }
 
 fn shell_quote(s: &str) -> String {
