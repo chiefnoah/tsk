@@ -1,1 +1,4 @@
 Optionally log the commit of HEAD when a task is dropped
+
+It should default to off. Add an optional cli flag to tsk drop that logs the current
+commit of the enclosing git repo in a "closed-on" property.
