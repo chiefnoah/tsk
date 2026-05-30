@@ -1,1 +1,6 @@
 Update SKILL.md
+
+Recommend to drop tasks *after* the commit for a feature is created, add a
+reference to the human readable task identifierin the commit message body at the
+bottom, and use the -x/--closed-on-commit to maintain bidirectional mapping of a
+task to a implementing commit.
