@@ -140,8 +140,13 @@ pub fn assign_id(repo: &Repository, name: &str, stable: StableId, message: &str)
     let mut ns = read(repo, name)?;
     let human = ns.next;
     ns.next += 1;
-    ns.mapping.insert(human, stable);
-    write(repo, name, &ns, &format!("{message} {name}-{human}"))?;
+    ns.mapping.insert(human, stable.clone());
+    write(
+        repo,
+        name,
+        &ns,
+        &format!("{message} {name}-{human} {stable}"),
+    )?;
     Ok(human)
 }
 

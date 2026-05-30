@@ -355,9 +355,15 @@ impl Workspace {
             let mut obj = TaskObj::new(content);
             obj.properties
                 .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
-            let stable = object::create(&repo, &obj, "create")?;
-            properties::reindex_task(&repo, &stable, &obj.properties)?;
             let human = namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
+            let msg = format!("create {active_ns}-{human} {stable}");
+            let created = object::create(&repo, &obj, &msg)?;
+            if created != stable {
+                return Err(Error::Parse(format!(
+                    "stable id mismatch: expected {stable}, created {created}"
+                )));
+            }
+            properties::reindex_task(&repo, &stable, &obj.properties)?;
             return Ok(Self::make_task(Id(human), stable, obj));
         }
 
@@ -371,7 +377,8 @@ impl Workspace {
             if is_done {
                 obj.properties
                     .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
-                object::update(&repo, &stable, &obj, "reopen")?;
+                let msg = format!("reopen {active_ns}-{human} {stable}");
+                object::update(&repo, &stable, &obj, &msg)?;
                 properties::reindex_task(&repo, &stable, &obj.properties)?;
             }
             return Ok(Self::make_task(Id(human), stable, obj));
@@ -1594,6 +1601,7 @@ mod test {
         let (_d, ws) = fresh_workspace();
         let t = ws.new_task("v1".into(), "".into()).unwrap();
         let id = t.id;
+        let stable = t.stable.clone();
         ws.push_task(t).unwrap();
 
         // Two edits (each appends a commit).
@@ -1610,22 +1618,65 @@ mod test {
         // Newest first.
         assert_eq!(log[0].summary, "edit");
         assert_eq!(log[1].summary, "edit");
-        assert_eq!(log[2].summary, "create");
+        assert_eq!(log[2].summary, format!("create tsk-{} {}", id.0, stable));
     }
 
     #[test]
     fn log_namespace_walks_id_assignments() {
         let (_d, ws) = fresh_workspace();
         let t1 = ws.new_task("a".into(), "".into()).unwrap();
+        let s1 = t1.stable.clone();
         ws.push_task(t1).unwrap();
         let t2 = ws.new_task("b".into(), "".into()).unwrap();
+        let s2 = t2.stable.clone();
         ws.push_task(t2).unwrap();
 
         let log = ws.log_namespace("tsk").unwrap();
         // Two id-assignments.
         assert!(log.len() >= 2, "got {}", log.len());
-        assert_eq!(log[0].summary, "assign-id tsk-2");
-        assert_eq!(log[1].summary, "assign-id tsk-1");
+        assert_eq!(log[0].summary, format!("assign-id tsk-2 {s2}"));
+        assert_eq!(log[1].summary, format!("assign-id tsk-1 {s1}"));
+    }
+
+    #[test]
+    fn push_task_creation_logs_include_human_and_stable_ids() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws.new_task("created by push".into(), "".into()).unwrap();
+        let id = t.id;
+        let stable = t.stable.clone();
+        ws.push_task(t).unwrap();
+
+        let task_log = ws.log_task(TaskIdentifier::Id(id)).unwrap();
+        assert_eq!(
+            task_log.last().map(|c| c.summary.clone()),
+            Some(format!("create tsk-{} {}", id.0, stable))
+        );
+
+        let namespace_log = ws.log_namespace("tsk").unwrap();
+        assert_eq!(
+            namespace_log.first().map(|c| c.summary.clone()),
+            Some(format!("assign-id tsk-{} {}", id.0, stable))
+        );
+    }
+
+    #[test]
+    fn push_reopen_logs_include_human_and_stable_ids() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws.new_task("reopened by push".into(), "".into()).unwrap();
+        let id = t.id;
+        let stable = t.stable.clone();
+        ws.push_task(t).unwrap();
+        ws.drop(TaskIdentifier::Id(id)).unwrap();
+
+        let reopened = ws.new_task("reopened by push".into(), "".into()).unwrap();
+        assert_eq!(reopened.id, id);
+        assert_eq!(reopened.stable, stable);
+
+        let task_log = ws.log_task(TaskIdentifier::Id(id)).unwrap();
+        assert_eq!(
+            task_log.first().map(|c| c.summary.clone()),
+            Some(format!("reopen tsk-{} {}", id.0, stable))
+        );
     }
 
     #[test]
