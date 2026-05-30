@@ -1,1 +1,4 @@
 support pagination in web ui
+
+Whenever listing tasks or log messages, we should paginate
+if the number of entries is above some threshold (define a constant in code for that).
