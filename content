@@ -1,0 +1,8 @@
+Support creating dependent tasks using [> <] syntax
+
+On save the text within the delimiters should become the title of a newly
+created task, and the body of the current task should be modified with a standard
+internal link [[<namepace>-<id>]]. The "depends-on" property should be correctly
+set/appended to include the newly created task link (as an internal link) and
+the newly created task should have a "blocks" property that has the ID of the
+current task's ID as an internal link.
