@@ -708,7 +708,7 @@ fn command_find(dir: PathBuf, multi: bool, all: bool, body: bool) -> Result<()> 
     }
 
     let preview = format!(
-        "{} -C {} show -x -T {{1}}",
+        "CLICOLOR_FORCE=1 {} -C {} show -x -T {{1}}",
         shell_quote(&std::env::current_exe()?.to_string_lossy()),
         shell_quote(&dir.to_string_lossy()),
     );

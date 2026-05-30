@@ -503,13 +503,14 @@ fn page(ws: &Workspace, title: &str, body: &str) -> String {
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta name=\"color-scheme\" content=\"light dark\">\
-         <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css\">\
+         <link rel=\"stylesheet\" href=\"{}\">\
          <title>{}</title>{}</head><body>\
          <nav class=\"container-fluid\"><ul><li><strong>tsk</strong></li>\
          <li><a href=\"/queues\">Queues</a></li><li><a href=\"/namespaces\">Namespaces</a></li></ul>\
          <ul><li>queue: <a href=\"/queues/{}\">{}</a></li>\
          <li>namespace: <a href=\"/namespaces/{}\">{}</a></li></ul></nav>\
          <main class=\"container\">{}</main></body></html>",
+        PICO_CSS_URL,
         h(title),
         STYLE,
         h(&ws.queue()),
@@ -519,6 +520,8 @@ fn page(ws: &Workspace, title: &str, body: &str) -> String {
         body
     )
 }
+
+const PICO_CSS_URL: &str = "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css";
 
 const STYLE: &str = "<style>\
 nav{border-bottom:var(--pico-border-width) solid var(--pico-muted-border-color)}\
