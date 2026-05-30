@@ -1,1 +1,6 @@
 add prop get subcommand
+
+It should allow specifying the task (using common means of specifying a task)
+and a property key and print the value(s) to stdout or print an error if no
+such property exists. If there are multiple values, they should be newline
+delimited.
