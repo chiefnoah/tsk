@@ -852,10 +852,10 @@ fn page(ws: &Workspace, title: &str, body: &str) -> Result<String> {
          <meta name=\"color-scheme\" content=\"light dark\">\
          <link rel=\"stylesheet\" href=\"{}\">\
          <title>{}</title>{}</head><body>\
-         <nav class=\"container-fluid\"><ul><li><strong>tsk</strong></li>\
+         <nav class=\"container-fluid site-nav\"><ul><li><strong>tsk</strong></li>\
          <li><a href=\"/queues\">Queues</a></li><li><a href=\"/namespaces\">Namespaces</a></li>\
          <li><a href=\"/properties\">Properties</a></li></ul>\
-         <ul><li>queue: <a href=\"/queues/{}\">{}</a></li>\
+         <ul class=\"active-context\"><li>queue: <a href=\"/queues/{}\">{}</a></li>\
          <li>namespace: <a href=\"/namespaces/{}\">{}</a></li></ul></nav>\
          <main class=\"container\">{}</main></body></html>",
         PICO_CSS_URL,
@@ -872,12 +872,33 @@ fn page(ws: &Workspace, title: &str, body: &str) -> Result<String> {
 const PICO_CSS_URL: &str = "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css";
 
 const STYLE: &str = "<style>\
-nav{border-bottom:var(--pico-border-width) solid var(--pico-muted-border-color)}\
+*{box-sizing:border-box}\
+body{overflow-x:hidden}\
+main.container{padding-inline:clamp(.75rem,4vw,1rem)}\
+.site-nav{border-bottom:var(--pico-border-width) solid var(--pico-muted-border-color);gap:.5rem;overflow-x:auto}\
+.site-nav ul{flex-wrap:wrap;gap:.25rem .75rem;min-width:0}\
+.site-nav li{min-width:0}\
+.active-context{justify-content:flex-end}\
+h1,h2,p,li,td,th{overflow-wrap:anywhere}\
 td,th{vertical-align:top}\
+table{display:block;max-width:100%;overflow-x:auto;white-space:nowrap}\
+.task-content{overflow-wrap:anywhere}\
 .task-content-plain{white-space:pre-wrap}\
 .task-content-markdown pre{padding:1rem;overflow:auto}\
+.task-content-markdown table{white-space:normal}\
 .meta{color:var(--pico-muted-color)}\
-.pagination ul{align-items:center;gap:1rem}\
+.pagination ul{align-items:center;gap:.5rem;flex-wrap:wrap}\
+.pagination li{margin:0}\
+@media (max-width:700px){\
+.site-nav{display:block;padding-block:.5rem}\
+.site-nav ul{justify-content:flex-start;margin:0}\
+.site-nav ul+ul{margin-top:.25rem}\
+.active-context{font-size:.875rem}\
+main.container{padding-block:1rem}\
+h1{font-size:1.6rem}\
+h2{font-size:1.25rem}\
+.pagination ul{justify-content:space-between}\
+}\
 </style>";
 
 fn format_unix(ts: i64) -> String {
@@ -944,6 +965,36 @@ mod tests {
         Workspace::init(dir.path().to_path_buf()).unwrap();
         let ws = Workspace::from_path(dir.path().to_path_buf()).unwrap();
         (dir, ws)
+    }
+
+    #[test]
+    fn page_shell_includes_mobile_layout_rules() {
+        let (_dir, ws) = fresh_workspace();
+
+        let html = render_queues(&ws).unwrap();
+
+        assert!(
+            html.contains(
+                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            ),
+            "page should use the device viewport: {html}"
+        );
+        assert!(
+            html.contains("class=\"container-fluid site-nav\""),
+            "top nav should expose responsive styling hook: {html}"
+        );
+        assert!(
+            html.contains("class=\"active-context\""),
+            "active queue/namespace nav should expose responsive styling hook: {html}"
+        );
+        assert!(
+            html.contains("table{display:block;max-width:100%;overflow-x:auto"),
+            "wide tables should scroll within the viewport: {html}"
+        );
+        assert!(
+            html.contains("@media (max-width:700px)"),
+            "page shell should include narrow viewport rules: {html}"
+        );
     }
 
     #[test]
