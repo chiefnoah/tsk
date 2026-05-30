@@ -1,1 +1,5 @@
 Add reopen command
+
+It should let you specify either a task ID (using common methods of doing so)
+or, if left blank open a fzf search with the same options as tsk find (ie. -b
+flag to include search body).
