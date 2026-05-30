@@ -1,6 +1,6 @@
 use crate::errors::Result;
 use crate::object::{self, StableId};
-use crate::workspace::{Id, Workspace};
+use crate::workspace::{Id, LogCommit, Workspace};
 use crate::{namespace, queue};
 use clap::{Args, Parser};
 use git2::Repository;
@@ -121,9 +121,12 @@ fn render_path(ws: &Workspace, target: &str) -> Result<Rendered> {
     let parts: Vec<&str> = path.split('/').collect();
     match parts.as_slice() {
         ["queues"] => render_queues(ws).map(Rendered::Html),
+        ["queues", name, "log"] => render_queue_log(ws, name).map(Rendered::Html),
         ["queues", name] => render_queue(ws, name).map(Rendered::Html),
         ["namespaces"] => render_namespaces(ws).map(Rendered::Html),
+        ["namespaces", name, "log"] => render_namespace_log(ws, name).map(Rendered::Html),
         ["namespaces", name] => render_namespace(ws, name).map(Rendered::Html),
+        ["tasks", stable, "log"] => render_task_log(ws, stable).map(Rendered::Html),
         ["tasks", stable] => render_task(ws, stable).map(Rendered::Html),
         _ => Ok(Rendered::NotFound("not found\n".to_string())),
     }
@@ -187,12 +190,26 @@ fn render_queue(ws: &Workspace, name: &str) -> Result<String> {
         ws,
         &format!("Queue {name}"),
         &format!(
-            "<h1>Queue {}</h1><p>can-pull: <code>{}</code></p>\
+            "<h1>Queue {}</h1><p><a href=\"/queues/{}/log\">Log</a></p>\
+             <p>can-pull: <code>{}</code></p>\
              <table><thead><tr><th>#</th><th>Binding</th><th>Title</th><th>Stable</th></tr></thead><tbody>{rows}</tbody></table>\
              <h2>Inbox</h2>{inbox}",
             h(name),
+            h(name),
             q.can_pull
         ),
+    )
+}
+
+fn render_queue_log(ws: &Workspace, name: &str) -> Result<String> {
+    queue::validate_name(name)?;
+    render_log_page(
+        ws,
+        &format!("Queue {name} Log"),
+        &format!("Queue {} Log", h(name)),
+        &format!("/queues/{}", h(name)),
+        &format!("Queue {}", h(name)),
+        ws.log_queue(name)?,
     )
 }
 
@@ -242,10 +259,23 @@ fn render_namespace(ws: &Workspace, name: &str) -> Result<String> {
         ws,
         &format!("Namespace {name}"),
         &format!(
-            "<h1>Namespace {}</h1>\
+            "<h1>Namespace {}</h1><p><a href=\"/namespaces/{}/log\">Log</a></p>\
              <table><thead><tr><th>ID</th><th>Title</th><th>Stable</th></tr></thead><tbody>{rows}</tbody></table>",
+            h(name),
             h(name)
         ),
+    )
+}
+
+fn render_namespace_log(ws: &Workspace, name: &str) -> Result<String> {
+    namespace::validate_name(name)?;
+    render_log_page(
+        ws,
+        &format!("Namespace {name} Log"),
+        &format!("Namespace {} Log", h(name)),
+        &format!("/namespaces/{}", h(name)),
+        &format!("Namespace {}", h(name)),
+        ws.log_namespace(name)?,
     )
 }
 
@@ -283,15 +313,65 @@ fn render_task(ws: &Workspace, stable: &str) -> Result<String> {
     let body = format!(
         "<h1>{}</h1>\
          <p class=\"meta\">Stable <code>{}</code></p>\
+         <p><a href=\"/tasks/{}/log\">Log</a></p>\
          <p>Bindings: {}</p>\
          <h2>Content</h2><div class=\"{content_class}\">{rendered_content}</div>\
          <h2>Properties</h2>\
          <table><thead><tr><th>Key</th><th>Values</th></tr></thead><tbody>{props}</tbody></table>",
         h(task.title()),
         h(&stable.0),
+        h(&stable.0),
         binding_links(bindings.get(&stable))
     );
     page(ws, task.title(), &body)
+}
+
+fn render_task_log(ws: &Workspace, stable: &str) -> Result<String> {
+    let stable = StableId(stable.to_string());
+    let repo = repo(ws)?;
+    let title = title_for(&repo, &stable)?;
+    render_log_page(
+        ws,
+        &format!("{title} Log"),
+        &format!("Task Log: {}", h(&title)),
+        &format!("/tasks/{}", h(&stable.0)),
+        &title,
+        ws.log_ref(&stable.refname())?,
+    )
+}
+
+fn render_log_page(
+    ws: &Workspace,
+    title: &str,
+    heading: &str,
+    back_href: &str,
+    back_label: &str,
+    commits: Vec<LogCommit>,
+) -> Result<String> {
+    let mut rows = String::new();
+    for commit in commits {
+        let short = &commit.oid[..commit.oid.len().min(8)];
+        rows.push_str(&format!(
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            h(short),
+            h(&commit.summary),
+            h(&commit.author),
+            h(&format_unix(commit.timestamp))
+        ));
+    }
+    if rows.is_empty() {
+        rows.push_str("<tr><td colspan=\"4\"><em>No commits</em></td></tr>");
+    }
+    page(
+        ws,
+        title,
+        &format!(
+            "<h1>{heading}</h1><p><a href=\"{}\">Back to {}</a></p>\
+             <table><thead><tr><th>Commit</th><th>Summary</th><th>Author</th><th>When</th></tr></thead><tbody>{rows}</tbody></table>",
+            h(back_href),
+            h(back_label)
+        ),
+    )
 }
 
 fn render_task_content(
@@ -627,6 +707,37 @@ td,th{vertical-align:top}\
 .meta{color:var(--pico-muted-color)}\
 </style>";
 
+fn format_unix(ts: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = now - ts;
+    if delta < 0 {
+        return "in the future".to_string();
+    }
+    relative_time(delta as u64)
+}
+
+fn relative_time(secs: u64) -> String {
+    const M: u64 = 60;
+    const H: u64 = 60 * M;
+    const D: u64 = 24 * H;
+    if secs < M {
+        format!("{secs}s ago")
+    } else if secs < H {
+        format!("{}m ago", secs / M)
+    } else if secs < D {
+        format!("{}h ago", secs / H)
+    } else if secs < 30 * D {
+        format!("{}d ago", secs / D)
+    } else if secs < 365 * D {
+        format!("{}mo ago", secs / (30 * D))
+    } else {
+        format!("{}y ago", secs / (365 * D))
+    }
+}
+
 fn h(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -760,6 +871,83 @@ if idx == 0 {
         assert!(
             html.contains("<li>Decide what stable id means\nacross wrapped lines.</li>"),
             "wrapped ordered list item should stay in one item: {html}"
+        );
+    }
+
+    #[test]
+    fn queue_page_links_to_log_and_log_renders_commits() {
+        let (_dir, ws) = fresh_workspace();
+        let task = ws.new_task("queued work".into(), "".into()).unwrap();
+        let id = task.id;
+        let stable = task.stable.clone();
+        ws.push_task(task).unwrap();
+        ws.drop(id.into()).unwrap();
+
+        let queue_html = render_queue(&ws, "tsk").unwrap();
+        assert!(
+            queue_html.contains("<a href=\"/queues/tsk/log\">Log</a>"),
+            "queue page should link to queue log: {queue_html}"
+        );
+
+        let log_html = render_queue_log(&ws, "tsk").unwrap();
+        assert!(
+            log_html.contains("Queue tsk Log"),
+            "queue log should have a heading: {log_html}"
+        );
+        assert!(
+            log_html.contains(&format!("drop tsk-{} {}", id.0, stable)),
+            "queue log should include drop summary with both ids: {log_html}"
+        );
+        assert!(
+            log_html.contains(&format!("push tsk-{} {}", id.0, stable)),
+            "queue log should include push summary with both ids: {log_html}"
+        );
+    }
+
+    #[test]
+    fn namespace_page_links_to_log_and_log_renders_commits() {
+        let (_dir, ws) = fresh_workspace();
+        let task = ws.new_task("namespaced work".into(), "".into()).unwrap();
+        ws.push_task(task).unwrap();
+
+        let namespace_html = render_namespace(&ws, "tsk").unwrap();
+        assert!(
+            namespace_html.contains("<a href=\"/namespaces/tsk/log\">Log</a>"),
+            "namespace page should link to namespace log: {namespace_html}"
+        );
+
+        let log_html = render_namespace_log(&ws, "tsk").unwrap();
+        assert!(
+            log_html.contains("Namespace tsk Log"),
+            "namespace log should have a heading: {log_html}"
+        );
+        assert!(
+            log_html.contains("assign-id tsk-1"),
+            "namespace log should include assignment summary: {log_html}"
+        );
+    }
+
+    #[test]
+    fn task_page_links_to_log_and_log_renders_commits() {
+        let (_dir, ws) = fresh_workspace();
+        let task = ws.new_task("logged task".into(), "".into()).unwrap();
+        let stable = task.stable.clone();
+        ws.push_task(task).unwrap();
+
+        let task_html = render_task(&ws, &stable.0).unwrap();
+        assert!(
+            task_html.contains(&format!("<a href=\"/tasks/{}/log\">Log</a>", h(&stable.0))),
+            "task page should link to task log: {task_html}"
+        );
+
+        let log_html = render_task_log(&ws, &stable.0).unwrap();
+        assert!(
+            log_html.contains("Task Log: logged task"),
+            "task log should have a heading: {log_html}"
+        );
+        assert!(
+            log_html.contains("create"),
+            "task log should include create summary: {log_html}"
         );
     }
 }
