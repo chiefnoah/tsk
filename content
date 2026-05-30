@@ -1,0 +1,5 @@
+Add task write-and-reindex helper
+
+Several call sites write a task object with object::update and then immediately call properties::reindex_task. Add a small helper for this persistence pattern and use it where it reduces duplication without hiding important behavior.
+
+Keep behavior unchanged and run the existing test suite.
