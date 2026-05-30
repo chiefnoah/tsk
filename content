@@ -1,0 +1,5 @@
+Move CLI command handlers out of lib.rs
+
+src/lib.rs currently contains clap definitions, dispatch, and many command_* handler functions. Move the command handler implementation into a commands module or similarly focused file so lib.rs is easier to scan.
+
+Keep public CLI behavior unchanged and run the existing test suite.
