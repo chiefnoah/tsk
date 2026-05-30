@@ -165,8 +165,7 @@ pub fn sync_referenced_by(
             properties::REFERENCED_BY_KEY,
             backlinks,
         );
-        object::update(repo, &target_stable, &target, "update-backlinks")?;
-        properties::reindex_task(repo, &target_stable, &target.properties)?;
+        properties::update_task(repo, &target_stable, &target, "update-backlinks")?;
     }
     Ok(())
 }

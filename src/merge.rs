@@ -374,8 +374,7 @@ fn adjust_renumbered_internal_links(
                 .replace(&format!("[[tsk-{old}]]"), &format!("[[tsk-{new}]]"));
         }
         if task.content != original {
-            object::update(repo, stable, &task, "rewrite-renumbered-links")?;
-            properties::reindex_task(repo, stable, &task.properties)?;
+            properties::update_task(repo, stable, &task, "rewrite-renumbered-links")?;
         }
     }
 
@@ -384,13 +383,12 @@ fn adjust_renumbered_internal_links(
             continue;
         };
         if references::rewrite_renumbered_properties(&mut task.properties, renumbers) {
-            object::update(
+            properties::update_task(
                 repo,
                 &stable,
                 &task,
                 "rewrite-renumbered-reference-properties",
             )?;
-            properties::reindex_task(repo, &stable, &task.properties)?;
         }
     }
     Ok(())

@@ -394,8 +394,7 @@ impl Workspace {
                 let refresh =
                     self.refresh_reference_properties(&repo, &mut obj, Id(human), &stable)?;
                 let msg = format!("reopen {active_ns}-{human} {stable}");
-                object::update(&repo, &stable, &obj, &msg)?;
-                properties::reindex_task(&repo, &stable, &obj.properties)?;
+                properties::update_task(&repo, &stable, &obj, &msg)?;
                 references::sync_referenced_by(
                     &repo,
                     &stable,
@@ -470,8 +469,7 @@ impl Workspace {
         };
         let refresh =
             self.refresh_reference_properties(&repo, &mut task_obj, task.id, &task.stable)?;
-        let wrote = object::update(&repo, &task.stable, &task_obj, "edit")?;
-        properties::reindex_task(&repo, &task.stable, &task_obj.properties)?;
+        let wrote = properties::update_task(&repo, &task.stable, &task_obj, "edit")?;
         references::sync_referenced_by(
             &repo,
             &task.stable,
@@ -1085,10 +1083,9 @@ impl Workspace {
                 properties::REFERENCED_BY_KEY,
                 inbound.remove(&stable).unwrap_or_default(),
             );
-            if object::update(&repo, &stable, &task, "clean-calculated-properties")? {
+            if properties::update_task(&repo, &stable, &task, "clean-calculated-properties")? {
                 report.tasks_repaired += 1;
             }
-            properties::reindex_task(&repo, &stable, &task.properties)?;
         }
         Ok(report)
     }

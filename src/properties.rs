@@ -171,6 +171,19 @@ pub fn reindex_task(
     Ok(())
 }
 
+/// Update a task object, then refresh this task's entries across all property
+/// indices. Returns whether the task object write created a new commit.
+pub fn update_task(
+    repo: &Repository,
+    stable: &StableId,
+    task: &object::Task,
+    message: &str,
+) -> Result<bool> {
+    let wrote = object::update(repo, stable, task, message)?;
+    reindex_task(repo, stable, &task.properties)?;
+    Ok(wrote)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
