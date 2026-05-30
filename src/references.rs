@@ -210,7 +210,12 @@ pub fn rewrite_renumbered_properties(
     renumbers: &[(u32, u32)],
 ) -> bool {
     let original = attrs.clone();
-    for key in [properties::REFERENCES_KEY, properties::REFERENCED_BY_KEY] {
+    for key in [
+        properties::REFERENCES_KEY,
+        properties::REFERENCED_BY_KEY,
+        properties::DEPENDS_ON_KEY,
+        properties::BLOCKS_KEY,
+    ] {
         let Some(values) = attrs.get_mut(key) else {
             continue;
         };

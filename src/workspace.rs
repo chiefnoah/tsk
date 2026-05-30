@@ -351,6 +351,91 @@ impl Workspace {
             .unwrap_or_default())
     }
 
+    fn add_link_property(properties: &mut BTreeMap<String, Vec<String>>, key: &str, value: String) {
+        let mut values: BTreeSet<String> = properties
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        values.insert(value);
+        properties.insert(key.to_string(), values.into_iter().collect());
+    }
+
+    fn dependency_title(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn has_dependency_placeholder(content: &str) -> bool {
+        let mut cursor = 0;
+        while let Some(start_rel) = content[cursor..].find("[>") {
+            let title_start = cursor + start_rel + 2;
+            let Some(end_rel) = content[title_start..].find("<]") else {
+                return false;
+            };
+            let title_end = title_start + end_rel;
+            if !Self::dependency_title(&content[title_start..title_end]).is_empty() {
+                return true;
+            }
+            cursor = title_end + 2;
+        }
+        false
+    }
+
+    fn create_dependency_task(&self, title: String, source_ref: &str) -> Result<String> {
+        let mut task = self.new_task(title, String::new())?;
+        Self::add_link_property(
+            &mut task.attributes,
+            properties::BLOCKS_KEY,
+            source_ref.to_string(),
+        );
+        self.save_task(&task)?;
+        let dependency_ref = references::human_ref(&self.namespace()?, task.id);
+        self.push_task(task)?;
+        Ok(dependency_ref)
+    }
+
+    fn expand_dependency_placeholders(
+        &self,
+        content: &str,
+        properties: &mut BTreeMap<String, Vec<String>>,
+        source_id: Id,
+    ) -> Result<String> {
+        let active_ns = self.namespace()?;
+        let source_ref = references::human_ref(&active_ns, source_id);
+        let mut out = String::with_capacity(content.len());
+        let mut dependency_refs = BTreeSet::new();
+        let mut cursor = 0;
+
+        while let Some(start_rel) = content[cursor..].find("[>") {
+            let start = cursor + start_rel;
+            let title_start = start + 2;
+            let Some(end_rel) = content[title_start..].find("<]") else {
+                break;
+            };
+            let title_end = title_start + end_rel;
+            let end = title_end + 2;
+            let title = Self::dependency_title(&content[title_start..title_end]);
+
+            out.push_str(&content[cursor..start]);
+            if title.is_empty() {
+                out.push_str(&content[start..end]);
+            } else {
+                let dependency_ref = self.create_dependency_task(title, &source_ref)?;
+                out.push_str(&dependency_ref);
+                dependency_refs.insert(dependency_ref);
+            }
+            cursor = end;
+        }
+        out.push_str(&content[cursor..]);
+
+        for dependency_ref in dependency_refs {
+            Self::add_link_property(properties, properties::DEPENDS_ON_KEY, dependency_ref);
+        }
+
+        Ok(out)
+    }
+
     /// Create a task — or, when the content matches an existing task,
     /// reopen / re-bind it instead of clobbering.
     ///
@@ -383,6 +468,28 @@ impl Workspace {
             obj.properties
                 .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
             let human = namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
+            if Self::has_dependency_placeholder(&obj.content) {
+                let msg = format!("create {active_ns}-{human} {stable}");
+                let created = object::create(&repo, &obj, &msg)?;
+                if created != stable {
+                    return Err(Error::Parse(format!(
+                        "stable id mismatch: expected {stable}, created {created}"
+                    )));
+                }
+                obj.content = self.expand_dependency_placeholders(
+                    &obj.content,
+                    &mut obj.properties,
+                    Id(human),
+                )?;
+                self.update_task_and_sync_refs(
+                    &repo,
+                    &stable,
+                    &mut obj,
+                    Id(human),
+                    "expand-dependencies",
+                )?;
+                return Ok(Self::make_task(Id(human), stable, obj));
+            }
             let refresh = self.refresh_reference_properties(&repo, &mut obj, Id(human), &stable)?;
             let msg = format!("create {active_ns}-{human} {stable}");
             let created = object::create(&repo, &obj, &msg)?;
@@ -412,17 +519,26 @@ impl Workspace {
             if is_done {
                 obj.properties
                     .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
-                let refresh =
-                    self.refresh_reference_properties(&repo, &mut obj, Id(human), &stable)?;
-                let msg = format!("reopen {active_ns}-{human} {stable}");
-                properties::update_task(&repo, &stable, &obj, &msg)?;
-                references::sync_referenced_by(
-                    &repo,
-                    &stable,
-                    &refresh.source_ref,
-                    &refresh.old_refs,
-                    &refresh.new_refs,
+            }
+            let expanded = if Self::has_dependency_placeholder(&obj.content) {
+                let expanded = self.expand_dependency_placeholders(
+                    &obj.content,
+                    &mut obj.properties,
+                    Id(human),
                 )?;
+                let changed = expanded != obj.content;
+                obj.content = expanded;
+                changed
+            } else {
+                false
+            };
+            if is_done || expanded {
+                let msg = if is_done {
+                    format!("reopen {active_ns}-{human} {stable}")
+                } else {
+                    "expand-dependencies".to_string()
+                };
+                self.update_task_and_sync_refs(&repo, &stable, &mut obj, Id(human), &msg)?;
             }
             return Ok(Self::make_task(Id(human), stable, obj));
         }
@@ -443,8 +559,19 @@ impl Workspace {
                 elsewhere.join(", ")
             )));
         }
-        let obj = Self::read_task_obj(&repo, &stable)?;
+        let mut obj = Self::read_task_obj(&repo, &stable)?;
         let human = namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
+        if Self::has_dependency_placeholder(&obj.content) {
+            obj.content =
+                self.expand_dependency_placeholders(&obj.content, &mut obj.properties, Id(human))?;
+            self.update_task_and_sync_refs(
+                &repo,
+                &stable,
+                &mut obj,
+                Id(human),
+                "expand-dependencies",
+            )?;
+        }
         Ok(Self::make_task(Id(human), stable, obj))
     }
 
@@ -474,6 +601,26 @@ impl Workspace {
         references::refresh_task(repo, &active_namespace, task, source_id, source_stable)
     }
 
+    fn update_task_and_sync_refs(
+        &self,
+        repo: &Repository,
+        stable: &StableId,
+        task: &mut TaskObj,
+        source_id: Id,
+        message: &str,
+    ) -> Result<bool> {
+        let refresh = self.refresh_reference_properties(repo, task, source_id, stable)?;
+        let wrote = properties::update_task(repo, stable, task, message)?;
+        references::sync_referenced_by(
+            repo,
+            stable,
+            &refresh.source_ref,
+            &refresh.old_refs,
+            &refresh.new_refs,
+        )?;
+        Ok(wrote)
+    }
+
     /// Persist any in-memory edits to a task. Returns `true` when the
     /// underlying `object::update` actually wrote a new commit (i.e. the
     /// resulting tree differs from the current tip); `false` on a no-op.
@@ -488,17 +635,14 @@ impl Workspace {
             content,
             properties: task.attributes.clone(),
         };
-        let refresh =
-            self.refresh_reference_properties(&repo, &mut task_obj, task.id, &task.stable)?;
-        let wrote = properties::update_task(&repo, &task.stable, &task_obj, "edit")?;
-        references::sync_referenced_by(
-            &repo,
-            &task.stable,
-            &refresh.source_ref,
-            &refresh.old_refs,
-            &refresh.new_refs,
-        )?;
-        Ok(wrote)
+        if Self::has_dependency_placeholder(&task_obj.content) {
+            task_obj.content = self.expand_dependency_placeholders(
+                &task_obj.content,
+                &mut task_obj.properties,
+                task.id,
+            )?;
+        }
+        self.update_task_and_sync_refs(&repo, &task.stable, &mut task_obj, task.id, "edit")
     }
 
     fn ensure_user_property_mutable(key: &str) -> Result<()> {
@@ -1633,6 +1777,60 @@ mod test {
         assert!(
             ws.unset_property(TaskIdentifier::Id(id), properties::REFERENCED_BY_KEY, None)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn new_task_expands_dependency_placeholders() {
+        let (_d, ws) = fresh_workspace();
+        let parent = ws
+            .new_task("parent".into(), "blocked by [> child task <]".into())
+            .unwrap();
+        assert_eq!(parent.id, Id(1));
+        assert_eq!(parent.body, "blocked by [[tsk-2]]");
+        assert_eq!(
+            parent.attributes.get(properties::DEPENDS_ON_KEY),
+            Some(&vec!["[[tsk-2]]".to_string()])
+        );
+        assert_eq!(
+            parent.attributes.get(properties::REFERENCES_KEY),
+            Some(&vec!["[[tsk-2]]".to_string()])
+        );
+
+        let child = ws.task(TaskIdentifier::Id(Id(2))).unwrap();
+        assert_eq!(child.title, "child task");
+        assert_eq!(
+            child.attributes.get(properties::BLOCKS_KEY),
+            Some(&vec!["[[tsk-1]]".to_string()])
+        );
+        assert_eq!(
+            child.attributes.get(properties::REFERENCED_BY_KEY),
+            Some(&vec!["[[tsk-1]]".to_string()])
+        );
+    }
+
+    #[test]
+    fn save_task_expands_dependency_placeholders() {
+        let (_d, ws) = fresh_workspace();
+        let parent = ws.new_task("parent".into(), "".into()).unwrap();
+        let parent_id = parent.id;
+        ws.push_task(parent).unwrap();
+
+        let mut parent = ws.task(TaskIdentifier::Id(parent_id)).unwrap();
+        parent.body = "needs [> prerequisite <] first".into();
+        ws.save_task(&parent).unwrap();
+
+        let parent = ws.task(TaskIdentifier::Id(parent_id)).unwrap();
+        assert_eq!(parent.body, "needs [[tsk-2]] first");
+        assert_eq!(
+            parent.attributes.get(properties::DEPENDS_ON_KEY),
+            Some(&vec!["[[tsk-2]]".to_string()])
+        );
+        let child = ws.task(TaskIdentifier::Id(Id(2))).unwrap();
+        assert_eq!(child.title, "prerequisite");
+        assert_eq!(
+            child.attributes.get(properties::BLOCKS_KEY),
+            Some(&vec!["[[tsk-1]]".to_string()])
         );
     }
 

@@ -183,6 +183,12 @@ A quick overview of the format:
 Links like in Markdown, along with the wiki-style links documented above.
 Raw links can also be written as \<https://example.com\>.
 
+New dependent tasks can be created while saving a task by writing a title
+between `[>` and `<]`. For example, `blocked by [> provision database <]`
+creates a new task titled `provision database`, replaces that text with an
+internal link such as `[[tsk-12]]`, and records protected `depends-on` /
+`blocks` properties between the two tasks.
+
 Misc
 ----
 

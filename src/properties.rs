@@ -16,10 +16,19 @@ use std::collections::BTreeMap;
 pub const PROP_REF_PREFIX: &str = "refs/tsk/properties/";
 pub const REFERENCES_KEY: &str = "references";
 pub const REFERENCED_BY_KEY: &str = "referenced-by";
+pub const DEPENDS_ON_KEY: &str = "depends-on";
+pub const BLOCKS_KEY: &str = "blocks";
 
 /// Properties managed by tsk itself. User-facing property mutation commands
 /// reject these keys; internal workspace operations may still update them.
-pub const PROTECTED_KEYS: &[&str] = &["status", "closed-on", REFERENCES_KEY, REFERENCED_BY_KEY];
+pub const PROTECTED_KEYS: &[&str] = &[
+    "status",
+    "closed-on",
+    REFERENCES_KEY,
+    REFERENCED_BY_KEY,
+    DEPENDS_ON_KEY,
+    BLOCKS_KEY,
+];
 
 pub fn is_protected(key: &str) -> bool {
     PROTECTED_KEYS.contains(&key)
