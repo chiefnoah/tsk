@@ -312,6 +312,12 @@ enum PropAction {
         #[command(flatten)]
         task_id: TaskId,
     },
+    /// Print newline-delimited values for one property on a task.
+    Get {
+        #[command(flatten)]
+        task_id: TaskId,
+        key: String,
+    },
     /// Append a value to a property on a task. Creates the property if absent.
     Add {
         #[command(flatten)]
@@ -1222,6 +1228,13 @@ fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
             for k in task.attributes.keys() {
                 println!("{k}");
             }
+        }
+        PropAction::Get { task_id, key } => {
+            let task = ws.task(task_id.into())?;
+            let values = task.attributes.get(&key).ok_or_else(|| {
+                errors::Error::Parse(format!("Task {} has no property '{key}'", task.id))
+            })?;
+            print_lines(values);
         }
         PropAction::Add {
             task_id,

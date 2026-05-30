@@ -461,6 +461,25 @@ fn property_set_find_round_trip_via_binary() {
         !list.contains('\t'),
         "prop list should only print keys: {list}"
     );
+    assert_eq!(
+        tsk_ok(&alice, &["prop", "get", "-T", "tsk-1", "priority"]),
+        "high\n"
+    );
+    assert_eq!(
+        tsk_ok(&alice, &["prop", "get", "-T", "tsk-1", "tag"]),
+        "alpha\nbeta\n"
+    );
+    let (code, stdout, stderr) = tsk(&alice, &["prop", "get", "-T", "tsk-1", "missing"]);
+    assert_ne!(code, 0, "missing property should fail");
+    assert!(
+        stdout.is_empty(),
+        "missing property should not print: {stdout}"
+    );
+    assert!(
+        stderr.contains("has no property 'missing'"),
+        "missing property error should name the key: {stderr}"
+    );
+
     let attrs = tsk_ok(&alice, &["show", "-T", "tsk-1", "-x"]);
     assert!(attrs.contains("priority: \"high\""), "got {attrs}");
     assert!(attrs.contains("tag: \"alpha\""), "got {attrs}");
