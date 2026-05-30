@@ -461,34 +461,6 @@ fn property_set_find_round_trip_via_binary() {
         !list.contains('\t'),
         "prop list should only print keys: {list}"
     );
-    let all = tsk_ok(&alice, &["prop", "list"]);
-    assert!(
-        all.lines().any(|line| line == "tsk-1\tpriority\thigh"),
-        "namespace prop list should include tsk-1 priority: {all}"
-    );
-    assert!(
-        all.lines().any(|line| line == "tsk-1\ttag\talpha"),
-        "namespace prop list should include first tag value: {all}"
-    );
-    assert!(
-        all.lines().any(|line| line == "tsk-1\ttag\tbeta"),
-        "namespace prop list should include second tag value: {all}"
-    );
-    assert!(
-        all.lines().any(|line| line == "tsk-2\tpriority\tlow"),
-        "namespace prop list should include tsk-2 priority: {all}"
-    );
-
-    tsk_ok(&alice, &["namespace", "switch", "alpha"]);
-    tsk_ok(&alice, &["push", "alpha task"]);
-    tsk_ok(&alice, &["prop", "set", "-T", "tsk-1", "owner", "alpha"]);
-    tsk_ok(&alice, &["namespace", "switch", "tsk"]);
-    let all = tsk_ok(&alice, &["prop", "list"]);
-    assert!(
-        !all.contains("\towner\talpha"),
-        "namespace prop list should exclude properties from another namespace: {all}"
-    );
-
     assert_eq!(
         tsk_ok(&alice, &["prop", "get", "-T", "tsk-1", "priority"]),
         "high\n"

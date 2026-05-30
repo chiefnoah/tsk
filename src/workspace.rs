@@ -562,29 +562,6 @@ impl Workspace {
         properties::values_for(&self.repo()?, key)
     }
 
-    /// Every property value on every task bound in the active namespace.
-    /// Empty value lists are represented as a key with no value.
-    pub fn list_properties(&self) -> Result<Vec<(Id, String, Option<String>)>> {
-        let repo = self.repo()?;
-        let ns = namespace::read(&repo, &self.namespace()?)?;
-        let mut out = Vec::new();
-        for (human, stable) in ns.mapping {
-            let Some(task) = object::read(&repo, &stable)? else {
-                continue;
-            };
-            for (key, values) in task.properties {
-                if values.is_empty() {
-                    out.push((Id(human), key, None));
-                } else {
-                    for value in values {
-                        out.push((Id(human), key.clone(), Some(value)));
-                    }
-                }
-            }
-        }
-        Ok(out)
-    }
-
     /// Find tasks (by human id, scoped to active namespace) that have
     /// `key` set; if `value` is supplied, restricts to entries containing
     /// that value.
