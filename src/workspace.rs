@@ -521,11 +521,13 @@ impl Workspace {
     }
 
     pub fn push_task(&self, task: Task) -> Result<()> {
-        queue::push_top(&self.repo()?, &self.queue()?, task.stable, "push")
+        let msg = self.queue_task_message("push", task.id, &task.stable)?;
+        queue::push_top(&self.repo()?, &self.queue()?, task.stable, &msg)
     }
 
     pub fn append_task(&self, task: Task) -> Result<()> {
-        queue::push_bottom(&self.repo()?, &self.queue()?, task.stable, "append")
+        let msg = self.queue_task_message("append", task.id, &task.stable)?;
+        queue::push_bottom(&self.repo()?, &self.queue()?, task.stable, &msg)
     }
 
     pub fn read_stack(&self) -> Result<Vec<StackEntry>> {
@@ -787,7 +789,8 @@ impl Workspace {
         task.attributes
             .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
         self.save_task(&task)?;
-        queue::push_top(&self.repo()?, &self.queue()?, task.stable, "reopen")?;
+        let msg = self.queue_task_message("reopen", task.id, &task.stable)?;
+        queue::push_top(&self.repo()?, &self.queue()?, task.stable, &msg)?;
         Ok(task.id)
     }
 
@@ -808,7 +811,8 @@ impl Workspace {
     ) -> Result<Option<Id>> {
         let (id, stable) = self.resolve(identifier)?;
         let repo = self.repo()?;
-        queue::remove(&repo, &self.queue()?, &stable, "drop")?;
+        let msg = self.queue_task_message("drop", id, &stable)?;
+        queue::remove(&repo, &self.queue()?, &stable, &msg)?;
         // Flip status=done in the task's tree + index.
         let mut task = self.task(TaskIdentifier::Id(id))?;
         task.attributes
@@ -826,6 +830,16 @@ impl Workspace {
         let mut q = queue::read(&repo, &active_queue)?;
         f(&mut q.index);
         queue::write(&repo, &active_queue, &q, msg)
+    }
+
+    fn queue_task_message(&self, action: &str, id: Id, stable: &StableId) -> Result<String> {
+        Ok(format!(
+            "{} {}-{} {}",
+            action,
+            self.namespace()?,
+            id.0,
+            stable
+        ))
     }
 
     pub fn swap_top(&self) -> Result<()> {
@@ -865,7 +879,16 @@ impl Workspace {
     }
 
     fn move_in_index(&self, identifier: TaskIdentifier, to_front: bool) -> Result<()> {
-        let (_, stable) = self.resolve(identifier)?;
+        let (id, stable) = self.resolve(identifier)?;
+        let msg = self.queue_task_message(
+            if to_front {
+                "prioritize"
+            } else {
+                "deprioritize"
+            },
+            id,
+            &stable,
+        )?;
         self.mutate_index(
             |idx| {
                 idx.retain(|s| s != &stable);
@@ -875,11 +898,7 @@ impl Workspace {
                     idx.push(stable);
                 }
             },
-            if to_front {
-                "prioritize"
-            } else {
-                "deprioritize"
-            },
+            &msg,
         )
     }
 
@@ -941,8 +960,16 @@ impl Workspace {
         let (id, stable) = self.resolve(identifier)?;
         let repo = self.repo()?;
         let key = queue::inbox_key(&cur, id.0);
-        queue::add_to_inbox(&repo, target_queue, key.clone(), stable.clone(), "assign")?;
-        queue::remove(&repo, &cur, &stable, "assigned-out")?;
+        let assign_msg = self.queue_task_message("assign", id, &stable)?;
+        queue::add_to_inbox(
+            &repo,
+            target_queue,
+            key.clone(),
+            stable.clone(),
+            &assign_msg,
+        )?;
+        let assigned_out_msg = self.queue_task_message("assigned-out", id, &stable)?;
+        queue::remove(&repo, &cur, &stable, &assigned_out_msg)?;
         Ok((key, stable))
     }
 
@@ -970,11 +997,17 @@ impl Workspace {
     pub fn accept_inbox(&self, key: &str) -> Result<Id> {
         let repo = self.repo()?;
         let active_queue = self.queue()?;
-        let stable = queue::take_from_inbox(&repo, &active_queue, key, "accept")?
+        let stable = queue::read(&repo, &active_queue)?
+            .inbox
+            .get(key)
+            .cloned()
             .ok_or_else(|| Error::Parse(format!("Inbox item '{key}' not found")))?;
         let human =
             namespace::ensure_bound(&repo, &self.namespace()?, stable.clone(), "accept-bind")?;
-        queue::push_top(&repo, &active_queue, stable, "accept-push")?;
+        let accept_msg = self.queue_task_message("accept", Id(human), &stable)?;
+        queue::take_from_inbox(&repo, &active_queue, key, &accept_msg)?;
+        let push_msg = self.queue_task_message("accept-push", Id(human), &stable)?;
+        queue::push_top(&repo, &active_queue, stable, &push_msg)?;
         Ok(Id(human))
     }
 
@@ -985,13 +1018,20 @@ impl Workspace {
     pub fn reject_inbox(&self, key: &str) -> Result<()> {
         let repo = self.repo()?;
         let active_queue = self.queue()?;
-        let stable = queue::take_from_inbox(&repo, &active_queue, key, "reject")?
+        let stable = queue::read(&repo, &active_queue)?
+            .inbox
+            .get(key)
+            .cloned()
+            .ok_or_else(|| Error::Parse(format!("Inbox item '{key}' not found")))?;
+        let reject_msg = format!("reject {key} {stable}");
+        let stable = queue::take_from_inbox(&repo, &active_queue, key, &reject_msg)?
             .ok_or_else(|| Error::Parse(format!("Inbox item '{key}' not found")))?;
         if let Some((src, seq)) = key.rsplit_once('-') {
             let cur = active_queue;
             if src != cur {
                 let return_key = format!("{cur}-{seq}");
-                queue::add_to_inbox(&repo, src, return_key, stable, "reject-return")?;
+                let return_msg = format!("reject-return {return_key} {stable}");
+                queue::add_to_inbox(&repo, src, return_key, stable, &return_msg)?;
             }
         }
         Ok(())
@@ -1011,14 +1051,16 @@ impl Workspace {
                 "Queue '{source_queue}' has can-pull=false; refusing"
             )));
         }
-        let (_, stable) = self.resolve(identifier)?;
+        let (id, stable) = self.resolve(identifier)?;
         if !src.index.iter().any(|s| s == &stable) {
             return Err(Error::Parse(format!(
                 "Task not present in queue '{source_queue}'"
             )));
         }
-        queue::remove(&repo, source_queue, &stable, "pulled-out")?;
-        queue::push_top(&repo, &cur, stable.clone(), "pull")?;
+        let pulled_out_msg = self.queue_task_message("pulled-out", id, &stable)?;
+        queue::remove(&repo, source_queue, &stable, &pulled_out_msg)?;
+        let pull_msg = self.queue_task_message("pull", id, &stable)?;
+        queue::push_top(&repo, &cur, stable.clone(), &pull_msg)?;
         let human = namespace::ensure_bound(&repo, &self.namespace()?, stable, "pull-bind")?;
         Ok(Id(human))
     }
@@ -1584,6 +1626,48 @@ mod test {
         assert!(log.len() >= 2, "got {}", log.len());
         assert_eq!(log[0].summary, "assign-id tsk-2");
         assert_eq!(log[1].summary, "assign-id tsk-1");
+    }
+
+    #[test]
+    fn log_queue_task_edits_include_human_and_stable_ids() {
+        let (_d, ws) = fresh_workspace();
+        let t = ws
+            .new_task("tracked in queue log".into(), "".into())
+            .unwrap();
+        let id = t.id;
+        let stable = t.stable.clone();
+        ws.push_task(t).unwrap();
+        ws.drop(TaskIdentifier::Id(id)).unwrap();
+
+        let log = ws.log_queue("tsk").unwrap();
+        assert_eq!(log[0].summary, format!("drop tsk-{} {}", id.0, stable));
+        assert_eq!(log[1].summary, format!("push tsk-{} {}", id.0, stable));
+    }
+
+    #[test]
+    fn log_queue_assignment_edits_include_human_and_stable_ids() {
+        let (_d, ws) = fresh_workspace();
+        ws.create_queue("review", None).unwrap();
+        let t = ws
+            .new_task("assign with context".into(), "".into())
+            .unwrap();
+        let id = t.id;
+        let stable = t.stable.clone();
+        ws.push_task(t).unwrap();
+
+        ws.assign_to_queue(TaskIdentifier::Id(id), "review")
+            .unwrap();
+
+        let source_log = ws.log_queue("tsk").unwrap();
+        assert_eq!(
+            source_log[0].summary,
+            format!("assigned-out tsk-{} {}", id.0, stable)
+        );
+        let target_log = ws.log_queue("review").unwrap();
+        assert_eq!(
+            target_log[0].summary,
+            format!("assign tsk-{} {}", id.0, stable)
+        );
     }
 
     #[test]
