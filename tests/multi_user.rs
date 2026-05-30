@@ -412,6 +412,36 @@ fn concurrent_pushes_dont_clobber() {
 }
 
 #[test]
+fn namespace_renumber_rewrites_reference_properties() {
+    let (_dir, alice, bob) = setup_two_clones();
+
+    tsk_ok(&alice, &["push", "alice task"]);
+    tsk_ok(&alice, &["git-push"]);
+
+    tsk_ok(&bob, &["push", "bob target"]);
+    tsk_ok(&bob, &["push", "bob source\n\nlinks to [[tsk-1]]"]);
+    let (code, _, stderr) = tsk(&bob, &["git-push"]);
+    assert_ne!(code, 0, "bob's push should require a pull; stderr={stderr}");
+
+    tsk_ok(&bob, &["git-pull"]);
+
+    let source = tsk_ok(&bob, &["show", "-T", "tsk-2", "-x"]);
+    assert!(
+        source.contains("links to tsk-3"),
+        "source body should be rewritten to the renumbered target: {source}"
+    );
+    assert!(
+        source.contains("references: \"[[tsk-3]]\""),
+        "source references property should be rewritten: {source}"
+    );
+    let target = tsk_ok(&bob, &["show", "-T", "tsk-3", "-x"]);
+    assert!(
+        target.contains("referenced-by: \"[[tsk-2]]\""),
+        "target backlink should still point at the source: {target}"
+    );
+}
+
+#[test]
 fn property_set_find_round_trip_via_binary() {
     let (_dir, alice, _bob) = setup_two_clones();
 

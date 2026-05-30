@@ -14,6 +14,16 @@ use git2::{Oid, Repository};
 use std::collections::BTreeMap;
 
 pub const PROP_REF_PREFIX: &str = "refs/tsk/properties/";
+pub const REFERENCES_KEY: &str = "references";
+pub const REFERENCED_BY_KEY: &str = "referenced-by";
+
+/// Properties managed by tsk itself. User-facing property mutation commands
+/// reject these keys; internal workspace operations may still update them.
+pub const PROTECTED_KEYS: &[&str] = &["status", "closed-on", REFERENCES_KEY, REFERENCED_BY_KEY];
+
+pub fn is_protected(key: &str) -> bool {
+    PROTECTED_KEYS.contains(&key)
+}
 
 pub fn refname(key: &str) -> String {
     format!("{PROP_REF_PREFIX}{key}")

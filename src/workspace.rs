@@ -8,6 +8,7 @@
 use crate::errors::{Error, Result};
 use crate::object::{self, StableId, Task as TaskObj};
 use crate::patch;
+use crate::task::{self, ParsedLink};
 use crate::{merge, namespace, properties, queue};
 use git2::{Remote, Repository};
 use std::collections::{BTreeMap, BTreeSet};
@@ -356,6 +357,8 @@ impl Workspace {
             obj.properties
                 .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
             let human = namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
+            let (old_refs, new_refs, source_ref) =
+                self.refresh_reference_properties(&repo, &mut obj, Id(human), &stable)?;
             let msg = format!("create {active_ns}-{human} {stable}");
             let created = object::create(&repo, &obj, &msg)?;
             if created != stable {
@@ -364,6 +367,7 @@ impl Workspace {
                 )));
             }
             properties::reindex_task(&repo, &stable, &obj.properties)?;
+            Self::sync_referenced_by(&repo, &stable, &source_ref, &old_refs, &new_refs)?;
             return Ok(Self::make_task(Id(human), stable, obj));
         }
 
@@ -377,9 +381,12 @@ impl Workspace {
             if is_done {
                 obj.properties
                     .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
+                let (old_refs, new_refs, source_ref) =
+                    self.refresh_reference_properties(&repo, &mut obj, Id(human), &stable)?;
                 let msg = format!("reopen {active_ns}-{human} {stable}");
                 object::update(&repo, &stable, &obj, &msg)?;
                 properties::reindex_task(&repo, &stable, &obj.properties)?;
+                Self::sync_referenced_by(&repo, &stable, &source_ref, &old_refs, &new_refs)?;
             }
             return Ok(Self::make_task(Id(human), stable, obj));
         }
@@ -420,6 +427,163 @@ impl Workspace {
         Ok(Self::make_task(id, stable, obj))
     }
 
+    fn set_calculated_property(
+        attrs: &mut BTreeMap<String, Vec<String>>,
+        key: &str,
+        values: BTreeSet<String>,
+    ) {
+        if values.is_empty() {
+            attrs.remove(key);
+        } else {
+            attrs.insert(key.to_string(), values.into_iter().collect());
+        }
+    }
+
+    fn split_human_ref(value: &str) -> Option<(String, Id)> {
+        let value = value
+            .strip_prefix("[[")
+            .and_then(|v| v.strip_suffix("]]"))
+            .unwrap_or(value);
+        let (namespace, id) = value.rsplit_once('-')?;
+        namespace::validate_name(namespace).ok()?;
+        let id = id.parse::<u32>().ok()?;
+        Some((namespace.to_string(), Id(id)))
+    }
+
+    fn human_ref(namespace: &str, id: Id) -> String {
+        format!("[[{namespace}-{}]]", id.0)
+    }
+
+    fn resolve_human_ref(repo: &Repository, value: &str) -> Result<Option<StableId>> {
+        let Some((namespace, id)) = Self::split_human_ref(value) else {
+            return Ok(None);
+        };
+        namespace::lookup(repo, &namespace, id.0)
+    }
+
+    fn linked_refs(active_namespace: &str, content: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let Some(parsed) = task::parse(content) else {
+            return out;
+        };
+        for link in parsed.links {
+            match link {
+                ParsedLink::Internal(id) => {
+                    out.insert(Self::human_ref(active_namespace, id));
+                }
+                ParsedLink::Foreign { prefix, id } => {
+                    out.insert(Self::human_ref(&prefix, Id(id)));
+                }
+                ParsedLink::Namespaced { namespace, id } => {
+                    out.insert(Self::human_ref(&namespace, id));
+                }
+                ParsedLink::External(_) => {}
+            }
+        }
+        out
+    }
+
+    fn sync_referenced_by(
+        repo: &Repository,
+        source_stable: &StableId,
+        source_ref: &str,
+        old_refs: &BTreeSet<String>,
+        new_refs: &BTreeSet<String>,
+    ) -> Result<()> {
+        let mut touched = old_refs.clone();
+        touched.extend(new_refs.iter().cloned());
+
+        for target_ref in touched {
+            let Some(target_stable) = Self::resolve_human_ref(repo, &target_ref)? else {
+                continue;
+            };
+            if &target_stable == source_stable {
+                continue;
+            }
+            let Some(mut target) = object::read(repo, &target_stable)? else {
+                continue;
+            };
+            let mut backlinks: BTreeSet<String> = target
+                .properties
+                .get(properties::REFERENCED_BY_KEY)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            if new_refs.contains(&target_ref) {
+                backlinks.insert(source_ref.to_string());
+            } else {
+                backlinks.remove(source_ref);
+            }
+            Self::set_calculated_property(
+                &mut target.properties,
+                properties::REFERENCED_BY_KEY,
+                backlinks,
+            );
+            object::update(repo, &target_stable, &target, "update-backlinks")?;
+            properties::reindex_task(repo, &target_stable, &target.properties)?;
+        }
+        Ok(())
+    }
+
+    fn refresh_reference_properties(
+        &self,
+        repo: &Repository,
+        task: &mut TaskObj,
+        source_id: Id,
+        source_stable: &StableId,
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>, String)> {
+        let active_namespace = self.namespace()?;
+        let source_ref = Self::human_ref(&active_namespace, source_id);
+        let old_refs: BTreeSet<String> = task
+            .properties
+            .get(properties::REFERENCES_KEY)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let new_refs = Self::linked_refs(&active_namespace, &task.content);
+        Self::set_calculated_property(
+            &mut task.properties,
+            properties::REFERENCES_KEY,
+            new_refs.clone(),
+        );
+
+        let self_linked = new_refs.iter().any(|r| {
+            Self::resolve_human_ref(repo, r)
+                .ok()
+                .flatten()
+                .is_some_and(|s| &s == source_stable)
+        });
+        let self_was_linked = old_refs.iter().any(|r| {
+            Self::resolve_human_ref(repo, r)
+                .ok()
+                .flatten()
+                .is_some_and(|s| &s == source_stable)
+        });
+        if self_linked || self_was_linked {
+            let mut backlinks: BTreeSet<String> = task
+                .properties
+                .get(properties::REFERENCED_BY_KEY)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            if self_linked {
+                backlinks.insert(source_ref.clone());
+            } else {
+                backlinks.remove(&source_ref);
+            }
+            Self::set_calculated_property(
+                &mut task.properties,
+                properties::REFERENCED_BY_KEY,
+                backlinks,
+            );
+        }
+
+        Ok((old_refs, new_refs, source_ref))
+    }
+
     /// Persist any in-memory edits to a task. Returns `true` when the
     /// underlying `object::update` actually wrote a new commit (i.e. the
     /// resulting tree differs from the current tip); `false` on a no-op.
@@ -430,13 +594,25 @@ impl Workspace {
         } else {
             format!("{}\n\n{}", task.title.trim(), task.body.trim())
         };
-        let task_obj = TaskObj {
+        let mut task_obj = TaskObj {
             content,
             properties: task.attributes.clone(),
         };
+        let (old_refs, new_refs, source_ref) =
+            self.refresh_reference_properties(&repo, &mut task_obj, task.id, &task.stable)?;
         let wrote = object::update(&repo, &task.stable, &task_obj, "edit")?;
-        properties::reindex_task(&repo, &task.stable, &task.attributes)?;
+        properties::reindex_task(&repo, &task.stable, &task_obj.properties)?;
+        Self::sync_referenced_by(&repo, &task.stable, &source_ref, &old_refs, &new_refs)?;
         Ok(wrote)
+    }
+
+    fn ensure_user_property_mutable(key: &str) -> Result<()> {
+        if properties::is_protected(key) {
+            return Err(Error::Parse(format!(
+                "Property '{key}' is managed by tsk and cannot be edited with `tsk prop`"
+            )));
+        }
+        Ok(())
     }
 
     /// Append a value to a property on a task. If the value is already
@@ -447,6 +623,7 @@ impl Workspace {
         key: &str,
         value: &str,
     ) -> Result<()> {
+        Self::ensure_user_property_mutable(key)?;
         let mut task = self.task(identifier)?;
         let entry = task.attributes.entry(key.to_string()).or_default();
         if !entry.iter().any(|v| v == value) {
@@ -463,6 +640,7 @@ impl Workspace {
         key: &str,
         values: Vec<String>,
     ) -> Result<()> {
+        Self::ensure_user_property_mutable(key)?;
         let mut task = self.task(identifier)?;
         if values.is_empty() {
             task.attributes.remove(key);
@@ -481,6 +659,7 @@ impl Workspace {
         key: &str,
         value: Option<&str>,
     ) -> Result<()> {
+        Self::ensure_user_property_mutable(key)?;
         let mut task = self.task(identifier)?;
         match value {
             None => {

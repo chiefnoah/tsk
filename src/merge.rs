@@ -24,6 +24,7 @@
 use crate::errors::Result;
 use crate::namespace::{self, NS_REF_PREFIX, Namespace};
 use crate::object::{self, StableId, TASK_REF_PREFIX};
+use crate::properties;
 use crate::queue::{self, QUEUE_REF_PREFIX, Queue};
 use git2::{Commit, Oid, Repository};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -373,6 +374,39 @@ fn adjust_renumbered_internal_links(
         }
         if task.content != original {
             object::update(repo, stable, &task, "rewrite-renumbered-links")?;
+            properties::reindex_task(repo, stable, &task.properties)?;
+        }
+    }
+
+    for stable in object::list_all(repo)? {
+        let Some(mut task) = object::read(repo, &stable)? else {
+            continue;
+        };
+        let original = task.properties.clone();
+        for key in [properties::REFERENCES_KEY, properties::REFERENCED_BY_KEY] {
+            let Some(values) = task.properties.get_mut(key) else {
+                continue;
+            };
+            for value in &mut *values {
+                for (old, new) in renumbers {
+                    if value == &format!("tsk-{old}") {
+                        *value = format!("tsk-{new}");
+                    } else if value == &format!("[[tsk-{old}]]") {
+                        *value = format!("[[tsk-{new}]]");
+                    }
+                }
+            }
+            values.sort();
+            values.dedup();
+        }
+        if task.properties != original {
+            object::update(
+                repo,
+                &stable,
+                &task,
+                "rewrite-renumbered-reference-properties",
+            )?;
+            properties::reindex_task(repo, &stable, &task.properties)?;
         }
     }
     Ok(())
