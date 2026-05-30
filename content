@@ -1,0 +1,3 @@
+Refactor repeated HTML rendering helpers in serv.rs
+
+serv.rs repeats escaping, link rendering, and table-row construction across task and property pages. Extract small local helpers where it reduces duplication without changing rendered HTML, routes, or browser behavior. Run the existing tests.
