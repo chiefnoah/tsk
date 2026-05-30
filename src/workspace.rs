@@ -41,6 +41,7 @@ pub const DEFAULT_REMOTE: &str = "origin";
 pub const STATUS_KEY: &str = "status";
 pub const STATUS_OPEN: &str = "open";
 pub const STATUS_DONE: &str = "done";
+pub const CLOSED_ON_KEY: &str = "closed-on";
 /// User-local state lives under `<git-dir>/<STATE_DIR>/` so it isn't tracked
 /// by the enclosing repo (the `.git/` directory is by definition not in the
 /// working tree). Each clone gets its own active namespace + queue.
@@ -627,6 +628,11 @@ impl Workspace {
         self.log_ref(&stable.refname())
     }
 
+    /// Current commit of the enclosing git repo's `HEAD`.
+    pub fn head_commit(&self) -> Result<String> {
+        Ok(self.repo()?.head()?.peel_to_commit()?.id().to_string())
+    }
+
     /// History of edits to a namespace's tree (id assignments, drops, shares).
     pub fn log_namespace(&self, name: &str) -> Result<Vec<LogCommit>> {
         self.log_ref(&namespace::refname(name))
@@ -767,6 +773,16 @@ impl Workspace {
     /// human id (and discoverable via `tsk prop find status done`); the
     /// task object's commit history is preserved either way.
     pub fn drop(&self, identifier: TaskIdentifier) -> Result<Option<Id>> {
+        self.drop_with_closed_on(identifier, None)
+    }
+
+    /// Like [`Workspace::drop`], optionally recording the enclosing repo's
+    /// `HEAD` commit in `closed-on`.
+    pub fn drop_with_closed_on(
+        &self,
+        identifier: TaskIdentifier,
+        closed_on: Option<String>,
+    ) -> Result<Option<Id>> {
         let (id, stable) = self.resolve(identifier)?;
         let repo = self.repo()?;
         queue::remove(&repo, &self.queue(), &stable, "drop")?;
@@ -774,6 +790,9 @@ impl Workspace {
         let mut task = self.task(TaskIdentifier::Id(id))?;
         task.attributes
             .insert(STATUS_KEY.into(), vec![STATUS_DONE.into()]);
+        if let Some(commit) = closed_on {
+            task.attributes.insert(CLOSED_ON_KEY.into(), vec![commit]);
+        }
         self.save_task(&task)?;
         Ok(Some(id))
     }
@@ -1158,7 +1177,7 @@ mod test {
 
     fn run_git_init(p: &std::path::Path) {
         let s = std::process::Command::new("git")
-            .args(["init", "-q", "-b", "main"])
+            .args(["init", "-q", "-b", "main", "--object-format=sha1"])
             .current_dir(p)
             .status()
             .unwrap();

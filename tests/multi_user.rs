@@ -64,7 +64,7 @@ fn make_clone(origin: &Path, dest: &Path, name: &str, email: &str) {
 
 fn init_repo_with_commit(dir: &Path) {
     Command::new("git")
-        .args(["init", "-q", "-b", "main"])
+        .args(["init", "-q", "-b", "main", "--object-format=sha1"])
         .current_dir(dir)
         .status()
         .expect("git init");
@@ -79,7 +79,13 @@ fn setup_two_clones() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let origin = dir.path().join("origin.git");
     Command::new("git")
-        .args(["init", "-q", "--bare", origin.to_str().unwrap()])
+        .args([
+            "init",
+            "-q",
+            "--bare",
+            "--object-format=sha1",
+            origin.to_str().unwrap(),
+        ])
         .status()
         .unwrap();
     let alice = dir.path().join("alice");
@@ -288,6 +294,31 @@ fn property_index_pushed_and_visible_to_other_clone() {
     tsk_ok(&bob, &["git-pull"]);
     let found = tsk_ok(&bob, &["prop", "find", "owner", "alice"]);
     assert!(found.contains("tsk-1"), "bob sees alice's index: {found}");
+}
+
+#[test]
+fn drop_can_record_current_head_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    let head = git(dir.path(), &["rev-parse", "HEAD"]).trim().to_string();
+
+    tsk_ok(dir.path(), &["push", "without closed-on"]);
+    tsk_ok(dir.path(), &["drop", "-T", "tsk-1"]);
+    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-x"]);
+    assert!(attrs.contains("status: \"done\""), "got {attrs}");
+    assert!(
+        !attrs.contains("closed-on:"),
+        "drop should not record HEAD unless requested: {attrs}"
+    );
+
+    tsk_ok(dir.path(), &["push", "with closed-on"]);
+    tsk_ok(dir.path(), &["drop", "--closed-on-head", "-T", "tsk-2"]);
+    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-x"]);
+    assert!(attrs.contains("status: \"done\""), "got {attrs}");
+    assert!(
+        attrs.contains(&format!("closed-on: \"{head}\"")),
+        "drop --closed-on-head should record current HEAD {head}: {attrs}"
+    );
 }
 
 #[test]
