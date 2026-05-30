@@ -25,7 +25,9 @@ tsk drop -T tsk-12
   front matter, or `-R` for raw task text.
 - `tsk push -- "title"` creates a task at the top of the active queue.
 - `tsk append -- "title"` creates a task at the bottom of the active queue.
-- `tsk drop -T tsk-N` marks work done and removes it from the active queue.
+- `tsk drop -x -T tsk-N` records the current git commit in `closed-on`, marks
+  work done, and removes it from the active queue. Use plain `drop` only when
+  there is no implementing commit to record.
 
 ## Creating and editing tasks
 
@@ -196,7 +198,11 @@ tsk git-push
 - Run `tsk list` before choosing work unless the user gave an explicit task.
 - Use `./target/release/tsk` after rebuilding this repo, because an installed
   `tsk` may lag behind local changes.
-- Drop a task only after the work is committed or the user explicitly confirms.
+- Commit completed code changes before dropping the task. Include the
+  human-readable task id at the bottom of the commit message body, then drop the
+  task with `./target/release/tsk drop -x -T tsk-N` so `closed-on` records the
+  implementing commit. Drop without `-x` only when the user explicitly confirms
+  or there is no code commit.
 - Treat properties and queue changes as user-visible state.
 - Prefer `tsk push` in an agent queue for follow-up work instead of adding
   unrelated `TODO` comments in code.
