@@ -512,7 +512,14 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Deprioritize { task_id } => {
             Workspace::from_path(dir)?.deprioritize(task_id.into())
         }
-        Commands::Clean => Workspace::from_path(dir)?.clean(),
+        Commands::Clean => {
+            let report = Workspace::from_path(dir)?.clean()?;
+            println!(
+                "clean: pruned {} queue entries, repaired {} task(s)",
+                report.queue_entries_pruned, report.tasks_repaired
+            );
+            Ok(())
+        }
         Commands::Export {
             ids,
             r#where,

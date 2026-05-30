@@ -33,6 +33,12 @@ pub struct ImportOutcome {
     pub bound_human: Option<u32>,
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct CleanReport {
+    pub queue_entries_pruned: usize,
+    pub tasks_repaired: usize,
+}
+
 const NAMESPACE_FILE: &str = "namespace";
 const QUEUE_FILE: &str = "queue";
 const REMOTE_FILE: &str = "remote";
@@ -1096,23 +1102,110 @@ impl Workspace {
         self.move_in_index(identifier, false)
     }
 
-    /// Drop entries from the active queue's index whose stable ids no longer
-    /// resolve to a task object.
-    pub fn clean(&self) -> Result<()> {
+    fn canonical_binding(
+        bindings: &BTreeMap<StableId, Vec<(String, Id)>>,
+        active_namespace: &str,
+        stable: &StableId,
+    ) -> Option<(String, Id)> {
+        let bindings = bindings.get(stable)?;
+        bindings
+            .iter()
+            .find(|(namespace, _)| namespace == active_namespace)
+            .or_else(|| bindings.first())
+            .cloned()
+    }
+
+    /// Repair calculated state from canonical task data.
+    ///
+    /// Task bodies own `references` / `referenced-by`; queue index membership
+    /// owns `status`. Existing calculated properties are overwritten when they
+    /// disagree, because they are informational caches.
+    pub fn clean(&self) -> Result<CleanReport> {
         let repo = self.repo()?;
-        let active_queue = self.queue()?;
-        let mut q = queue::read(&repo, &active_queue)?;
-        let before = q.index.len();
-        q.index.retain(|s| {
-            repo.find_reference(&s.refname())
-                .ok()
-                .and_then(|r| r.target())
-                .is_some()
-        });
-        if q.index.len() != before {
-            queue::write(&repo, &active_queue, &q, "clean")?;
+        let active_namespace = self.namespace()?;
+        let task_exists = |s: &StableId| repo.find_reference(&s.refname()).is_ok();
+        let mut report = CleanReport::default();
+        let mut queued = BTreeSet::new();
+
+        for queue_name in queue::list_names(&repo)? {
+            let mut q = queue::read(&repo, &queue_name)?;
+            let before = q.index.len();
+            q.index.retain(&task_exists);
+            report.queue_entries_pruned += before - q.index.len();
+            queued.extend(q.index.iter().cloned());
+            if q.index.len() != before {
+                queue::write(&repo, &queue_name, &q, "clean")?;
+            }
         }
-        Ok(())
+
+        let mut bindings: BTreeMap<StableId, Vec<(String, Id)>> = BTreeMap::new();
+        for namespace_name in namespace::list_names(&repo)? {
+            let ns = namespace::read(&repo, &namespace_name)?;
+            for (human, stable) in ns.mapping {
+                if task_exists(&stable) {
+                    bindings
+                        .entry(stable)
+                        .or_default()
+                        .push((namespace_name.clone(), Id(human)));
+                }
+            }
+        }
+        for values in bindings.values_mut() {
+            values.sort();
+        }
+
+        let mut tasks = BTreeMap::new();
+        let mut inbound: BTreeMap<StableId, BTreeSet<String>> = BTreeMap::new();
+        for stable in object::list_all(&repo)? {
+            let Some(mut task) = object::read(&repo, &stable)? else {
+                continue;
+            };
+            let source_namespace = Self::canonical_binding(&bindings, &active_namespace, &stable)
+                .map(|(namespace, _)| namespace)
+                .unwrap_or_else(|| active_namespace.clone());
+            let references = Self::linked_refs(&source_namespace, &task.content);
+            Self::set_calculated_property(
+                &mut task.properties,
+                properties::REFERENCES_KEY,
+                references.clone(),
+            );
+
+            if let Some((source_namespace, source_id)) =
+                Self::canonical_binding(&bindings, &active_namespace, &stable)
+            {
+                let source_ref = Self::human_ref(&source_namespace, source_id);
+                for target_ref in references {
+                    if let Some(target_stable) = Self::resolve_human_ref(&repo, &target_ref)? {
+                        inbound
+                            .entry(target_stable)
+                            .or_default()
+                            .insert(source_ref.clone());
+                    }
+                }
+            }
+
+            let status = if queued.contains(&stable) {
+                STATUS_OPEN
+            } else {
+                STATUS_DONE
+            };
+            task.properties
+                .insert(STATUS_KEY.into(), vec![status.to_string()]);
+            tasks.insert(stable, task);
+        }
+
+        for (stable, mut task) in tasks {
+            Self::set_calculated_property(
+                &mut task.properties,
+                properties::REFERENCED_BY_KEY,
+                inbound.remove(&stable).unwrap_or_default(),
+            );
+            if object::update(&repo, &stable, &task, "clean-calculated-properties")? {
+                report.tasks_repaired += 1;
+            }
+            properties::reindex_task(&repo, &stable, &task.properties)?;
+        }
+        Ok(report)
     }
 
     /// Share a task into another namespace by binding the same stable id to
@@ -1562,6 +1655,191 @@ mod test {
             .unwrap();
         let commit = repo.find_commit(head).unwrap();
         assert_eq!(commit.parent_count(), 1);
+    }
+
+    #[test]
+    fn save_task_calculates_forward_and_backward_references() {
+        let (_d, ws) = fresh_workspace();
+        let target = ws.new_task("target".into(), "".into()).unwrap();
+        let target_id = target.id;
+        ws.push_task(target).unwrap();
+        let source = ws
+            .new_task("source".into(), "depends on [[tsk-1]]".into())
+            .unwrap();
+        let source_id = source.id;
+        ws.push_task(source).unwrap();
+
+        let source = ws.task(TaskIdentifier::Id(source_id)).unwrap();
+        assert_eq!(
+            source.attributes.get(properties::REFERENCES_KEY),
+            Some(&vec!["[[tsk-1]]".to_string()])
+        );
+        let target = ws.task(TaskIdentifier::Id(target_id)).unwrap();
+        assert_eq!(
+            target.attributes.get(properties::REFERENCED_BY_KEY),
+            Some(&vec!["[[tsk-2]]".to_string()])
+        );
+        assert_eq!(
+            ws.find_by_property(properties::REFERENCES_KEY, Some("[[tsk-1]]"))
+                .unwrap()
+                .into_iter()
+                .map(|(id, _, _)| id)
+                .collect::<Vec<_>>(),
+            vec![source_id]
+        );
+
+        let mut source = ws.task(TaskIdentifier::Id(source_id)).unwrap();
+        source.body = "no links now".into();
+        ws.save_task(&source).unwrap();
+        let source = ws.task(TaskIdentifier::Id(source_id)).unwrap();
+        assert!(!source.attributes.contains_key(properties::REFERENCES_KEY));
+        let target = ws.task(TaskIdentifier::Id(target_id)).unwrap();
+        assert!(
+            !target
+                .attributes
+                .contains_key(properties::REFERENCED_BY_KEY)
+        );
+    }
+
+    #[test]
+    fn prop_commands_cannot_mutate_protected_properties() {
+        let (_d, ws) = fresh_workspace();
+        let task = ws.new_task("task".into(), "".into()).unwrap();
+        let id = task.id;
+
+        for key in properties::PROTECTED_KEYS {
+            let err = ws
+                .set_property(TaskIdentifier::Id(id), key, vec!["x".into()])
+                .expect_err("protected property should reject user mutation");
+            assert!(
+                format!("{err}").contains("managed by tsk"),
+                "unexpected error for {key}: {err}"
+            );
+        }
+        assert!(
+            ws.add_property_value(TaskIdentifier::Id(id), properties::REFERENCES_KEY, "tsk-99")
+                .is_err()
+        );
+        assert!(
+            ws.unset_property(TaskIdentifier::Id(id), properties::REFERENCED_BY_KEY, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn clean_repairs_calculated_reference_properties() {
+        let (_d, ws) = fresh_workspace();
+        let target = ws.new_task("target".into(), "".into()).unwrap();
+        let target_id = target.id;
+        let target_stable = target.stable.clone();
+        ws.push_task(target).unwrap();
+        let source = ws
+            .new_task("source".into(), "depends on [[tsk-1]]".into())
+            .unwrap();
+        let source_id = source.id;
+        let source_stable = source.stable.clone();
+        ws.push_task(source).unwrap();
+        let stale = ws.new_task("stale".into(), "".into()).unwrap();
+        let stale_id = stale.id;
+        let stale_stable = stale.stable.clone();
+        ws.push_task(stale).unwrap();
+
+        let repo = ws.repo().unwrap();
+        let mut source_obj = object::read(&repo, &source_stable).unwrap().unwrap();
+        source_obj.properties.remove(properties::REFERENCES_KEY);
+        object::update(&repo, &source_stable, &source_obj, "corrupt-source").unwrap();
+        properties::reindex_task(&repo, &source_stable, &source_obj.properties).unwrap();
+
+        let mut target_obj = object::read(&repo, &target_stable).unwrap().unwrap();
+        target_obj.properties.remove(properties::REFERENCED_BY_KEY);
+        object::update(&repo, &target_stable, &target_obj, "corrupt-target").unwrap();
+        properties::reindex_task(&repo, &target_stable, &target_obj.properties).unwrap();
+
+        let mut stale_obj = object::read(&repo, &stale_stable).unwrap().unwrap();
+        stale_obj.properties.insert(
+            properties::REFERENCED_BY_KEY.into(),
+            vec!["[[tsk-2]]".into()],
+        );
+        object::update(&repo, &stale_stable, &stale_obj, "corrupt-stale").unwrap();
+        properties::reindex_task(&repo, &stale_stable, &stale_obj.properties).unwrap();
+
+        let report = ws.clean().unwrap();
+        assert_eq!(report.queue_entries_pruned, 0);
+        assert_eq!(report.tasks_repaired, 3);
+
+        let source = ws.task(TaskIdentifier::Id(source_id)).unwrap();
+        assert_eq!(
+            source.attributes.get(properties::REFERENCES_KEY),
+            Some(&vec!["[[tsk-1]]".to_string()])
+        );
+        let target = ws.task(TaskIdentifier::Id(target_id)).unwrap();
+        assert_eq!(
+            target.attributes.get(properties::REFERENCED_BY_KEY),
+            Some(&vec!["[[tsk-2]]".to_string()])
+        );
+        let stale = ws.task(TaskIdentifier::Id(stale_id)).unwrap();
+        assert!(!stale.attributes.contains_key(properties::REFERENCED_BY_KEY));
+        assert_eq!(ws.clean().unwrap(), CleanReport::default());
+    }
+
+    #[test]
+    fn clean_uses_queue_membership_as_status_authority() {
+        let (_d, ws) = fresh_workspace();
+        let queued = ws.new_task("queued".into(), "".into()).unwrap();
+        let queued_id = queued.id;
+        let queued_stable = queued.stable.clone();
+        ws.push_task(queued).unwrap();
+        let done = ws.new_task("done".into(), "".into()).unwrap();
+        let done_id = done.id;
+        let done_stable = done.stable.clone();
+        ws.push_task(done).unwrap();
+        ws.drop(TaskIdentifier::Id(done_id)).unwrap();
+
+        let repo = ws.repo().unwrap();
+        let mut queued_obj = object::read(&repo, &queued_stable).unwrap().unwrap();
+        queued_obj
+            .properties
+            .insert(STATUS_KEY.into(), vec![STATUS_DONE.into()]);
+        object::update(&repo, &queued_stable, &queued_obj, "corrupt-queued-status").unwrap();
+        properties::reindex_task(&repo, &queued_stable, &queued_obj.properties).unwrap();
+
+        let mut done_obj = object::read(&repo, &done_stable).unwrap().unwrap();
+        done_obj
+            .properties
+            .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
+        object::update(&repo, &done_stable, &done_obj, "corrupt-done-status").unwrap();
+        properties::reindex_task(&repo, &done_stable, &done_obj.properties).unwrap();
+
+        let report = ws.clean().unwrap();
+        assert_eq!(report.queue_entries_pruned, 0);
+        assert_eq!(report.tasks_repaired, 2);
+        assert_eq!(
+            ws.task(TaskIdentifier::Id(queued_id))
+                .unwrap()
+                .attributes
+                .get(STATUS_KEY),
+            Some(&vec![STATUS_OPEN.to_string()])
+        );
+        assert_eq!(
+            ws.task(TaskIdentifier::Id(done_id))
+                .unwrap()
+                .attributes
+                .get(STATUS_KEY),
+            Some(&vec![STATUS_DONE.to_string()])
+        );
+    }
+
+    #[test]
+    fn clean_still_prunes_orphan_queue_entries() {
+        let (_d, ws) = fresh_workspace();
+        let repo = ws.repo().unwrap();
+        let orphan = StableId("0".repeat(40));
+        queue::push_top(&repo, "tsk", orphan, "orphan-push").unwrap();
+
+        let report = ws.clean().unwrap();
+        assert_eq!(report.queue_entries_pruned, 1);
+        assert_eq!(report.tasks_repaired, 0);
+        assert!(queue::read(&repo, "tsk").unwrap().index.is_empty());
     }
 
     #[test]
