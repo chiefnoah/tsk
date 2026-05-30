@@ -40,3 +40,37 @@ where
         Ok(Some(raw.trim().parse()?))
     }
 }
+
+/// Sends NUL-delimited display lines to fzf and returns every selected raw line.
+pub fn select_raw<I, S>(
+    input: impl IntoIterator<Item = I>,
+    extra: impl IntoIterator<Item = S>,
+) -> Result<Vec<String>>
+where
+    I: Display,
+    S: AsRef<OsStr>,
+{
+    let mut command = Command::new("fzf");
+    let mut child = command
+        .args(extra)
+        .arg("--read0")
+        .arg("--print0")
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let child_in = child.stdin.as_mut().unwrap();
+    for item in input.into_iter() {
+        write!(child_in, "{item}\0")?;
+    }
+    let output = child.wait_with_output()?;
+    if output.stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+    let raw = String::from_utf8(output.stdout)?;
+    Ok(raw
+        .split('\0')
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect())
+}

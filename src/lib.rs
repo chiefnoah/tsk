@@ -16,9 +16,10 @@ use clap_complete::{Shell, generate};
 use edit::edit as open_editor;
 use errors::Result;
 use std::env::current_dir;
+use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::exit;
+use std::process::{Command, Stdio, exit};
 use std::str::FromStr as _;
 use workspace::{Id, TaskIdentifier, Workspace};
 
@@ -77,6 +78,18 @@ enum Commands {
         #[arg(short = 'i', default_value_t = false)]
         ids_only: bool,
     },
+    /// Fuzzy-find tasks and print the selected task id(s).
+    Find {
+        /// Allow selecting multiple tasks.
+        #[arg(short, long, default_value_t = false)]
+        multi: bool,
+        /// Search every task in the active namespace instead of only the active queue.
+        #[arg(short, long, default_value_t = false)]
+        all: bool,
+        /// Include task bodies in the search text.
+        #[arg(short, long, default_value_t = false)]
+        body: bool,
+    },
     /// Show a task by id.
     Show {
         /// Print xattr-style YAML front-matter for the task's properties.
@@ -87,6 +100,21 @@ enum Commands {
         raw: bool,
         #[command(flatten)]
         task_id: TaskId,
+    },
+    /// List or follow a link parsed from a task's body.
+    Follow {
+        /// The task whose body will be searched for links.
+        #[command(flatten)]
+        task_id: TaskId,
+        /// The index of the link to open. Omit with no -s to just list links.
+        #[arg(short = 'l')]
+        link_index: Option<usize>,
+        /// fzf-pick a link to open instead of supplying -l.
+        #[arg(short = 's', default_value_t = false)]
+        select: bool,
+        /// When opening an internal link, edit the addressed task instead of showing.
+        #[arg(short = 'e', default_value_t = false)]
+        edit: bool,
     },
     /// Open `$EDITOR` to modify a task.
     Edit {
@@ -442,11 +470,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             count,
             ids_only,
         } => command_list(dir, all, count, ids_only),
+        Commands::Find { multi, all, body } => command_find(dir, multi, all, body),
         Commands::Show {
             task_id,
             show_attrs,
             raw,
         } => command_show(dir, task_id, show_attrs, raw),
+        Commands::Follow {
+            task_id,
+            link_index,
+            select,
+            edit,
+        } => command_follow(dir, task_id, link_index, select, edit),
         Commands::Edit { task_id } => command_edit(dir, task_id),
         Commands::Drop { task_id } => command_drop(dir, task_id),
         Commands::Reopen { task_id } => {
@@ -650,6 +685,68 @@ fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool) -> Result
     Ok(())
 }
 
+fn command_find(dir: PathBuf, multi: bool, all: bool, body: bool) -> Result<()> {
+    let ws = Workspace::from_path(dir.clone())?;
+    let entries = if all {
+        ws.list_namespace_tasks(&ws.namespace())?
+    } else {
+        ws.read_stack()?
+    };
+    if entries.is_empty() {
+        return Err(errors::Error::NoTasks);
+    }
+
+    let mut lines = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let mut line = format!("{}\t{}", entry.id, single_line(&entry.title));
+        if body {
+            let task = ws.task(TaskIdentifier::Id(entry.id))?;
+            line.push('\t');
+            line.push_str(&single_line(&task.body));
+        }
+        lines.push(line);
+    }
+
+    let preview = format!(
+        "{} -C {} show -x -T {{1}}",
+        shell_quote(&std::env::current_exe()?.to_string_lossy()),
+        shell_quote(&dir.to_string_lossy()),
+    );
+    let mut args: Vec<OsString> = vec![
+        "--ansi".into(),
+        "--delimiter".into(),
+        "\t".into(),
+        "--with-nth".into(),
+        if body { "1,2,3" } else { "1,2" }.into(),
+        "--nth".into(),
+        if body { "1,2,3" } else { "1,2" }.into(),
+        "--preview".into(),
+        preview.into(),
+        "--preview-window".into(),
+        "up:60%:wrap".into(),
+        "--prompt".into(),
+        "task> ".into(),
+    ];
+    if multi {
+        args.push("--multi".into());
+    }
+
+    for selected in fzf::select_raw(lines, args)? {
+        if let Some(id) = selected.split('\t').next().filter(|id| !id.is_empty()) {
+            println!("{id}");
+        }
+    }
+    Ok(())
+}
+
+fn single_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn command_show(dir: PathBuf, task_id: TaskId, show_attrs: bool, raw: bool) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let task = ws.task(task_id.into())?;
@@ -692,6 +789,142 @@ fn render_link(ws: &Workspace, link: &task::ParsedLink) -> String {
         Foreign { prefix, id } => format!("{prefix}-{id} (foreign)"),
         External(url) => url.to_string(),
     }
+}
+
+fn render_follow_link(link: &task::ParsedLink) -> String {
+    use task::ParsedLink::*;
+    match link {
+        Internal(id) => format!("[[{id}]]"),
+        Namespaced { namespace, id } => format!("[[{namespace}/{id}]]"),
+        Foreign { prefix, id } => format!("[[{prefix}-{id}]]"),
+        External(url) => url.to_string(),
+    }
+}
+
+fn taskid_from_id(id: Id) -> TaskId {
+    TaskId {
+        id: None,
+        tsk_id: Some(id),
+        relative_id: None,
+    }
+}
+
+fn command_follow(
+    dir: PathBuf,
+    task_id: TaskId,
+    link_index: Option<usize>,
+    select: bool,
+    edit: bool,
+) -> Result<()> {
+    let ws = Workspace::from_path(dir.clone())?;
+    let task = ws.task(task_id.into())?;
+    let Some(parsed_task) = task::parse(&task.to_string()) else {
+        eprintln!("Unable to parse any links from body.");
+        exit(1);
+    };
+    if parsed_task.links.is_empty() {
+        eprintln!("No links found in {}.", task.id);
+        return Ok(());
+    }
+
+    let idx = match (link_index, select) {
+        (Some(n), _) => n,
+        (None, true) => {
+            let lines: Vec<String> = parsed_task
+                .links
+                .iter()
+                .enumerate()
+                .map(|(i, link)| format!("{}\t{}", i + 1, render_follow_link(link)))
+                .collect();
+            let selected = fzf::select_raw(
+                lines,
+                [
+                    "--delimiter",
+                    "\t",
+                    "--with-nth",
+                    "1,2",
+                    "--nth",
+                    "1,2",
+                    "--prompt",
+                    "link> ",
+                ],
+            )?;
+            selected
+                .first()
+                .and_then(|line| line.split('\t').next())
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or_else(|| {
+                    eprintln!("No link selected.");
+                    exit(1);
+                })
+        }
+        (None, false) => {
+            for (i, link) in parsed_task.links.iter().enumerate() {
+                println!("{}\t{}", i + 1, render_follow_link(link));
+            }
+            return Ok(());
+        }
+    };
+
+    if idx == 0 || idx > parsed_task.links.len() {
+        eprintln!("Link index out of bounds.");
+        exit(1);
+    }
+    match &parsed_task.links[idx - 1] {
+        task::ParsedLink::External(url) => open_detached(url.as_str()),
+        task::ParsedLink::Internal(id) => {
+            let task_id = taskid_from_id(*id);
+            if edit {
+                command_edit(dir, task_id)
+            } else {
+                command_show(dir, task_id, false, false)
+            }
+        }
+        task::ParsedLink::Namespaced { namespace, id } => {
+            if edit {
+                eprintln!("Editing namespaced links is not supported.");
+                exit(1);
+            }
+            let task = Workspace::from_path(dir)?.task_in_namespace(namespace, *id)?;
+            let plain = task.to_string();
+            match task::parse(&plain) {
+                Some(parsed) => print!("{}", parsed.content),
+                None => print!("{plain}"),
+            }
+            println!();
+            Ok(())
+        }
+        task::ParsedLink::Foreign { prefix, id } => Err(errors::Error::Parse(format!(
+            "foreign link resolution is not supported in this storage backend: {prefix}-{id}"
+        ))),
+    }
+}
+
+fn open_detached(target: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = Command::new("open");
+        c.arg(target);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", "", target]);
+        c
+    };
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let mut command = {
+        let mut c = Command::new("xdg-open");
+        c.arg(target);
+        c
+    };
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
 }
 
 fn command_edit(dir: PathBuf, task_id: TaskId) -> Result<()> {

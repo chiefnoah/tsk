@@ -380,6 +380,15 @@ impl Workspace {
         Ok(Self::make_task(id, stable, obj))
     }
 
+    pub fn task_in_namespace(&self, name: &str, id: Id) -> Result<Task> {
+        namespace::validate_name(name)?;
+        let repo = self.repo()?;
+        let stable = namespace::lookup(&repo, name, id.0)?
+            .ok_or_else(|| Error::Parse(format!("Task {name}/{id} not found in namespace")))?;
+        let obj = Self::read_task_obj(&repo, &stable)?;
+        Ok(Self::make_task(id, stable, obj))
+    }
+
     /// Persist any in-memory edits to a task. Returns `true` when the
     /// underlying `object::update` actually wrote a new commit (i.e. the
     /// resulting tree differs from the current tip); `false` on a no-op.
