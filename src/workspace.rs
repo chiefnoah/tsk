@@ -9,7 +9,7 @@ use crate::errors::{Error, Result};
 use crate::object::{self, StableId, Task as TaskObj};
 use crate::patch;
 use crate::{merge, namespace, properties, queue};
-use git2::Repository;
+use git2::{Remote, Repository};
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -186,15 +186,20 @@ impl Workspace {
             .unwrap_or_else(|| default.to_string())
     }
 
-    pub fn namespace(&self) -> String {
-        self.read_selector(NAMESPACE_FILE, namespace::DEFAULT_NS)
+    pub fn namespace(&self) -> Result<String> {
+        let name = self.read_selector(NAMESPACE_FILE, namespace::DEFAULT_NS);
+        namespace::validate_name(&name)?;
+        Ok(name)
     }
 
-    pub fn queue(&self) -> String {
+    pub fn queue(&self) -> Result<String> {
         if let Some(Some(q)) = QUEUE_OVERRIDE.get() {
-            return q.clone();
+            queue::validate_name(q)?;
+            return Ok(q.clone());
         }
-        self.read_selector(QUEUE_FILE, queue::DEFAULT_QUEUE)
+        let name = self.read_selector(QUEUE_FILE, queue::DEFAULT_QUEUE);
+        queue::validate_name(&name)?;
+        Ok(name)
     }
 
     pub fn switch_namespace(&self, name: &str) -> Result<()> {
@@ -212,8 +217,10 @@ impl Workspace {
     /// Persist a clone-local default remote so `tsk git-push` /
     /// `tsk git-pull` (and the auto-push paths) target it without an
     /// explicit `<remote>` arg.
-    pub fn default_remote(&self) -> String {
-        self.read_selector(REMOTE_FILE, DEFAULT_REMOTE)
+    pub fn default_remote(&self) -> Result<String> {
+        let name = self.read_selector(REMOTE_FILE, DEFAULT_REMOTE);
+        validate_remote_name(&name)?;
+        Ok(name)
     }
 
     /// Persist `name` as the default remote. Errors if `name` isn't a
@@ -231,6 +238,7 @@ impl Workspace {
                 }
             )));
         }
+        validate_remote_name(name)?;
         std::fs::write(self.path.join(REMOTE_FILE), name.as_bytes())?;
         Ok(())
     }
@@ -268,7 +276,7 @@ impl Workspace {
     fn resolve(&self, identifier: TaskIdentifier) -> Result<(Id, StableId)> {
         match identifier {
             TaskIdentifier::Id(id) => {
-                let stable = namespace::lookup(&self.repo()?, &self.namespace(), id.0)?
+                let stable = namespace::lookup(&self.repo()?, &self.namespace()?, id.0)?
                     .ok_or_else(|| Error::Parse(format!("Task {id} not found in namespace")))?;
                 Ok((id, stable))
             }
@@ -326,7 +334,7 @@ impl Workspace {
         // Compute the stable id without writing anything.
         let content_oid = repo.blob(content.as_bytes())?;
         let stable = StableId(content_oid.to_string());
-        let active_ns = self.namespace();
+        let active_ns = self.namespace()?;
 
         if repo.find_reference(&stable.refname()).is_err() {
             let mut obj = TaskObj::new(content);
@@ -486,7 +494,7 @@ impl Workspace {
         value: Option<&str>,
     ) -> Result<Vec<(Id, StableId, String)>> {
         let repo = self.repo()?;
-        let by_stable = ns_reverse(&namespace::read(&repo, &self.namespace())?);
+        let by_stable = ns_reverse(&namespace::read(&repo, &self.namespace()?)?);
         let mut out = Vec::new();
         for stable in properties::find(&repo, key, value)? {
             let Some(&human) = by_stable.get(&stable) else {
@@ -498,18 +506,18 @@ impl Workspace {
     }
 
     pub fn push_task(&self, task: Task) -> Result<()> {
-        queue::push_top(&self.repo()?, &self.queue(), task.stable, "push")
+        queue::push_top(&self.repo()?, &self.queue()?, task.stable, "push")
     }
 
     pub fn append_task(&self, task: Task) -> Result<()> {
-        queue::push_bottom(&self.repo()?, &self.queue(), task.stable, "append")
+        queue::push_bottom(&self.repo()?, &self.queue()?, task.stable, "append")
     }
 
     pub fn read_stack(&self) -> Result<Vec<StackEntry>> {
         let repo = self.repo()?;
-        let by_stable = ns_reverse(&namespace::read(&repo, &self.namespace())?);
+        let by_stable = ns_reverse(&namespace::read(&repo, &self.namespace()?)?);
         let mut out = Vec::new();
-        for stable in queue::read(&repo, &self.queue())?.index {
+        for stable in queue::read(&repo, &self.queue()?)?.index {
             // Skip tasks not visible in the active namespace (different ns owns them).
             let Some(&human) = by_stable.get(&stable) else {
                 continue;
@@ -585,7 +593,7 @@ impl Workspace {
             let (id, stable) = self.resolve(ident.clone())?;
             let opts = patch::ExportOpts {
                 bind: if bind {
-                    Some((self.namespace(), id.0))
+                    Some((self.namespace()?, id.0))
                 } else {
                     None
                 },
@@ -606,7 +614,7 @@ impl Workspace {
             let bound_human = if bind {
                 Some(namespace::ensure_bound(
                     &repo,
-                    &self.namespace(),
+                    &self.namespace()?,
                     res.stable.clone(),
                     "import-bind",
                 )?)
@@ -649,7 +657,7 @@ impl Workspace {
     /// auto-status existed.
     pub fn backfill_status(&self) -> Result<usize> {
         let repo = self.repo()?;
-        let ns = namespace::read(&repo, &self.namespace())?;
+        let ns = namespace::read(&repo, &self.namespace()?)?;
         let mut updated = 0usize;
         for (human, _stable) in ns.mapping.iter() {
             let mut task = self.task(TaskIdentifier::Id(Id(*human)))?;
@@ -669,7 +677,7 @@ impl Workspace {
     /// Returns the number of tasks rewritten. Idempotent — `save_task`
     /// no-ops on already-migrated tasks.
     pub fn migrate_property_encoding(&self) -> Result<usize> {
-        let ns = namespace::read(&self.repo()?, &self.namespace())?;
+        let ns = namespace::read(&self.repo()?, &self.namespace()?)?;
         let mut rewritten = 0;
         for human in ns.mapping.keys() {
             let task = self.task(TaskIdentifier::Id(Id(*human)))?;
@@ -764,7 +772,7 @@ impl Workspace {
         task.attributes
             .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
         self.save_task(&task)?;
-        queue::push_top(&self.repo()?, &self.queue(), task.stable, "reopen")?;
+        queue::push_top(&self.repo()?, &self.queue()?, task.stable, "reopen")?;
         Ok(task.id)
     }
 
@@ -785,7 +793,7 @@ impl Workspace {
     ) -> Result<Option<Id>> {
         let (id, stable) = self.resolve(identifier)?;
         let repo = self.repo()?;
-        queue::remove(&repo, &self.queue(), &stable, "drop")?;
+        queue::remove(&repo, &self.queue()?, &stable, "drop")?;
         // Flip status=done in the task's tree + index.
         let mut task = self.task(TaskIdentifier::Id(id))?;
         task.attributes
@@ -799,9 +807,10 @@ impl Workspace {
 
     fn mutate_index<F: FnOnce(&mut Vec<StableId>)>(&self, f: F, msg: &str) -> Result<()> {
         let repo = self.repo()?;
-        let mut q = queue::read(&repo, &self.queue())?;
+        let active_queue = self.queue()?;
+        let mut q = queue::read(&repo, &active_queue)?;
         f(&mut q.index);
-        queue::write(&repo, &self.queue(), &q, msg)
+        queue::write(&repo, &active_queue, &q, msg)
     }
 
     pub fn swap_top(&self) -> Result<()> {
@@ -871,7 +880,8 @@ impl Workspace {
     /// resolve to a task object.
     pub fn clean(&self) -> Result<()> {
         let repo = self.repo()?;
-        let mut q = queue::read(&repo, &self.queue())?;
+        let active_queue = self.queue()?;
+        let mut q = queue::read(&repo, &active_queue)?;
         let before = q.index.len();
         q.index.retain(|s| {
             repo.find_reference(&s.refname())
@@ -880,7 +890,7 @@ impl Workspace {
                 .is_some()
         });
         if q.index.len() != before {
-            queue::write(&repo, &self.queue(), &q, "clean")?;
+            queue::write(&repo, &active_queue, &q, "clean")?;
         }
         Ok(())
     }
@@ -888,7 +898,7 @@ impl Workspace {
     /// Share a task into another namespace by binding the same stable id to
     /// the next human id in `target_ns`.
     pub fn share(&self, identifier: TaskIdentifier, target_ns: &str) -> Result<u32> {
-        let cur = self.namespace();
+        let cur = self.namespace()?;
         if target_ns == cur {
             return Err(Error::Parse(
                 "Refusing to share a task into its own namespace".into(),
@@ -906,7 +916,7 @@ impl Workspace {
         identifier: TaskIdentifier,
         target_queue: &str,
     ) -> Result<(String, StableId)> {
-        let cur = self.queue();
+        let cur = self.queue()?;
         if target_queue == cur {
             return Err(Error::Parse(
                 "Refusing to assign a task to its own queue".into(),
@@ -924,7 +934,7 @@ impl Workspace {
     pub fn list_inbox(&self) -> Result<Vec<InboxItem>> {
         let repo = self.repo()?;
         let mut out = Vec::new();
-        for (key, stable) in queue::read(&repo, &self.queue())?.inbox {
+        for (key, stable) in queue::read(&repo, &self.queue()?)?.inbox {
             let source_queue = key
                 .rsplit_once('-')
                 .map(|(s, _)| s.to_string())
@@ -944,11 +954,12 @@ impl Workspace {
     /// (if not already), and push onto the top of the active queue.
     pub fn accept_inbox(&self, key: &str) -> Result<Id> {
         let repo = self.repo()?;
-        let stable = queue::take_from_inbox(&repo, &self.queue(), key, "accept")?
+        let active_queue = self.queue()?;
+        let stable = queue::take_from_inbox(&repo, &active_queue, key, "accept")?
             .ok_or_else(|| Error::Parse(format!("Inbox item '{key}' not found")))?;
         let human =
-            namespace::ensure_bound(&repo, &self.namespace(), stable.clone(), "accept-bind")?;
-        queue::push_top(&repo, &self.queue(), stable, "accept-push")?;
+            namespace::ensure_bound(&repo, &self.namespace()?, stable.clone(), "accept-bind")?;
+        queue::push_top(&repo, &active_queue, stable, "accept-push")?;
         Ok(Id(human))
     }
 
@@ -958,10 +969,11 @@ impl Workspace {
     /// key is `<active>-<seq>` so each round-trip is uniquely identified.
     pub fn reject_inbox(&self, key: &str) -> Result<()> {
         let repo = self.repo()?;
-        let stable = queue::take_from_inbox(&repo, &self.queue(), key, "reject")?
+        let active_queue = self.queue()?;
+        let stable = queue::take_from_inbox(&repo, &active_queue, key, "reject")?
             .ok_or_else(|| Error::Parse(format!("Inbox item '{key}' not found")))?;
         if let Some((src, seq)) = key.rsplit_once('-') {
-            let cur = self.queue();
+            let cur = active_queue;
             if src != cur {
                 let return_key = format!("{cur}-{seq}");
                 queue::add_to_inbox(&repo, src, return_key, stable, "reject-return")?;
@@ -973,7 +985,7 @@ impl Workspace {
     /// Pull a task from a foreign queue's index into the active queue's
     /// index. Only allowed if the source queue's `can_pull` is true.
     pub fn pull_from_queue(&self, source_queue: &str, identifier: TaskIdentifier) -> Result<Id> {
-        let cur = self.queue();
+        let cur = self.queue()?;
         if source_queue == cur {
             return Err(Error::Parse("Source queue equals active queue".into()));
         }
@@ -992,7 +1004,7 @@ impl Workspace {
         }
         queue::remove(&repo, source_queue, &stable, "pulled-out")?;
         queue::push_top(&repo, &cur, stable.clone(), "pull")?;
-        let human = namespace::ensure_bound(&repo, &self.namespace(), stable, "pull-bind")?;
+        let human = namespace::ensure_bound(&repo, &self.namespace()?, stable, "pull-bind")?;
         Ok(Id(human))
     }
 
@@ -1102,22 +1114,25 @@ impl Workspace {
     /// Refs to push after `accept_inbox`: the active queue (entry moved
     /// from inbox to index) and the active namespace (the receiver may have
     /// allocated a new human id binding the accepted task).
-    pub fn refs_for_accept_inbox(&self) -> Vec<String> {
-        vec![
-            queue::refname(&self.queue()),
-            namespace::refname(&self.namespace()),
-        ]
+    pub fn refs_for_accept_inbox(&self) -> Result<Vec<String>> {
+        Ok(vec![
+            queue::refname(&self.queue()?),
+            namespace::refname(&self.namespace()?),
+        ])
     }
 
     /// Refs to push after `reject_inbox`: the active queue (entry left the
     /// inbox) and the source queue (entry was bounced back into its inbox).
-    pub fn refs_for_reject_inbox(&self, source_queue: &str) -> Vec<String> {
-        vec![queue::refname(&self.queue()), queue::refname(source_queue)]
+    pub fn refs_for_reject_inbox(&self, source_queue: &str) -> Result<Vec<String>> {
+        Ok(vec![
+            queue::refname(&self.queue()?),
+            queue::refname(source_queue),
+        ])
     }
 
     /// Refs to fetch before listing the inbox: just the active queue.
-    pub fn refs_for_inbox_pull(&self) -> Vec<String> {
-        vec![queue::refname(&self.queue())]
+    pub fn refs_for_inbox_pull(&self) -> Result<Vec<String>> {
+        Ok(vec![queue::refname(&self.queue()?)])
     }
 
     /// Fetch into a non-clobbering shadow namespace, then reconcile each
@@ -1169,6 +1184,18 @@ pub fn find_git_dir(start: &std::path::Path) -> Option<PathBuf> {
             .canonicalize()
             .unwrap_or_else(|_| git_dir.to_path_buf()),
     )
+}
+
+fn validate_remote_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::Parse("Remote name cannot be empty".into()));
+    }
+    if !Remote::is_valid_name(name) {
+        return Err(Error::Parse(format!(
+            "Remote '{name}' is not a valid git remote name"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1407,8 +1434,9 @@ mod test {
         let raw = object::Task::new("legacy task");
         let stable = object::create(&repo, &raw, "create").unwrap();
         let h_legacy =
-            namespace::assign_id(&repo, &ws.namespace(), stable.clone(), "assign").unwrap();
-        queue::push_top(&repo, &ws.queue(), stable, "push").unwrap();
+            namespace::assign_id(&repo, &ws.namespace().unwrap(), stable.clone(), "assign")
+                .unwrap();
+        queue::push_top(&repo, &ws.queue().unwrap(), stable, "push").unwrap();
 
         // Plus a fresh task that already has status=open and a dropped one.
         let t_open = ws.new_task("fresh open".into(), "".into()).unwrap();
@@ -1497,6 +1525,44 @@ mod test {
         // The state files should live under <git-dir>/tsk/.
         assert!(dir.path().join(".git/tsk/namespace").exists());
         assert!(dir.path().join(".git/tsk/queue").exists());
+    }
+
+    #[test]
+    fn namespace_reader_rejects_malformed_selector_file() {
+        let (_d, ws) = fresh_workspace();
+        std::fs::write(ws.path.join(NAMESPACE_FILE), "../bad").unwrap();
+
+        let err = ws.namespace().expect_err("malformed namespace must error");
+        assert!(
+            format!("{err}").contains("Namespace '../bad'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn queue_reader_rejects_malformed_selector_file() {
+        let (_d, ws) = fresh_workspace();
+        std::fs::write(ws.path.join(QUEUE_FILE), "bad/name").unwrap();
+
+        let err = ws.queue().expect_err("malformed queue must error");
+        assert!(
+            format!("{err}").contains("Queue 'bad/name'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn remote_reader_rejects_malformed_selector_file() {
+        let (_d, ws) = fresh_workspace();
+        std::fs::write(ws.path.join(REMOTE_FILE), "bad\nname").unwrap();
+
+        let err = ws
+            .default_remote()
+            .expect_err("malformed remote must error");
+        assert!(
+            format!("{err}").contains("Remote 'bad\nname'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

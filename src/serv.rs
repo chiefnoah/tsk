@@ -116,7 +116,7 @@ fn render_path(ws: &Workspace, target: &str) -> Result<Rendered> {
     let path = target.split('?').next().unwrap_or("/");
     let path = path.trim_end_matches('/').trim_start_matches('/');
     if path.is_empty() {
-        return Ok(Rendered::Redirect(format!("/queues/{}", ws.queue())));
+        return Ok(Rendered::Redirect(format!("/queues/{}", ws.queue()?)));
     }
     let parts: Vec<&str> = path.split('/').collect();
     match parts.as_slice() {
@@ -131,10 +131,11 @@ fn render_path(ws: &Workspace, target: &str) -> Result<Rendered> {
 
 fn render_queues(ws: &Workspace) -> Result<String> {
     let mut names = ws.list_queues()?;
-    include_current(&mut names, &ws.queue());
+    let active_queue = ws.queue()?;
+    include_current(&mut names, &active_queue);
     let mut items = String::new();
     for name in names {
-        let marker = if name == ws.queue() {
+        let marker = if name == active_queue {
             " <small>active</small>"
         } else {
             ""
@@ -145,11 +146,7 @@ fn render_queues(ws: &Workspace) -> Result<String> {
             marker
         ));
     }
-    Ok(page(
-        ws,
-        "Queues",
-        &format!("<h1>Queues</h1><ul>{items}</ul>"),
-    ))
+    page(ws, "Queues", &format!("<h1>Queues</h1><ul>{items}</ul>"))
 }
 
 fn render_queue(ws: &Workspace, name: &str) -> Result<String> {
@@ -186,7 +183,7 @@ fn render_queue(ws: &Workspace, name: &str) -> Result<String> {
         }
         format!("<ul>{items}</ul>")
     };
-    Ok(page(
+    page(
         ws,
         &format!("Queue {name}"),
         &format!(
@@ -196,15 +193,16 @@ fn render_queue(ws: &Workspace, name: &str) -> Result<String> {
             h(name),
             q.can_pull
         ),
-    ))
+    )
 }
 
 fn render_namespaces(ws: &Workspace) -> Result<String> {
     let mut names = ws.list_namespaces()?;
-    include_current(&mut names, &ws.namespace());
+    let active_namespace = ws.namespace()?;
+    include_current(&mut names, &active_namespace);
     let mut items = String::new();
     for name in names {
-        let marker = if name == ws.namespace() {
+        let marker = if name == active_namespace {
             " <small>active</small>"
         } else {
             ""
@@ -215,11 +213,11 @@ fn render_namespaces(ws: &Workspace) -> Result<String> {
             marker
         ));
     }
-    Ok(page(
+    page(
         ws,
         "Namespaces",
         &format!("<h1>Namespaces</h1><ul>{items}</ul>"),
-    ))
+    )
 }
 
 fn render_namespace(ws: &Workspace, name: &str) -> Result<String> {
@@ -240,7 +238,7 @@ fn render_namespace(ws: &Workspace, name: &str) -> Result<String> {
     if rows.is_empty() {
         rows.push_str("<tr><td colspan=\"3\"><em>No tasks</em></td></tr>");
     }
-    Ok(page(
+    page(
         ws,
         &format!("Namespace {name}"),
         &format!(
@@ -248,21 +246,21 @@ fn render_namespace(ws: &Workspace, name: &str) -> Result<String> {
              <table><thead><tr><th>ID</th><th>Title</th><th>Stable</th></tr></thead><tbody>{rows}</tbody></table>",
             h(name)
         ),
-    ))
+    )
 }
 
 fn render_task(ws: &Workspace, stable: &str) -> Result<String> {
     let stable = StableId(stable.to_string());
     let repo = repo(ws)?;
     let Some(task) = object::read(&repo, &stable)? else {
-        return Ok(page(
+        return page(
             ws,
             "Task not found",
             &format!(
                 "<h1>Task not found</h1><p><code>{}</code></p>",
                 h(&stable.0)
             ),
-        ));
+        );
     };
     let bindings = all_bindings(ws, &repo)?;
     let mut props = String::new();
@@ -293,7 +291,7 @@ fn render_task(ws: &Workspace, stable: &str) -> Result<String> {
         h(&stable.0),
         binding_links(bindings.get(&stable))
     );
-    Ok(page(ws, task.title(), &body))
+    page(ws, task.title(), &body)
 }
 
 fn render_task_content(
@@ -465,7 +463,7 @@ fn render_internal_link(
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     };
     let html = if let Ok(id) = Id::from_str(target) {
-        task_id_link(repo, &ws.namespace(), id, target)?
+        task_id_link(repo, &ws.namespace()?, id, target)?
     } else if let Some((ns, rest)) = target.split_once('/')
         && valid_ident(ns)
         && let Ok(id) = Id::from_str(rest)
@@ -555,7 +553,7 @@ fn all_bindings(
     repo: &Repository,
 ) -> Result<BTreeMap<StableId, Vec<(String, u32)>>> {
     let mut names = ws.list_namespaces()?;
-    include_current(&mut names, &ws.namespace());
+    include_current(&mut names, &ws.namespace()?);
     let mut out: BTreeMap<StableId, Vec<(String, u32)>> = BTreeMap::new();
     for name in names {
         for (human, stable) in namespace::read(repo, &name)?.mapping {
@@ -594,8 +592,10 @@ fn include_current(names: &mut Vec<String>, current: &str) {
     names.extend(set);
 }
 
-fn page(ws: &Workspace, title: &str, body: &str) -> String {
-    format!(
+fn page(ws: &Workspace, title: &str, body: &str) -> Result<String> {
+    let active_queue = ws.queue()?;
+    let active_namespace = ws.namespace()?;
+    Ok(format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta name=\"color-scheme\" content=\"light dark\">\
@@ -609,12 +609,12 @@ fn page(ws: &Workspace, title: &str, body: &str) -> String {
         PICO_CSS_URL,
         h(title),
         STYLE,
-        h(&ws.queue()),
-        h(&ws.queue()),
-        h(&ws.namespace()),
-        h(&ws.namespace()),
+        h(&active_queue),
+        h(&active_queue),
+        h(&active_namespace),
+        h(&active_namespace),
         body
-    )
+    ))
 }
 
 const PICO_CSS_URL: &str = "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css";

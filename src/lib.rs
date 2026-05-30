@@ -419,7 +419,7 @@ impl TaskId {
         if !self.is_empty() {
             return Ok(self.into());
         }
-        let entries = ws.list_namespace_tasks(&ws.namespace())?;
+        let entries = ws.list_namespace_tasks(&ws.namespace()?)?;
         if entries.is_empty() {
             return Err(errors::Error::NoTasks);
         }
@@ -445,17 +445,20 @@ impl From<TaskId> for TaskIdentifier {
     }
 }
 
-fn effective_remote(ws: &Workspace, supplied: Option<String>) -> Option<String> {
-    supplied
-        .map(|s| if s.is_empty() { None } else { Some(s) })
-        .unwrap_or_else(|| Some(ws.default_remote()))
+fn effective_remote(ws: &Workspace, supplied: Option<String>) -> Result<Option<String>> {
+    match supplied {
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => Ok(Some(s)),
+        None => Ok(Some(ws.default_remote()?)),
+    }
 }
 
 /// Scoped push (best-effort, silent on `-R ""`).
-fn auto_push_refs(ws: &Workspace, remote: Option<String>, refs: Vec<String>) {
-    if let Some(r) = effective_remote(ws, remote) {
+fn auto_push_refs(ws: &Workspace, remote: Option<String>, refs: Vec<String>) -> Result<()> {
+    if let Some(r) = effective_remote(ws, remote)? {
         let _ = ws.git_push_refs(&r, &refs);
     }
+    Ok(())
 }
 
 fn dispatch(cli: Cli) -> Result<()> {
@@ -526,17 +529,26 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Commands::GitSetup { remote } => {
             let ws = Workspace::from_path(dir)?;
-            let r = remote.unwrap_or_else(|| ws.default_remote());
+            let r = match remote {
+                Some(r) => r,
+                None => ws.default_remote()?,
+            };
             ws.configure_git_remote_refspecs(&r)
         }
         Commands::GitPush { remote } => {
             let ws = Workspace::from_path(dir)?;
-            let r = remote.unwrap_or_else(|| ws.default_remote());
+            let r = match remote {
+                Some(r) => r,
+                None => ws.default_remote()?,
+            };
             ws.git_push(&r)
         }
         Commands::GitPull { remote, rebase } => {
             let ws = Workspace::from_path(dir)?;
-            let r = remote.unwrap_or_else(|| ws.default_remote());
+            let r = match remote {
+                Some(r) => r,
+                None => ws.default_remote()?,
+            };
             let strategy = if rebase {
                 merge::Strategy::Rebase
             } else {
@@ -694,7 +706,7 @@ fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool) -> Result
 fn command_find(dir: PathBuf, multi: bool, all: bool, body: bool) -> Result<()> {
     let ws = Workspace::from_path(dir.clone())?;
     let entries = if all {
-        ws.list_namespace_tasks(&ws.namespace())?
+        ws.list_namespace_tasks(&ws.namespace()?)?
     } else {
         ws.read_stack()?
     };
@@ -789,7 +801,10 @@ fn render_link(ws: &Workspace, link: &task::ParsedLink) -> String {
     match link {
         Internal(id) => match ws.task((*id).into()) {
             Ok(t) => format!("{id}: {}", t.title),
-            Err(_) => format!("{id}: <not bound in '{}'>", ws.namespace()),
+            Err(_) => match ws.namespace() {
+                Ok(ns) => format!("{id}: <not bound in '{ns}'>"),
+                Err(e) => format!("{id}: <invalid namespace: {e}>"),
+            },
         },
         Namespaced { namespace, id } => format!("{namespace}/{id}"),
         Foreign { prefix, id } => format!("{prefix}-{id} (foreign)"),
@@ -982,12 +997,12 @@ fn command_assign(
     };
     let (key, stable) = ws.assign_to_queue(task_id.into(), &target)?;
     println!("Assigned to {target} as {key}");
-    auto_push_refs(&ws, remote, ws.refs_for_assign_out(&target, &stable)?);
+    auto_push_refs(&ws, remote, ws.refs_for_assign_out(&target, &stable)?)?;
     Ok(())
 }
 
 fn pick_assign_target(ws: &Workspace) -> Result<String> {
-    let cur = ws.queue();
+    let cur = ws.queue()?;
     let candidates: Vec<String> = ws
         .list_queues()?
         .into_iter()
@@ -1013,8 +1028,8 @@ fn command_pull(dir: PathBuf, source: String, task_id: TaskId) -> Result<()> {
 
 fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
-    if let Some(r) = effective_remote(&ws, remote) {
-        let refs = ws.refs_for_inbox_pull();
+    if let Some(r) = effective_remote(&ws, remote)? {
+        let refs = ws.refs_for_inbox_pull()?;
         let _ = ws.git_fetch_refs(&r, &refs);
     }
     let inbox = ws.list_inbox()?;
@@ -1045,7 +1060,7 @@ fn command_accept(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
     let key = pick_inbox_key(&ws, key)?;
     let id = ws.accept_inbox(&key)?;
     println!("Accepted as {id}");
-    auto_push_refs(&ws, remote, ws.refs_for_accept_inbox());
+    auto_push_refs(&ws, remote, ws.refs_for_accept_inbox()?)?;
     Ok(())
 }
 
@@ -1059,7 +1074,7 @@ fn command_reject(dir: PathBuf, key: Option<String>, remote: Option<String>) -> 
         None => println!("Rejected {key}"),
     }
     if let Some(src) = source {
-        auto_push_refs(&ws, remote, ws.refs_for_reject_inbox(&src));
+        auto_push_refs(&ws, remote, ws.refs_for_reject_inbox(&src)?)?;
     }
     Ok(())
 }
@@ -1074,7 +1089,7 @@ fn command_export(
     let ws = Workspace::from_path(dir)?;
     let mut identifiers: Vec<TaskIdentifier> = ids.into_iter().map(Into::into).collect();
     if all {
-        for entry in ws.list_namespace_tasks(&ws.namespace())? {
+        for entry in ws.list_namespace_tasks(&ws.namespace()?)? {
             identifiers.push(TaskIdentifier::Id(entry.id));
         }
     }
@@ -1105,7 +1120,7 @@ fn command_import(dir: PathBuf, bind: bool) -> Result<()> {
     let outcomes = ws.import_task(&buf, bind)?;
     for res in &outcomes {
         let bound = if let Some(id) = res.bound_human {
-            format!(" bound as {}-{}", ws.namespace(), id)
+            format!(" bound as {}-{}", ws.namespace()?, id)
         } else {
             String::new()
         };
@@ -1122,9 +1137,19 @@ fn command_log(dir: PathBuf, target: LogTarget) -> Result<()> {
     let commits = match target {
         LogTarget::Task { task_id } => ws.log_task(task_id.into())?,
         LogTarget::Namespace { name } => {
-            ws.log_namespace(&name.unwrap_or_else(|| ws.namespace()))?
+            let target = match name {
+                Some(name) => name,
+                None => ws.namespace()?,
+            };
+            ws.log_namespace(&target)?
         }
-        LogTarget::Queue { name } => ws.log_queue(&name.unwrap_or_else(|| ws.queue()))?,
+        LogTarget::Queue { name } => {
+            let target = match name {
+                Some(name) => name,
+                None => ws.queue()?,
+            };
+            ws.log_queue(&target)?
+        }
     };
     for c in commits {
         // git-log --oneline-style: short oid, summary, then author + date below.
@@ -1231,10 +1256,13 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
         NamespaceAction::List => print_lines(ws.list_namespaces()?),
-        NamespaceAction::Current => println!("{}", ws.namespace()),
+        NamespaceAction::Current => println!("{}", ws.namespace()?),
         NamespaceAction::Switch { name } => return resolve_and_switch_namespace(&ws, name),
         NamespaceAction::Tasks { name } => {
-            let target = name.unwrap_or_else(|| ws.namespace());
+            let target = match name {
+                Some(name) => name,
+                None => ws.namespace()?,
+            };
             for entry in ws.list_namespace_tasks(&target)? {
                 println!("{}\t{}", entry.id, entry.title);
             }
@@ -1246,7 +1274,7 @@ fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
 fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
-        RemoteAction::Default => println!("{}", ws.default_remote()),
+        RemoteAction::Default => println!("{}", ws.default_remote()?),
         RemoteAction::SetDefault { name } => {
             ws.set_default_remote(&name)?;
             println!("Default remote set to '{name}'");
@@ -1259,7 +1287,7 @@ fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
         QueueAction::List => print_lines(ws.list_queues()?),
-        QueueAction::Current => println!("{}", ws.queue()),
+        QueueAction::Current => println!("{}", ws.queue()?),
         QueueAction::Create { name, can_pull } => {
             ws.create_queue(&name, Some(can_pull))?;
             println!("Created queue '{name}' (can-pull={can_pull})");
@@ -1274,7 +1302,7 @@ const NEW_NS_SENTINEL: &str = "<new>";
 fn resolve_and_switch_namespace(ws: &Workspace, name: Option<String>) -> Result<()> {
     let target = match name {
         Some(n) => n,
-        None => pick_with_new(&ws.list_namespaces()?, &ws.namespace(), "namespace")?,
+        None => pick_with_new(&ws.list_namespaces()?, &ws.namespace()?, "namespace")?,
     };
     ws.switch_namespace(&target)?;
     println!("Switched to namespace '{target}'");
@@ -1285,7 +1313,7 @@ fn resolve_and_switch_queue(ws: &Workspace, name: Option<String>) -> Result<()> 
     let target = match name {
         Some(n) => n,
         None => {
-            let picked = pick_with_new(&ws.list_queues()?, &ws.queue(), "queue")?;
+            let picked = pick_with_new(&ws.list_queues()?, &ws.queue()?, "queue")?;
             if !ws.list_queues()?.iter().any(|q| q == &picked) {
                 ws.create_queue(&picked, None)?;
             }
