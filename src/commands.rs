@@ -476,7 +476,13 @@ pub(crate) fn command_edit(dir: PathBuf, task_id: TaskId) -> Result<()> {
     if let Some((t, b)) = new_content.split_once('\n') {
         task.title = t.replace(['\n', '\r'], " ");
         task.body = b.trim_start_matches('\n').to_string();
-        ws.save_task(&task)?;
+        let outcome = ws.save_task_with_outcome(&task)?;
+        for dependency in outcome.created_dependencies {
+            eprintln!(
+                "Created blocking task {}\t{}",
+                dependency.task_ref, dependency.title
+            );
+        }
     }
     Ok(())
 }

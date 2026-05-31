@@ -729,6 +729,49 @@ fn show_renders_styled_body() {
 }
 
 #[test]
+fn edit_reports_new_blocking_tasks_on_stderr() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "parent"]);
+
+    let editor_dir = tempfile::tempdir().unwrap();
+    let editor = editor_dir.path().join("editor");
+    std::fs::write(
+        &editor,
+        "#!/bin/sh\ncat > \"$1\" <<'EOF'\nparent\n\nneeds [> prereq from editor <]\nEOF\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&editor).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&editor, perms).unwrap();
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .env("EDITOR", &editor)
+        .env_remove("VISUAL")
+        .args(["edit", "-T", "tsk-1"]);
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stderr.contains("Created blocking task [[tsk-2]]\tprereq from editor"),
+        "edit should report the newly created dependency on stderr: {stderr}"
+    );
+
+    let parent = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-R"]);
+    assert!(
+        parent.contains("needs [[tsk-2]]"),
+        "placeholder should be replaced in edited task: {parent}"
+    );
+    let child = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-R"]);
+    assert!(
+        child.contains("prereq from editor"),
+        "created dependency should be addressable: {child}"
+    );
+}
+
+#[test]
 fn share_into_namespace_round_trip() {
     let (_dir, alice, _bob) = setup_two_clones();
 

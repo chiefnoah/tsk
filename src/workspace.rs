@@ -136,6 +136,24 @@ pub struct Task {
     pub attributes: BTreeMap<String, Vec<String>>,
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct SaveTaskOutcome {
+    pub wrote: bool,
+    pub created_dependencies: Vec<CreatedDependency>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CreatedDependency {
+    pub task_ref: String,
+    pub title: String,
+}
+
+#[derive(Default)]
+struct DependencyExpansion {
+    content: String,
+    created: Vec<CreatedDependency>,
+}
+
 impl Display for Task {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}\n\n{}", self.title, self.body)
@@ -382,7 +400,7 @@ impl Workspace {
         false
     }
 
-    fn create_dependency_task(&self, title: String, source_ref: &str) -> Result<String> {
+    fn create_dependency_task(&self, title: String, source_ref: &str) -> Result<CreatedDependency> {
         let mut task = self.new_task(title, String::new())?;
         Self::add_link_property(
             &mut task.attributes,
@@ -391,8 +409,12 @@ impl Workspace {
         );
         self.save_task(&task)?;
         let dependency_ref = references::human_ref(&self.namespace()?, task.id);
+        let title = task.title.clone();
         self.push_task(task)?;
-        Ok(dependency_ref)
+        Ok(CreatedDependency {
+            task_ref: dependency_ref,
+            title,
+        })
     }
 
     fn expand_dependency_placeholders(
@@ -400,11 +422,12 @@ impl Workspace {
         content: &str,
         properties: &mut BTreeMap<String, Vec<String>>,
         source_id: Id,
-    ) -> Result<String> {
+    ) -> Result<DependencyExpansion> {
         let active_ns = self.namespace()?;
         let source_ref = references::human_ref(&active_ns, source_id);
         let mut out = String::with_capacity(content.len());
         let mut dependency_refs = BTreeSet::new();
+        let mut created = Vec::new();
         let mut cursor = 0;
 
         while let Some(start_rel) = content[cursor..].find("[>") {
@@ -421,9 +444,10 @@ impl Workspace {
             if title.is_empty() {
                 out.push_str(&content[start..end]);
             } else {
-                let dependency_ref = self.create_dependency_task(title, &source_ref)?;
-                out.push_str(&dependency_ref);
-                dependency_refs.insert(dependency_ref);
+                let dependency = self.create_dependency_task(title, &source_ref)?;
+                out.push_str(&dependency.task_ref);
+                dependency_refs.insert(dependency.task_ref.clone());
+                created.push(dependency);
             }
             cursor = end;
         }
@@ -433,7 +457,10 @@ impl Workspace {
             Self::add_link_property(properties, properties::DEPENDS_ON_KEY, dependency_ref);
         }
 
-        Ok(out)
+        Ok(DependencyExpansion {
+            content: out,
+            created,
+        })
     }
 
     /// Create a task — or, when the content matches an existing task,
@@ -476,11 +503,9 @@ impl Workspace {
                         "stable id mismatch: expected {stable}, created {created}"
                     )));
                 }
-                obj.content = self.expand_dependency_placeholders(
-                    &obj.content,
-                    &mut obj.properties,
-                    Id(human),
-                )?;
+                obj.content = self
+                    .expand_dependency_placeholders(&obj.content, &mut obj.properties, Id(human))?
+                    .content;
                 self.update_task_and_sync_refs(
                     &repo,
                     &stable,
@@ -526,8 +551,8 @@ impl Workspace {
                     &mut obj.properties,
                     Id(human),
                 )?;
-                let changed = expanded != obj.content;
-                obj.content = expanded;
+                let changed = expanded.content != obj.content;
+                obj.content = expanded.content;
                 changed
             } else {
                 false
@@ -562,8 +587,9 @@ impl Workspace {
         let mut obj = Self::read_task_obj(&repo, &stable)?;
         let human = namespace::assign_id(&repo, &active_ns, stable.clone(), "assign-id")?;
         if Self::has_dependency_placeholder(&obj.content) {
-            obj.content =
-                self.expand_dependency_placeholders(&obj.content, &mut obj.properties, Id(human))?;
+            obj.content = self
+                .expand_dependency_placeholders(&obj.content, &mut obj.properties, Id(human))?
+                .content;
             self.update_task_and_sync_refs(
                 &repo,
                 &stable,
@@ -625,6 +651,10 @@ impl Workspace {
     /// underlying `object::update` actually wrote a new commit (i.e. the
     /// resulting tree differs from the current tip); `false` on a no-op.
     pub fn save_task(&self, task: &Task) -> Result<bool> {
+        Ok(self.save_task_with_outcome(task)?.wrote)
+    }
+
+    pub fn save_task_with_outcome(&self, task: &Task) -> Result<SaveTaskOutcome> {
         let repo = self.repo()?;
         let content = if task.body.is_empty() {
             task.title.trim().to_string()
@@ -635,14 +665,22 @@ impl Workspace {
             content,
             properties: task.attributes.clone(),
         };
+        let mut created_dependencies = Vec::new();
         if Self::has_dependency_placeholder(&task_obj.content) {
-            task_obj.content = self.expand_dependency_placeholders(
+            let expansion = self.expand_dependency_placeholders(
                 &task_obj.content,
                 &mut task_obj.properties,
                 task.id,
             )?;
+            task_obj.content = expansion.content;
+            created_dependencies = expansion.created;
         }
-        self.update_task_and_sync_refs(&repo, &task.stable, &mut task_obj, task.id, "edit")
+        let wrote =
+            self.update_task_and_sync_refs(&repo, &task.stable, &mut task_obj, task.id, "edit")?;
+        Ok(SaveTaskOutcome {
+            wrote,
+            created_dependencies,
+        })
     }
 
     fn ensure_user_property_mutable(key: &str) -> Result<()> {
@@ -1832,6 +1870,32 @@ mod test {
             child.attributes.get(properties::BLOCKS_KEY),
             Some(&vec!["[[tsk-1]]".to_string()])
         );
+    }
+
+    #[test]
+    fn save_task_outcome_reports_created_dependencies() {
+        let (_d, ws) = fresh_workspace();
+        let parent = ws.new_task("parent".into(), "".into()).unwrap();
+        let parent_id = parent.id;
+        ws.push_task(parent).unwrap();
+
+        let mut parent = ws.task(TaskIdentifier::Id(parent_id)).unwrap();
+        parent.body = "needs [> prerequisite <] first".into();
+        let outcome = ws.save_task_with_outcome(&parent).unwrap();
+
+        assert!(outcome.wrote);
+        assert_eq!(
+            outcome.created_dependencies,
+            vec![CreatedDependency {
+                task_ref: "[[tsk-2]]".to_string(),
+                title: "prerequisite".to_string(),
+            }]
+        );
+
+        let parent = ws.task(TaskIdentifier::Id(parent_id)).unwrap();
+        let outcome = ws.save_task_with_outcome(&parent).unwrap();
+        assert!(!outcome.wrote);
+        assert!(outcome.created_dependencies.is_empty());
     }
 
     #[test]
