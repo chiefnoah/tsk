@@ -4,4 +4,6 @@ namespace::unassign_id exists but is marked #[allow(dead_code)]. Wire it up as
 tsk forget -T tsk-N: drop the namespace binding, delete the task ref, and clean
 property indices. Distinct from tsk drop which only flips status.
 
-This should be a subcommand under the namespace subcommand.
+This should be a subcommand under the namespace subcommand. The refs need to be
+updated with a special tombstone record type that indicates the commit history
+should be orphaned and eventually gc-ed.
