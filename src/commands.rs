@@ -286,12 +286,21 @@ pub(crate) fn command_show(
     task_id: TaskId,
     show_attrs: bool,
     stable_id: bool,
+    latest_commit: bool,
     raw: bool,
 ) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let task = ws.task(task_id.into())?;
     if stable_id {
         println!("{}", task.stable);
+        return Ok(());
+    }
+    if latest_commit {
+        let commits = ws.log_ref(&task.stable.refname())?;
+        let commit = commits
+            .first()
+            .ok_or_else(|| errors::Error::Parse(format!("task {} has no commits", task.stable)))?;
+        println!("{}", commit.oid);
         return Ok(());
     }
     if show_attrs && !task.attributes.is_empty() {
@@ -424,7 +433,7 @@ pub(crate) fn command_follow(
             if edit {
                 command_edit(dir, task_id)
             } else {
-                command_show(dir, task_id, false, false, false)
+                command_show(dir, task_id, false, false, false, false)
             }
         }
         task::ParsedLink::Namespaced { namespace, id } => {

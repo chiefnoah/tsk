@@ -109,6 +109,9 @@ enum Commands {
         /// Print the task's stable id instead of its body.
         #[arg(short = 'i', long = "stable-id", default_value_t = false)]
         stable_id: bool,
+        /// Print the task's latest commit instead of its body.
+        #[arg(short = 'c', long = "latest-commit", default_value_t = false)]
+        latest_commit: bool,
         /// Skip the rich-text parser and print the raw bytes verbatim.
         #[arg(short = 'R', default_value_t = false)]
         raw: bool,
@@ -513,8 +516,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             task_id,
             show_attrs,
             stable_id,
+            latest_commit,
             raw,
-        } => commands::command_show(dir, task_id, show_attrs, stable_id, raw),
+        } => commands::command_show(dir, task_id, show_attrs, stable_id, latest_commit, raw),
         Commands::Follow {
             task_id,
             link_index,

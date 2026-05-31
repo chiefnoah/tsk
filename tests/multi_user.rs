@@ -778,6 +778,46 @@ fn show_stable_id_prints_stable_id_only() {
 }
 
 #[test]
+fn show_latest_commit_prints_task_ref_tip_only() {
+    let (_dir, alice, _bob) = setup_two_clones();
+    tsk_ok(&alice, &["push", "commit title\n\ncommit body"]);
+    tsk_ok(&alice, &["prop", "add", "-T", "tsk-1", "priority", "high"]);
+
+    let stable = tsk_ok(&alice, &["show", "-T", "tsk-1", "--stable-id"]);
+    let expected = git(
+        &alice,
+        &["rev-parse", &format!("refs/tsk/tasks/{}", stable.trim())],
+    );
+
+    let commit = tsk_ok(&alice, &["show", "-T", "tsk-1", "--latest-commit"]);
+    assert_eq!(
+        commit.trim(),
+        expected.trim(),
+        "show --latest-commit should print the task ref tip"
+    );
+    assert_eq!(
+        commit.trim().len(),
+        40,
+        "commit should be full hex: {commit}"
+    );
+    assert!(
+        commit.trim().chars().all(|c| c.is_ascii_hexdigit()),
+        "commit should be hex: {commit}"
+    );
+    assert!(
+        !commit.contains("commit title") && !commit.contains("commit body"),
+        "show --latest-commit should not render task content: {commit}"
+    );
+
+    let with_attrs = tsk_ok(&alice, &["show", "-T", "tsk-1", "-x", "-c"]);
+    assert_eq!(
+        with_attrs.trim(),
+        expected.trim(),
+        "show -c should print only the commit even when -x is passed"
+    );
+}
+
+#[test]
 fn edit_reports_new_blocking_tasks_on_stderr() {
     use std::os::unix::fs::PermissionsExt;
 
