@@ -1,0 +1,3 @@
+Test dependency task creation
+
+This task exercises automatic dependency creation with [> dependency creation smoke child <].
