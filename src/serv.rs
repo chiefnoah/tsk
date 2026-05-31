@@ -1,9 +1,9 @@
 use crate::errors::Result;
 use crate::object::{self, StableId};
-use crate::workspace::{Id, LogCommit, Workspace};
+use crate::workspace::{CLOSED_ON_KEY, Id, LogCommit, Workspace};
 use crate::{namespace, queue};
 use clap::{Args, Parser};
-use git2::Repository;
+use git2::{Oid, Repository};
 use pulldown_cmark::{CowStr, Event, Options, Parser as MarkdownParser, html};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -349,7 +349,7 @@ fn render_properties(ws: &Workspace, page_num: usize) -> Result<String> {
         let value = row
             .value
             .as_deref()
-            .map(|value| render_tsk_markup(ws, &repo, value))
+            .map(|value| render_property_value(ws, &repo, &row.key, value))
             .transpose()?
             .unwrap_or_else(|| "<em>empty</em>".to_string());
         rows.push_str(&format!(
@@ -396,7 +396,7 @@ fn render_task(ws: &Workspace, stable: &str) -> Result<String> {
     for (key, values) in &task.properties {
         let rendered_values = values
             .iter()
-            .map(|v| render_tsk_markup(ws, &repo, v))
+            .map(|v| render_property_value(ws, &repo, key, v))
             .collect::<Result<Vec<_>>>()?
             .join(", ");
         props.push_str(&format!(
@@ -629,6 +629,38 @@ fn render_tsk_markup(ws: &Workspace, repo: &Repository, input: &str) -> Result<S
         i += ch.len_utf8();
     }
     Ok(out)
+}
+
+fn render_property_value(
+    ws: &Workspace,
+    repo: &Repository,
+    key: &str,
+    value: &str,
+) -> Result<String> {
+    if key == CLOSED_ON_KEY
+        && let Some(html) = render_git_commit(repo, value)
+    {
+        return Ok(html);
+    }
+    render_tsk_markup(ws, repo, value)
+}
+
+fn render_git_commit(repo: &Repository, value: &str) -> Option<String> {
+    let oid = Oid::from_str(value).ok()?;
+    let commit = repo.find_commit(oid).ok()?;
+    let short = &value[..value.len().min(12)];
+    let summary = commit.summary().ok().flatten().unwrap_or("<no summary>");
+    let author = commit.author();
+    let author = author.name().unwrap_or("unknown");
+    let when = format_unix(commit.time().seconds());
+    Some(format!(
+        "<span class=\"git-commit\"><code title=\"{}\">{}</code> {} <span class=\"meta\">{} ({})</span></span>",
+        h(value),
+        h(short),
+        h(summary),
+        h(author),
+        h(&when)
+    ))
 }
 
 fn render_internal_link(
@@ -967,6 +999,19 @@ mod tests {
         (dir, ws)
     }
 
+    fn create_git_commit(dir: &std::path::Path, message: &str) -> String {
+        let repo = Repository::open(dir).unwrap();
+        let blob = repo.blob(message.as_bytes()).unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("file.txt", blob, 0o100644).unwrap();
+        let tree_id = builder.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "t@e").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])
+            .unwrap()
+            .to_string()
+    }
+
     #[test]
     fn page_shell_includes_mobile_layout_rules() {
         let (_dir, ws) = fresh_workspace();
@@ -1029,6 +1074,39 @@ mod tests {
         assert!(
             html.contains("&lt;b&gt;not html&lt;/b&gt;"),
             "plain html-looking property value should stay escaped: {html}"
+        );
+    }
+
+    #[test]
+    fn closed_on_property_renders_git_commit() {
+        let (dir, ws) = fresh_workspace();
+        let closed_on = create_git_commit(dir.path(), "implement feature");
+        let short = &closed_on[..12];
+        let task = ws.new_task("closed task".into(), "".into()).unwrap();
+        let id = task.id;
+        let stable = task.stable.clone();
+        ws.push_task(task).unwrap();
+        ws.drop_with_closed_on(id.into(), Some(closed_on.clone()))
+            .unwrap();
+
+        let task_html = render_task(&ws, &stable.0).unwrap();
+        assert!(
+            task_html.contains(&format!(
+                "<span class=\"git-commit\"><code title=\"{closed_on}\">{short}</code> implement feature"
+            )),
+            "task page should render closed-on as a git commit: {task_html}"
+        );
+        assert!(
+            task_html.contains("<span class=\"meta\">Test ("),
+            "task page should include commit metadata: {task_html}"
+        );
+
+        let properties_html = render_properties(&ws, 1).unwrap();
+        assert!(
+            properties_html.contains(&format!(
+                "<span class=\"git-commit\"><code title=\"{closed_on}\">{short}</code> implement feature"
+            )),
+            "properties page should render closed-on as a git commit: {properties_html}"
         );
     }
 
