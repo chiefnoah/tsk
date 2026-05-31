@@ -587,7 +587,11 @@ fn dispatch(cli: Cli) -> Result<()> {
 /// exit code so callers (the `tsk` and `git-tsk` bins) can hand it to
 /// `std::process::exit`.
 pub fn run() -> i32 {
-    match dispatch(Cli::parse()) {
+    result_exit_code(dispatch(Cli::parse()))
+}
+
+fn result_exit_code(result: Result<()>) -> i32 {
+    match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");
@@ -598,11 +602,5 @@ pub fn run() -> i32 {
 
 /// Dedicated entry point for the `tsk-serv` binary.
 pub fn run_serv() -> i32 {
-    match serv::run() {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("{e}");
-            2
-        }
-    }
+    result_exit_code(serv::run())
 }
