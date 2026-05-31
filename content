@@ -2,3 +2,5 @@ Add automated cargo publish on tag
 
 it should only publish if tests pass. A token for crates.io will be set as an
 enc var.
+
+Use tangled CI. See the [docs](https://docs.tangled.org/spindles#pipelines) for more info.
