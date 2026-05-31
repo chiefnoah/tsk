@@ -82,10 +82,13 @@ enum Commands {
     },
     /// Print the active queue's stack (top-of-stack first).
     List {
+        /// Show all queued tasks instead of truncating at the default count.
         #[arg(short = 'a', default_value_t = false)]
         all: bool,
+        /// Maximum number of queued tasks to print unless `--all` is set.
         #[arg(short = 'c', default_value_t = 10)]
         count: usize,
+        /// Print only task ids.
         #[arg(short = 'i', default_value_t = false)]
         ids_only: bool,
     },
