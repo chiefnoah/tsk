@@ -1,0 +1,3 @@
+Add web UI for property hook scripts
+
+Expose namespace property hooks in tsk-serv so users can inspect configured prop-hooks, see which scripts are executable, and navigate to examples or future edit flows without reading raw git trees.
