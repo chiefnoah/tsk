@@ -252,7 +252,8 @@ fn render_namespace(ws: &Workspace, name: &str, page_num: usize) -> Result<Strin
     namespace::validate_name(name)?;
     let repo = repo(ws)?;
     let ns = namespace::read(&repo, name)?;
-    let mapping: Vec<_> = ns.mapping.into_iter().collect();
+    let mut mapping: Vec<_> = ns.mapping.into_iter().collect();
+    mapping.reverse();
     let page_slice = paginate(&mapping, page_num);
     let mut rows = String::new();
     for (human, stable) in page_slice.items {
@@ -1512,12 +1513,12 @@ if idx == 0 {
             "first page should show pagination: {first}"
         );
         assert!(
-            first.contains("namespace-task-00"),
-            "first namespace binding should be on first page: {first}"
+            first.contains("namespace-task-26"),
+            "last namespace binding should be on first page: {first}"
         );
         assert!(
-            !first.contains("namespace-task-26"),
-            "last namespace binding should not be on first page: {first}"
+            !first.contains("namespace-task-00"),
+            "first namespace binding should not be on first page: {first}"
         );
 
         let second = render_namespace(&ws, "tsk", 2).unwrap();
@@ -1526,8 +1527,8 @@ if idx == 0 {
             "second page should show pagination: {second}"
         );
         assert!(
-            second.contains("namespace-task-26"),
-            "last namespace binding should be on second page: {second}"
+            second.contains("namespace-task-00"),
+            "first namespace binding should be on second page: {second}"
         );
         assert!(
             second.contains("<a href=\"/namespaces/tsk?page=1\">Previous</a>"),
