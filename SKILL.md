@@ -164,16 +164,12 @@ follow-ups in an agent queue when they are not part of the current request.
 ```sh
 tsk queue current
 tsk queue list
-tsk queue create claude
-tsk queue create review -p
 tsk queue switch claude
 tsk --queue review list
 ```
 
 - `queue current` prints the active queue.
 - `queue list` lists known queues.
-- `queue create <name>` creates a queue; add `-p` to allow other queues to pull
-  from it.
 - `queue switch <name>` changes the active queue.
 - `--queue <name>` overrides the active queue for one invocation.
 

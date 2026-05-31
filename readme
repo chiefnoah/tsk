@@ -71,6 +71,11 @@ Tasks are marked as "completed" and removed from the index with the `tsk drop`
 command. They will remain in the .tsk/archive folder, but are excluded from
 fuzzy searches by default.
 
+Queues are independent ordered stacks. Create one with `tsk queue create NAME`;
+new queues default to `can-pull=false`, which prevents other queues from
+pulling tasks out of them. Use `tsk queue create -p NAME` to create a pullable
+queue, or `tsk queue can-pull NAME true|false` to change that flag later.
+
 The priority of a task may be manipulated in any of several ways:
 
 `tsk swap` swaps the top two task on the stack
