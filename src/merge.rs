@@ -17,9 +17,9 @@
 //! the committer to the local user — same shape as `git rebase`.
 //!
 //! True content conflicts (both sides edited the same blob in incompatible
-//! ways) abort that one task's reconciliation and leave the local ref
-//! untouched. The conflict surfaces in the pull summary so the user can
-//! re-run with the other strategy or hand-resolve.
+//! ways) are committed with conflict markers in the task blob. That keeps the
+//! two-parent merge history auditable while letting the user resolve with the
+//! normal task/property editing commands.
 
 use crate::errors::Result;
 use crate::namespace::{self, NS_REF_PREFIX, Namespace};
@@ -27,7 +27,7 @@ use crate::object::{self, StableId, TASK_REF_PREFIX};
 use crate::properties;
 use crate::queue::{self, QUEUE_REF_PREFIX, Queue};
 use crate::references;
-use git2::{Commit, Oid, Repository};
+use git2::{Commit, IndexEntry, Oid, Repository, Tree};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,7 +49,7 @@ pub enum ReconKind {
     Merged,
     /// Replayed local-only commits onto the remote tip.
     Rebased,
-    /// Reconciliation aborted due to overlapping edits; local ref unchanged.
+    /// Wrote a merge commit containing conflict markers for overlapping edits.
     Conflict,
 }
 
@@ -155,10 +155,39 @@ fn merge_strategy(
 ) -> Result<ReconKind> {
     let base_oid = repo.merge_base(local, remote)?;
     let base_tree = repo.find_commit(base_oid)?.tree()?;
-    let our_tree = repo.find_commit(local)?.tree()?;
-    let their_tree = repo.find_commit(remote)?.tree()?;
+    let local_commit = repo.find_commit(local)?;
+    let remote_commit = repo.find_commit(remote)?;
+    let our_tree = local_commit.tree()?;
+    let their_tree = remote_commit.tree()?;
     let mut idx = repo.merge_trees(&base_tree, &our_tree, &their_tree, None)?;
     if idx.has_conflicts() {
+        let resolution = write_conflict_resolution_tree(
+            repo,
+            &base_tree,
+            &our_tree,
+            &their_tree,
+            &mut idx,
+            local_commit.time().seconds(),
+            remote_commit.time().seconds(),
+        )?;
+        let sig = object::signature(repo);
+        let parents: Vec<&Commit> = vec![&local_commit, &remote_commit];
+        let short = &stable.0[..12.min(stable.0.len())];
+        let mut message = format!("merge-conflict tsk-{short}");
+        if !resolution.property_logs.is_empty() {
+            message.push_str("\n\n");
+            message.push_str(&resolution.property_logs.join("\n"));
+        }
+        let merge_oid = repo.commit(
+            None,
+            &sig,
+            &sig,
+            &message,
+            &repo.find_tree(resolution.tree_oid)?,
+            &parents,
+        )?;
+        repo.reference(&stable.refname(), merge_oid, true, "merge-conflict")?;
+        reindex_merged_task(repo, stable)?;
         return Ok(ReconKind::Conflict);
     }
     let tree_oid = idx.write_tree_to(repo)?;
@@ -176,7 +205,130 @@ fn merge_strategy(
         &parents,
     )?;
     repo.reference(&stable.refname(), merge_oid, true, "merge")?;
+    reindex_merged_task(repo, stable)?;
     Ok(ReconKind::Merged)
+}
+
+fn reindex_merged_task(repo: &Repository, stable: &StableId) -> Result<()> {
+    if let Some(task) = object::read(repo, stable)? {
+        properties::reindex_task(repo, stable, &task.properties)?;
+    }
+    Ok(())
+}
+
+struct ConflictResolution {
+    tree_oid: Oid,
+    property_logs: Vec<String>,
+}
+
+fn write_conflict_resolution_tree(
+    repo: &Repository,
+    base_tree: &Tree<'_>,
+    our_tree: &Tree<'_>,
+    their_tree: &Tree<'_>,
+    idx: &mut git2::Index,
+    local_time: i64,
+    remote_time: i64,
+) -> Result<ConflictResolution> {
+    let mut tb = repo.treebuilder(None)?;
+    for entry in idx.iter().filter(|entry| index_stage(entry) == 0) {
+        tb.insert(
+            path_str(&entry)?,
+            entry.id,
+            i32::try_from(entry.mode).unwrap_or(0o100644),
+        )?;
+    }
+
+    let mut property_logs = Vec::new();
+    let conflicts = idx.conflicts()?;
+    for conflict in conflicts {
+        let conflict = conflict?;
+        let path = conflict
+            .our
+            .as_ref()
+            .or(conflict.their.as_ref())
+            .or(conflict.ancestor.as_ref())
+            .ok_or_else(|| crate::errors::Error::Parse("empty merge conflict entry".into()))?;
+        let path = path_str(path)?.to_string();
+        let ours = conflict_blob(repo, our_tree, conflict.our.as_ref(), &path)?;
+        let base = conflict_blob(repo, base_tree, conflict.ancestor.as_ref(), &path)?;
+        let theirs = conflict_blob(repo, their_tree, conflict.their.as_ref(), &path)?;
+        if path == object::CONTENT_FILE {
+            let ours = String::from_utf8_lossy(ours.as_deref().unwrap_or_default());
+            let base = String::from_utf8_lossy(base.as_deref().unwrap_or_default());
+            let theirs = String::from_utf8_lossy(theirs.as_deref().unwrap_or_default());
+            let bytes = conflict_markers(&ours, Some(&base), &theirs).into_bytes();
+            let oid = repo.blob(&bytes)?;
+            tb.insert(path.as_str(), oid, 0o100644)?;
+        } else {
+            let (chosen, chosen_side) = if local_time > remote_time {
+                (ours.as_deref(), "ours")
+            } else {
+                (theirs.as_deref(), "theirs")
+            };
+            if let Some(bytes) = chosen {
+                let oid = repo.blob(bytes)?;
+                tb.insert(path.as_str(), oid, 0o100644)?;
+            }
+            property_logs.push(format!(
+                "property conflict {path}: chose {chosen_side} by timestamp \
+                 (ours={local_time}, theirs={remote_time})"
+            ));
+        }
+    }
+
+    Ok(ConflictResolution {
+        tree_oid: tb.write()?,
+        property_logs,
+    })
+}
+
+fn path_str(entry: &IndexEntry) -> Result<&str> {
+    std::str::from_utf8(&entry.path)
+        .map_err(|err| crate::errors::Error::Parse(format!("invalid task tree path: {err}")))
+}
+
+fn index_stage(entry: &IndexEntry) -> u16 {
+    (entry.flags >> 12) & 0x3
+}
+
+fn conflict_blob(
+    repo: &Repository,
+    tree: &Tree<'_>,
+    entry: Option<&IndexEntry>,
+    path: &str,
+) -> Result<Option<Vec<u8>>> {
+    if entry.is_none() {
+        return Ok(None);
+    }
+    let Ok(entry) = tree.get_path(std::path::Path::new(path)) else {
+        return Ok(None);
+    };
+    let blob = entry.to_object(repo)?.peel_to_blob()?;
+    Ok(Some(blob.content().to_vec()))
+}
+
+fn conflict_markers(ours: &str, base: Option<&str>, theirs: &str) -> String {
+    let mut out = String::new();
+    out.push_str("<<<<<<< ours\n");
+    out.push_str(ours);
+    ensure_trailing_newline(&mut out);
+    if let Some(base) = base {
+        out.push_str("||||||| base\n");
+        out.push_str(base);
+        ensure_trailing_newline(&mut out);
+    }
+    out.push_str("=======\n");
+    out.push_str(theirs);
+    ensure_trailing_newline(&mut out);
+    out.push_str(">>>>>>> theirs\n");
+    out
+}
+
+fn ensure_trailing_newline(s: &mut String) {
+    if !s.ends_with('\n') {
+        s.push('\n');
+    }
 }
 
 fn rebase_strategy(
@@ -627,7 +779,7 @@ pub fn fast_forward_non_task_refs(repo: &Repository, remote: &str) -> Result<()>
 mod test {
     use super::*;
     use crate::object::{self, Task};
-    use git2::Signature;
+    use git2::{Signature, Time};
     use std::path::Path;
 
     fn init_repo(p: &Path) -> Repository {
@@ -701,6 +853,36 @@ mod test {
         stable
     }
 
+    fn commit_task_at(
+        repo: &Repository,
+        parent: Oid,
+        task: &Task,
+        message: &str,
+        author: &str,
+        seconds: i64,
+    ) -> Oid {
+        let content_oid = repo.blob(task.content.as_bytes()).unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("content", content_oid, 0o100644).unwrap();
+        for (k, vs) in &task.properties {
+            let body = crate::propvalue::encode(vs);
+            let oid = repo.blob(&body).unwrap();
+            tb.insert(k.as_str(), oid, 0o100644).unwrap();
+        }
+        let tree_oid = tb.write().unwrap();
+        let sig = Signature::new(author, "test@example.com", &Time::new(seconds, 0)).unwrap();
+        let parent = repo.find_commit(parent).unwrap();
+        repo.commit(
+            None,
+            &sig,
+            &sig,
+            message,
+            &repo.find_tree(tree_oid).unwrap(),
+            &[&parent],
+        )
+        .unwrap()
+    }
+
     #[test]
     fn merge_clean_when_edits_dont_overlap() {
         let dir = tempfile::tempdir().unwrap();
@@ -760,7 +942,7 @@ mod test {
     }
 
     #[test]
-    fn conflict_leaves_local_unchanged() {
+    fn conflict_writes_merge_commit_with_markers() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
         let stable = object::create(&repo, &Task::new("v0"), "create").unwrap();
@@ -772,11 +954,6 @@ mod test {
         // Local: change content to "v-local".
         let mut t_local = Task::new("v-local");
         object::update(&repo, &stable, &t_local, "edit-local").unwrap();
-        let local_tip = repo
-            .find_reference(&stable.refname())
-            .unwrap()
-            .target()
-            .unwrap();
         // Remote: branch off root with "v-remote".
         t_local.content = "v-remote".into();
         let content_oid = repo.blob(t_local.content.as_bytes()).unwrap();
@@ -806,13 +983,72 @@ mod test {
         .unwrap();
         let recs = reconcile_task_refs(&repo, "origin", Strategy::Merge).unwrap();
         assert_eq!(recs[0].kind, ReconKind::Conflict);
-        // Local ref unchanged.
         let head = repo
             .find_reference(&stable.refname())
             .unwrap()
             .target()
             .unwrap();
-        assert_eq!(head, local_tip);
+        let merge = repo.find_commit(head).unwrap();
+        assert_eq!(merge.parent_count(), 2);
+        let task = object::read(&repo, &stable).unwrap().unwrap();
+        assert!(task.content.contains("<<<<<<< ours\nv-local\n"));
+        assert!(task.content.contains("||||||| base\nv0\n"));
+        assert!(task.content.contains("=======\nv-remote\n"));
+        assert!(task.content.contains(">>>>>>> theirs\n"));
+    }
+
+    #[test]
+    fn property_conflict_chooses_newer_timestamp_and_reindexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        let stable = object::create(&repo, &Task::new("shared"), "create").unwrap();
+        let root_oid = repo
+            .find_reference(&stable.refname())
+            .unwrap()
+            .target()
+            .unwrap();
+
+        let mut local_task = Task::new("shared");
+        local_task
+            .properties
+            .insert("priority".into(), vec!["local".into()]);
+        let local_oid = commit_task_at(&repo, root_oid, &local_task, "edit-local", "Local", 100);
+        repo.reference(&stable.refname(), local_oid, true, "test-local")
+            .unwrap();
+
+        let mut remote_task = Task::new("shared");
+        remote_task
+            .properties
+            .insert("priority".into(), vec!["remote".into()]);
+        let remote_oid =
+            commit_task_at(&repo, root_oid, &remote_task, "edit-remote", "Remote", 200);
+        repo.reference(
+            &format!("refs/tsk-fetched/origin/tasks/{}", stable.0),
+            remote_oid,
+            true,
+            "test-remote",
+        )
+        .unwrap();
+
+        let recs = reconcile_task_refs(&repo, "origin", Strategy::Merge).unwrap();
+        assert_eq!(recs[0].kind, ReconKind::Conflict);
+
+        let task = object::read(&repo, &stable).unwrap().unwrap();
+        let values = task.properties.get("priority").unwrap();
+        assert_eq!(values, &vec!["remote"]);
+
+        let indexed = properties::read(&repo, "priority").unwrap();
+        assert_eq!(indexed.get(&stable), Some(values));
+
+        let head = repo
+            .find_reference(&stable.refname())
+            .unwrap()
+            .target()
+            .unwrap();
+        let merge = repo.find_commit(head).unwrap();
+        let message = merge.message().unwrap();
+        assert!(message.contains("property conflict priority: chose theirs by timestamp"));
+        assert!(message.contains("ours=100, theirs=200"));
     }
 
     #[test]
