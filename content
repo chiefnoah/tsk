@@ -1,11 +1,1 @@
-<<<<<<< ours
 assign should fuzzy find target queue
-
-This is a bad edit
-||||||| base
-assign should fuzzy find target queue
-=======
-assign should fuzzy find target queue
-
-this is another edit
->>>>>>> theirs
