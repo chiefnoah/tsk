@@ -173,28 +173,42 @@ pub fn list_names(repo: &Repository) -> Result<Vec<String>> {
 /// Push `stable` onto the top of `name`'s index. Idempotent: if already
 /// present, moves it to the top.
 pub fn push_top(repo: &Repository, name: &str, stable: StableId, message: &str) -> Result<()> {
-    let mut q = read(repo, name)?;
-    q.index.retain(|s| s != &stable);
-    q.index.insert(0, stable);
-    write(repo, name, &q, message)
+    mutate_index(repo, name, message, |index| {
+        index.retain(|s| s != &stable);
+        index.insert(0, stable);
+        ((), true)
+    })
 }
 
 pub fn push_bottom(repo: &Repository, name: &str, stable: StableId, message: &str) -> Result<()> {
-    let mut q = read(repo, name)?;
-    q.index.retain(|s| s != &stable);
-    q.index.push(stable);
-    write(repo, name, &q, message)
+    mutate_index(repo, name, message, |index| {
+        index.retain(|s| s != &stable);
+        index.push(stable);
+        ((), true)
+    })
 }
 
 pub fn remove(repo: &Repository, name: &str, stable: &StableId, message: &str) -> Result<bool> {
+    mutate_index(repo, name, message, |index| {
+        let len = index.len();
+        index.retain(|s| s != stable);
+        let removed = index.len() != len;
+        (removed, removed)
+    })
+}
+
+fn mutate_index<T>(
+    repo: &Repository,
+    name: &str,
+    message: &str,
+    f: impl FnOnce(&mut Vec<StableId>) -> (T, bool),
+) -> Result<T> {
     let mut q = read(repo, name)?;
-    let len = q.index.len();
-    q.index.retain(|s| s != stable);
-    if q.index.len() == len {
-        return Ok(false);
+    let (out, changed) = f(&mut q.index);
+    if changed {
+        write(repo, name, &q, message)?;
     }
-    write(repo, name, &q, message)?;
-    Ok(true)
+    Ok(out)
 }
 
 /// Stable inbox key for a `(source-queue, sequence)` pair so re-assigns
