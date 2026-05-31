@@ -3,14 +3,14 @@ Typed / validated properties
 All property values are free-text strings, however it might be valuable to
 support user-defined restrictions and transformations on these values. One
 potentially option is to support an embedded scripting language (or just shell
-scripts in a folder in the namespace tree) that are analogous to git hooks that
+scripts in a folder in the .git dir) that are analogous to git hooks that
 can be invoked when a property is set/changed/removed and have the opportunity
 to "veto" or error the operation or transfer the value. For example, this could
 be used to enforce that property a is always set to a single value that is an
 internal link, and reject set operations that do not validate. Another use case
 is to enforce an ordering to the values of a property, such as lexical sorting.
 
-For a first pass of this, we should add a folder to the namespace tree called
+For a first pass of this, we should add a folder to the .git/tsk/ dir called
 prop-hooks with subfolders on-create, on-update, on-delete. The folders are
 searched for an executable file/script of the name of the property being
 updated. These scripts expect the value(s) to be written to stdin and to write
@@ -21,6 +21,7 @@ scripts should be supplied, but not marked executable (the tool should ignore
 these).
 
 We need to be mindful of security concerns when it comes to executing scripts
-that can be modified with a git push.
+that can be modified with a git push. Instead of storing the scripts in the
+namespace tree, we should store them in .git/tsk/prop-hooks.
 
 We should create other tasks to create a UI for managing/editing these scripts
