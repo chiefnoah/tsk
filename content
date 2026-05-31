@@ -1,0 +1,5 @@
+Support EDITOR and VISUAL values with arguments in merge conflict editor
+
+Review finding: in src/merge.rs around line 238, the conflict editor path passes VISUAL or EDITOR as the executable name directly.
+
+Handle common editor commands that include arguments, such as 'code --wait', 'vim -f', and 'emacsclient -c'. Match the behavior used by existing edit paths or otherwise invoke/split the configured editor command in a shell-compatible way, then add regression coverage.
