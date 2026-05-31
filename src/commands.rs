@@ -905,6 +905,11 @@ pub(crate) fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
             ws.create_queue(&name, Some(can_pull))?;
             println!("Created queue '{name}' (can-pull={can_pull})");
         }
+        QueueAction::CanPull { name, can_pull } => {
+            let can_pull = parse_bool_arg(&can_pull, "can-pull")?;
+            ws.set_queue_can_pull(&name, can_pull)?;
+            println!("Set queue '{name}' can-pull={can_pull}");
+        }
         QueueAction::Delete { name, remote } => {
             let deleted = ws.delete_queue(&name)?;
             if deleted {
@@ -922,6 +927,16 @@ pub(crate) fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
         QueueAction::Switch { name } => return resolve_and_switch_queue(&ws, name),
     }
     Ok(())
+}
+
+fn parse_bool_arg(value: &str, label: &str) -> Result<bool> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(errors::Error::Parse(format!(
+            "{label} must be 'true' or 'false'"
+        ))),
+    }
 }
 
 const NEW_NS_SENTINEL: &str = "<new>";

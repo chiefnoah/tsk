@@ -407,6 +407,11 @@ pub(crate) enum QueueAction {
         #[arg(short = 'p', default_value_t = false)]
         can_pull: bool,
     },
+    /// Change whether tasks can be pulled out of this queue.
+    CanPull {
+        name: String,
+        can_pull: String,
+    },
     /// Delete a queue. Refuses the default queue. Use -R to also delete it remotely.
     Delete {
         name: String,

@@ -321,6 +321,14 @@ impl Workspace {
         queue::write(&repo, name, &q, "create queue")
     }
 
+    pub fn set_queue_can_pull(&self, name: &str, can_pull: bool) -> Result<()> {
+        queue::validate_name(name)?;
+        let repo = self.repo()?;
+        let mut q = queue::read(&repo, name)?;
+        q.can_pull = can_pull;
+        queue::write(&repo, name, &q, "set queue can-pull")
+    }
+
     pub fn delete_queue(&self, name: &str) -> Result<bool> {
         queue::validate_name(name)?;
         if name == queue::DEFAULT_QUEUE {
@@ -2050,13 +2058,27 @@ mod test {
         ws.switch_queue("tsk").unwrap();
         let r = ws.pull_from_queue("private", TaskIdentifier::Id(id));
         assert!(r.is_err(), "pull from can-pull=false queue must fail");
-        ws.create_queue("private", Some(true)).unwrap();
+        ws.set_queue_can_pull("private", true).unwrap();
         let pulled = ws
             .pull_from_queue("private", TaskIdentifier::Id(id))
             .unwrap();
         assert_eq!(pulled.0, id.0);
         let stack = ws.read_stack().unwrap();
         assert_eq!(stack.len(), 1);
+    }
+
+    #[test]
+    fn set_queue_can_pull_updates_existing_queue() {
+        let (_d, ws) = fresh_workspace();
+        ws.create_queue("review", Some(false)).unwrap();
+        let repo = ws.repo().unwrap();
+        assert!(!queue::read(&repo, "review").unwrap().can_pull);
+
+        ws.set_queue_can_pull("review", true).unwrap();
+        assert!(queue::read(&repo, "review").unwrap().can_pull);
+
+        ws.set_queue_can_pull("review", false).unwrap();
+        assert!(!queue::read(&repo, "review").unwrap().can_pull);
     }
 
     #[test]

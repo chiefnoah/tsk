@@ -713,6 +713,46 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
 }
 
 #[test]
+fn queue_set_can_pull_changes_pull_permission() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["queue", "create", "private"]);
+    tsk_ok(dir.path(), &["queue", "switch", "private"]);
+    tsk_ok(dir.path(), &["push", "private task"]);
+    tsk_ok(dir.path(), &["queue", "switch", "tsk"]);
+
+    let (code, _stdout, stderr) = tsk(dir.path(), &["pull", "private", "-T", "tsk-1"]);
+    assert_ne!(code, 0, "pull from can-pull=false queue should fail");
+    assert!(
+        stderr.contains("can-pull=false"),
+        "failure should mention can-pull=false: {stderr}"
+    );
+
+    let output = tsk_ok(dir.path(), &["queue", "can-pull", "private", "true"]);
+    assert!(
+        output.contains("Set queue 'private' can-pull=true"),
+        "can-pull should report updated value: {output}"
+    );
+    let pulled = tsk_ok(dir.path(), &["pull", "private", "-T", "tsk-1"]);
+    assert!(
+        pulled.contains("Pulled tsk-1"),
+        "pull should succeed after enabling can-pull: {pulled}"
+    );
+
+    tsk_ok(dir.path(), &["queue", "can-pull", "private", "false"]);
+    tsk_ok(dir.path(), &["queue", "switch", "private"]);
+    tsk_ok(dir.path(), &["push", "second private task"]);
+    tsk_ok(dir.path(), &["queue", "switch", "tsk"]);
+    let (code, _stdout, stderr) = tsk(dir.path(), &["pull", "private", "-T", "tsk-2"]);
+    assert_ne!(code, 0, "pull should fail again after disabling can-pull");
+    assert!(
+        stderr.contains("can-pull=false"),
+        "failure should mention can-pull=false: {stderr}"
+    );
+}
+
+#[test]
 fn show_renders_styled_body() {
     let (_dir, alice, _bob) = setup_two_clones();
     // Push a body that exercises every inline style.
