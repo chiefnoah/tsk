@@ -20,4 +20,7 @@ lifecycle and values for those are maintained by the tsk command itself. Example
 scripts should be supplied, but not marked executable (the tool should ignore
 these).
 
+We need to be mindful of security concerns when it comes to executing scripts
+that can be modified with a git push.
+
 We should create other tasks to create a UI for managing/editing these scripts
