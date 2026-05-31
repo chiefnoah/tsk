@@ -1,6 +1,6 @@
 use crate::errors::{self, Result};
 use crate::parse_id;
-use crate::workspace::{self, Id, TaskIdentifier, Workspace};
+use crate::workspace::{self, Id, InboxItem, LogCommit, TaskIdentifier, Workspace};
 use crate::{LogTarget, NamespaceAction, PropAction, QueueAction, RemoteAction, TaskId, Title};
 use crate::{fzf, merge, queue, task};
 use edit::edit as open_editor;
@@ -92,6 +92,29 @@ fn auto_push_refs(ws: &Workspace, remote: Option<String>, refs: Vec<String>) -> 
     Ok(())
 }
 
+fn print_two_col_row(left: impl std::fmt::Display, right: impl std::fmt::Display) {
+    println!("{left}\t{right}");
+}
+
+fn render_two_col_row(left: impl std::fmt::Display, right: impl std::fmt::Display) -> String {
+    format!("{left}\t{right}")
+}
+
+fn print_key_value_row(key: impl std::fmt::Display, value: impl std::fmt::Display) {
+    println!("{key}\t{value}");
+}
+
+fn print_inbox_row(item: &InboxItem) {
+    println!("{}\tfrom {}\t{}", item.key, item.source_queue, item.title);
+}
+
+fn print_log_row(commit: &LogCommit) {
+    // git-log --oneline-style: short oid, summary, then author + date below.
+    let short = &commit.oid[..commit.oid.len().min(8)];
+    println!("{short} {}", commit.summary);
+    println!("    {} ({})", commit.author, format_unix(commit.timestamp));
+}
+
 fn read_title_and_body(
     edit: bool,
     body: Option<String>,
@@ -162,7 +185,7 @@ pub(crate) fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool
         if ids_only {
             println!("{}", entry.id);
         } else {
-            println!("{}\t{}", entry.id, entry.title);
+            print_two_col_row(entry.id, &entry.title);
         }
     }
     Ok(())
@@ -192,7 +215,7 @@ fn task_search_lines(
 ) -> Result<Vec<String>> {
     let mut lines = Vec::new();
     for entry in entries {
-        let mut line = format!("{}\t{}", entry.id, single_line(&entry.title));
+        let mut line = render_two_col_row(entry.id, single_line(&entry.title));
         if body {
             let task = ws.task(TaskIdentifier::Id(entry.id))?;
             line.push('\t');
@@ -390,7 +413,7 @@ pub(crate) fn command_follow(
                 .links
                 .iter()
                 .enumerate()
-                .map(|(i, link)| format!("{}\t{}", i + 1, render_follow_link(link)))
+                .map(|(i, link)| render_two_col_row(i + 1, render_follow_link(link)))
                 .collect();
             let selected = fzf::select_raw(
                 lines,
@@ -416,7 +439,7 @@ pub(crate) fn command_follow(
         }
         (None, false) => {
             for (i, link) in parsed_task.links.iter().enumerate() {
-                println!("{}\t{}", i + 1, render_follow_link(link));
+                print_two_col_row(i + 1, render_follow_link(link));
             }
             return Ok(());
         }
@@ -579,7 +602,7 @@ pub(crate) fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> 
         return Ok(());
     }
     for item in inbox {
-        println!("{}\tfrom {}\t{}", item.key, item.source_queue, item.title);
+        print_inbox_row(&item);
     }
     Ok(())
 }
@@ -700,11 +723,8 @@ pub(crate) fn command_log(dir: PathBuf, target: LogTarget) -> Result<()> {
             ws.log_queue(&target)?
         }
     };
-    for c in commits {
-        // git-log --oneline-style: short oid, summary, then author + date below.
-        let short = &c.oid[..c.oid.len().min(8)];
-        println!("{short} {}", c.summary);
-        println!("    {} ({})", c.author, format_unix(c.timestamp));
+    for commit in commits {
+        print_log_row(&commit);
     }
     Ok(())
 }
@@ -750,7 +770,7 @@ pub(crate) fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
                     println!("{key}");
                 } else {
                     for value in values {
-                        println!("{key}\t{value}");
+                        print_key_value_row(key, value);
                     }
                 }
             }
@@ -804,7 +824,7 @@ pub(crate) fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
                 }
             };
             for (id, _stable, title) in ws.find_by_property(&key, value.as_deref())? {
-                println!("{id}\t{title}");
+                print_two_col_row(id, title);
             }
         }
     }
@@ -823,7 +843,7 @@ pub(crate) fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result
         NamespaceAction::List { head } => {
             if head {
                 for name in ws.list_namespaces()? {
-                    println!("{}\t{}", name, ws.namespace_head_commit(&name)?);
+                    print_key_value_row(&name, ws.namespace_head_commit(&name)?);
                 }
             } else {
                 print_lines(ws.list_namespaces()?);
@@ -844,7 +864,7 @@ pub(crate) fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result
                 None => ws.namespace()?,
             };
             for entry in ws.list_namespace_tasks(&target)? {
-                println!("{}\t{}", entry.id, entry.title);
+                print_two_col_row(entry.id, entry.title);
             }
         }
         NamespaceAction::Props { name } => {
