@@ -1,0 +1,5 @@
+Refresh calculated link properties after resolving merge body conflicts
+
+Review finding: in src/merge.rs around lines 202-206, resolved editor content is committed directly and reindex_merged_task only reindexes property blobs already present in the merge tree.
+
+Fix the conflict-editor path so when the resolved body changes [[tsk-N]] links, calculated references and referenced-by properties are refreshed before commit/finalization. Add coverage showing prop find references and backlink rendering agree with the edited body after conflict resolution.
