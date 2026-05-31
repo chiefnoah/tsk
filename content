@@ -1,1 +1,4 @@
 Add automated cargo publish on tag
+
+it should only publish if tests pass. A token for crates.io will be set as an
+enc var.
