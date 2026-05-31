@@ -129,6 +129,7 @@ fn render_path(ws: &Workspace, target: &str) -> Result<Rendered> {
         ["namespaces"] => render_namespaces(ws).map(Rendered::Html),
         ["namespaces", name, "log"] => render_namespace_log(ws, name, page).map(Rendered::Html),
         ["namespaces", name] => render_namespace(ws, name, page).map(Rendered::Html),
+        ["commits", oid] => render_commit(ws, oid).map(Rendered::Html),
         ["properties"] => render_properties(ws, page).map(Rendered::Html),
         ["tasks", stable, "log"] => render_task_log(ws, stable, page).map(Rendered::Html),
         ["tasks", stable] => render_task(ws, stable).map(Rendered::Html),
@@ -171,7 +172,7 @@ fn render_queue(ws: &Workspace, name: &str, page_num: usize) -> Result<String> {
             binding_links(bindings.get(stable)),
             h(&stable.0),
             h(&title),
-            h(stable.short()),
+            render_task_commit(&repo, stable),
         ));
     }
     if rows.is_empty() {
@@ -261,7 +262,7 @@ fn render_namespace(ws: &Workspace, name: &str, page_num: usize) -> Result<Strin
             human,
             h(&stable.0),
             h(&title_for(&repo, &stable)?),
-            h(stable.short())
+            render_task_commit(&repo, &stable)
         ));
     }
     if rows.is_empty() {
@@ -411,14 +412,14 @@ fn render_task(ws: &Workspace, stable: &str) -> Result<String> {
     let (content_class, rendered_content) = render_task_content(ws, &repo, &task.content)?;
     let body = format!(
         "<h1>{}</h1>\
-         <p class=\"meta\">Stable <code>{}</code></p>\
+         <p class=\"meta\">Stable {}</p>\
          <p><a href=\"/tasks/{}/log\">Log</a></p>\
          <p>Bindings: {}</p>\
          <h2>Content</h2><div class=\"{content_class}\">{rendered_content}</div>\
          <h2>Properties</h2>\
          <table><thead><tr><th>Key</th><th>Values</th></tr></thead><tbody>{props}</tbody></table>",
         h(task.title()),
-        h(&stable.0),
+        render_task_commit(&repo, &stable),
         h(&stable.0),
         binding_links(bindings.get(&stable))
     );
@@ -441,6 +442,61 @@ fn render_task_log(ws: &Workspace, stable: &str, page: usize) -> Result<String> 
     )
 }
 
+fn render_commit(ws: &Workspace, oid: &str) -> Result<String> {
+    let repo = repo(ws)?;
+    let Ok(oid) = Oid::from_str(oid) else {
+        return page(
+            ws,
+            "Commit not found",
+            &format!("<h1>Commit not found</h1><p><code>{}</code></p>", h(oid)),
+        );
+    };
+    let Ok(commit) = repo.find_commit(oid) else {
+        return page(
+            ws,
+            "Commit not found",
+            &format!(
+                "<h1>Commit not found</h1><p><code>{}</code></p>",
+                h(&oid.to_string())
+            ),
+        );
+    };
+    let author = commit.author();
+    let author_name = author.name().unwrap_or("unknown");
+    let author_email = author.email().unwrap_or("");
+    let summary = commit.summary().ok().flatten().unwrap_or("<no summary>");
+    let message = commit.message().unwrap_or("");
+    let mut parents = String::new();
+    for parent in commit.parents() {
+        let parent_oid = parent.id().to_string();
+        parents.push_str(&format!(
+            "<li><a href=\"/commits/{0}\"><code>{1}</code></a></li>",
+            h(&parent_oid),
+            h(&parent_oid[..parent_oid.len().min(12)])
+        ));
+    }
+    if parents.is_empty() {
+        parents.push_str("<li><em>none</em></li>");
+    }
+    page(
+        ws,
+        &format!("Commit {}", &oid.to_string()[..12]),
+        &format!(
+            "<h1>Commit <code>{}</code></h1>\
+             <p class=\"meta\">{} &lt;{}&gt; ({})</p>\
+             <h2>{}</h2>\
+             <pre>{}</pre>\
+             <h2>Parents</h2><ul>{parents}</ul>",
+            h(&oid.to_string()),
+            h(author_name),
+            h(author_email),
+            h(&format_unix(commit.time().seconds())),
+            h(summary),
+            h(message)
+        ),
+    )
+}
+
 fn render_log_page(
     ws: &Workspace,
     title: &str,
@@ -456,7 +512,8 @@ fn render_log_page(
     for commit in page_slice.items {
         let short = &commit.oid[..commit.oid.len().min(8)];
         rows.push_str(&format!(
-            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td><a href=\"/commits/{}\"><code>{}</code></a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            h(&commit.oid),
             h(short),
             h(&commit.summary),
             h(&commit.author),
@@ -648,19 +705,44 @@ fn render_property_value(
 fn render_git_commit(repo: &Repository, value: &str) -> Option<String> {
     let oid = Oid::from_str(value).ok()?;
     let commit = repo.find_commit(oid).ok()?;
-    let short = &value[..value.len().min(12)];
+    Some(render_commit_link(&commit, value))
+}
+
+fn render_task_commit(repo: &Repository, stable: &StableId) -> String {
+    let stable_html = format!(
+        "<code title=\"{}\">{}</code>",
+        h(&stable.0),
+        h(stable.short())
+    );
+    let Some(commit_oid) = repo
+        .find_reference(&stable.refname())
+        .ok()
+        .and_then(|reference| reference.target())
+    else {
+        return stable_html;
+    };
+    let Ok(commit) = repo.find_commit(commit_oid) else {
+        return stable_html;
+    };
+    render_commit_link(&commit, &stable.0)
+}
+
+fn render_commit_link(commit: &git2::Commit<'_>, label_oid: &str) -> String {
+    let commit_oid = commit.id().to_string();
+    let short = &label_oid[..label_oid.len().min(12)];
     let summary = commit.summary().ok().flatten().unwrap_or("<no summary>");
     let author = commit.author();
     let author = author.name().unwrap_or("unknown");
     let when = format_unix(commit.time().seconds());
-    Some(format!(
-        "<span class=\"git-commit\"><code title=\"{}\">{}</code> {} <span class=\"meta\">{} ({})</span></span>",
-        h(value),
+    format!(
+        "<span class=\"git-commit\"><a href=\"/commits/{}\"><code title=\"{}\">{}</code></a> {} <span class=\"meta\">{} ({})</span></span>",
+        h(&commit_oid),
+        h(label_oid),
         h(short),
         h(summary),
         h(author),
         h(&when)
-    ))
+    )
 }
 
 fn render_internal_link(
@@ -1092,7 +1174,7 @@ mod tests {
         let task_html = render_task(&ws, &stable.0).unwrap();
         assert!(
             task_html.contains(&format!(
-                "<span class=\"git-commit\"><code title=\"{closed_on}\">{short}</code> implement feature"
+                "<span class=\"git-commit\"><a href=\"/commits/{closed_on}\"><code title=\"{closed_on}\">{short}</code></a> implement feature"
             )),
             "task page should render closed-on as a git commit: {task_html}"
         );
@@ -1104,9 +1186,15 @@ mod tests {
         let properties_html = render_properties(&ws, 1).unwrap();
         assert!(
             properties_html.contains(&format!(
-                "<span class=\"git-commit\"><code title=\"{closed_on}\">{short}</code> implement feature"
+                "<span class=\"git-commit\"><a href=\"/commits/{closed_on}\"><code title=\"{closed_on}\">{short}</code></a> implement feature"
             )),
             "properties page should render closed-on as a git commit: {properties_html}"
+        );
+
+        let commit_html = render_commit(&ws, &closed_on).unwrap();
+        assert!(
+            commit_html.contains("<h2>implement feature</h2>"),
+            "commit page should render commit details: {commit_html}"
         );
     }
 
@@ -1308,9 +1396,24 @@ if idx == 0 {
         ws.push_task(task).unwrap();
 
         let task_html = render_task(&ws, &stable.0).unwrap();
+        let repo = repo(&ws).unwrap();
+        let task_commit = repo
+            .find_reference(&stable.refname())
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string();
         assert!(
             task_html.contains(&format!("<a href=\"/tasks/{}/log\">Log</a>", h(&stable.0))),
             "task page should link to task log: {task_html}"
+        );
+        assert!(
+            task_html.contains(&format!(
+                "<a href=\"/commits/{task_commit}\"><code title=\"{}\">{}</code></a>",
+                stable.0,
+                stable.short()
+            )),
+            "task page should render the stable id as its task commit link: {task_html}"
         );
 
         let log_html = render_task_log(&ws, &stable.0, 1).unwrap();
@@ -1321,6 +1424,10 @@ if idx == 0 {
         assert!(
             log_html.contains("create"),
             "task log should include create summary: {log_html}"
+        );
+        assert!(
+            log_html.contains(&format!("<a href=\"/commits/{task_commit}\"><code>")),
+            "task log should link commit hashes to commit pages: {log_html}"
         );
     }
 
