@@ -1,0 +1,11 @@
+when:
+  - event: ["push"]
+    tag: ["v*"]
+engine: "nixery"
+dependencies:
+  nixpkgs:
+    - cargo
+    - gcc
+steps:
+  - name: "Publish"
+    command: "cargo test && cargo publish"

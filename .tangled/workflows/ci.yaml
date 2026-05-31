@@ -1,8 +1,6 @@
 when:
   - event: ["push", "manual"]
     branch: ["master"]
-  - event: ["push"]
-    tag: ["v*"]
 engine: "nixery"
 dependencies:
   nixpkgs:
@@ -15,5 +13,3 @@ steps:
     command: "cargo build"
   - name: "cargo test"
     command: "cargo test"
-  - name: "Publish"
-    command: 'if [ "$TANGLED_REF_TYPE" = "tag" ]; then cargo publish; else echo "Skipping publish for non-tag ref"; fi'
