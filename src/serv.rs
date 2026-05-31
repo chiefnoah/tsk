@@ -166,17 +166,15 @@ fn render_queue(ws: &Workspace, name: &str, page_num: usize) -> Result<String> {
     let mut rows = String::new();
     for (offset, stable) in page_slice.items.iter().enumerate() {
         let title = title_for(&repo, stable)?;
-        rows.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td><a href=\"/tasks/{}\">{}</a></td><td>{}</td></tr>",
-            page_slice.start + offset + 1,
+        rows.push_str(&table_row([
+            (page_slice.start + offset + 1).to_string(),
             binding_links(bindings.get(stable)),
-            h(&stable.0),
-            h(&title),
+            task_anchor(stable, h(&title)),
             render_task_commit(&repo, stable),
-        ));
+        ]));
     }
     if rows.is_empty() {
-        rows.push_str("<tr><td colspan=\"4\"><em>No tasks</em></td></tr>");
+        rows.push_str(&empty_table_row(4, "No tasks"));
     }
     let inbox = if q.inbox.is_empty() {
         "<p><em>Inbox empty</em></p>".to_string()
@@ -184,10 +182,9 @@ fn render_queue(ws: &Workspace, name: &str, page_num: usize) -> Result<String> {
         let mut items = String::new();
         for (key, stable) in q.inbox {
             items.push_str(&format!(
-                "<li>{}: <a href=\"/tasks/{}\">{}</a></li>",
+                "<li>{}: {}</li>",
                 h(&key),
-                h(&stable.0),
-                h(&title_for(&repo, &stable)?)
+                task_anchor(&stable, h(&title_for(&repo, &stable)?))
             ));
         }
         format!("<ul>{items}</ul>")
@@ -257,17 +254,14 @@ fn render_namespace(ws: &Workspace, name: &str, page_num: usize) -> Result<Strin
     let page_slice = paginate(&mapping, page_num);
     let mut rows = String::new();
     for (human, stable) in page_slice.items {
-        rows.push_str(&format!(
-            "<tr><td>{}-{} </td><td><a href=\"/tasks/{}\">{}</a></td><td>{}</td></tr>",
-            h(name),
-            human,
-            h(&stable.0),
-            h(&title_for(&repo, &stable)?),
-            render_task_commit(&repo, &stable)
-        ));
+        rows.push_str(&table_row([
+            format!("{}-{} ", h(name), human),
+            task_anchor(&stable, h(&title_for(&repo, &stable)?)),
+            render_task_commit(&repo, &stable),
+        ]));
     }
     if rows.is_empty() {
-        rows.push_str("<tr><td colspan=\"3\"><em>No tasks</em></td></tr>");
+        rows.push_str(&empty_table_row(3, "No tasks"));
     }
     let pagination = pagination_nav(&format!("/namespaces/{}", h(name)), &page_slice);
     page(
@@ -354,17 +348,18 @@ fn render_properties(ws: &Workspace, page_num: usize) -> Result<String> {
             .map(|value| render_property_value(ws, &repo, &row.key, value))
             .transpose()?
             .unwrap_or_else(|| "<em>empty</em>".to_string());
-        rows.push_str(&format!(
-            "<tr><td><code>{}</code></td><td>{}</td><td><a href=\"/tasks/{}\">{}</a> {}</td></tr>",
-            h(&row.key),
+        rows.push_str(&table_row([
+            format!("<code>{}</code>", h(&row.key)),
             value,
-            h(&row.stable.0),
-            row.id,
-            h(&row.title),
-        ));
+            format!(
+                "{} {}",
+                task_anchor(&row.stable, row.id.to_string()),
+                h(&row.title)
+            ),
+        ]));
     }
     if rows.is_empty() {
-        rows.push_str("<tr><td colspan=\"3\"><em>No properties</em></td></tr>");
+        rows.push_str(&empty_table_row(3, "No properties"));
     }
     let pagination = pagination_nav("/properties", &page_slice);
     page(
@@ -401,14 +396,10 @@ fn render_task(ws: &Workspace, stable: &str) -> Result<String> {
             .map(|v| render_property_value(ws, &repo, key, v))
             .collect::<Result<Vec<_>>>()?
             .join(", ");
-        props.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td></tr>",
-            h(key),
-            rendered_values
-        ));
+        props.push_str(&table_row([h(key), rendered_values]));
     }
     if props.is_empty() {
-        props.push_str("<tr><td colspan=\"2\"><em>No properties</em></td></tr>");
+        props.push_str(&empty_table_row(2, "No properties"));
     }
     let (content_class, rendered_content) = render_task_content(ws, &repo, &task.content)?;
     let body = format!(
@@ -512,17 +503,15 @@ fn render_log_page(
     let mut rows = String::new();
     for commit in page_slice.items {
         let short = &commit.oid[..commit.oid.len().min(8)];
-        rows.push_str(&format!(
-            "<tr><td><a href=\"/commits/{}\"><code>{}</code></a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
-            h(&commit.oid),
-            h(short),
+        rows.push_str(&table_row([
+            commit_anchor(&commit.oid, format!("<code>{}</code>", h(short))),
             h(&commit.summary),
             h(&commit.author),
-            h(&format_unix(commit.timestamp))
-        ));
+            h(&format_unix(commit.timestamp)),
+        ]));
     }
     if rows.is_empty() {
-        rows.push_str("<tr><td colspan=\"4\"><em>No commits</em></td></tr>");
+        rows.push_str(&empty_table_row(4, "No commits"));
     }
     let pagination = pagination_nav(page_href, &page_slice);
     page(
@@ -537,6 +526,35 @@ fn render_log_page(
             h(back_label)
         ),
     )
+}
+
+fn table_row<const N: usize>(cells: [String; N]) -> String {
+    format!(
+        "<tr>{}</tr>",
+        cells
+            .into_iter()
+            .map(|cell| format!("<td>{cell}</td>"))
+            .collect::<String>()
+    )
+}
+
+fn empty_table_row(colspan: usize, label: &str) -> String {
+    format!(
+        "<tr><td colspan=\"{colspan}\"><em>{}</em></td></tr>",
+        h(label)
+    )
+}
+
+fn task_anchor(stable: &StableId, label_html: String) -> String {
+    anchor(&format!("/tasks/{}", stable.0), label_html)
+}
+
+fn commit_anchor(oid: &str, label_html: String) -> String {
+    anchor(&format!("/commits/{oid}"), label_html)
+}
+
+fn anchor(href: &str, label_html: String) -> String {
+    format!("<a href=\"{}\">{label_html}</a>", h(href))
 }
 
 fn render_task_content(
