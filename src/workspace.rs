@@ -36,6 +36,9 @@ pub struct ImportOutcome {
 pub struct CleanReport {
     pub queue_entries_pruned: usize,
     pub tasks_repaired: usize,
+    pub queues_pruned: usize,
+    pub property_orphans_pruned: usize,
+    pub ghost_bindings_pruned: usize,
 }
 
 #[derive(Default)]
@@ -984,43 +987,6 @@ impl Workspace {
         self.log_ref(&queue::refname(name))
     }
 
-    /// Set `status=open` on every task in the active namespace that has no
-    /// status yet. Skips tasks already marked done. Returns the number of
-    /// tasks updated. One-shot migration for tasks created before
-    /// auto-status existed.
-    pub fn backfill_status(&self) -> Result<usize> {
-        let repo = self.repo()?;
-        let ns = namespace::read(&repo, &self.namespace()?)?;
-        let mut updated = 0usize;
-        for (human, _stable) in ns.mapping.iter() {
-            let mut task = self.task(TaskIdentifier::Id(Id(*human)))?;
-            if task.attributes.contains_key(STATUS_KEY) {
-                continue;
-            }
-            task.attributes
-                .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
-            self.save_task(&task)?;
-            updated += 1;
-        }
-        Ok(updated)
-    }
-
-    /// Re-save every task in the active namespace whose property blobs are
-    /// in the legacy line-split encoding, rewriting them as size-prefixed.
-    /// Returns the number of tasks rewritten. Idempotent — `save_task`
-    /// no-ops on already-migrated tasks.
-    pub fn migrate_property_encoding(&self) -> Result<usize> {
-        let ns = namespace::read(&self.repo()?, &self.namespace()?)?;
-        let mut rewritten = 0;
-        for human in ns.mapping.keys() {
-            let task = self.task(TaskIdentifier::Id(Id(*human)))?;
-            if self.save_task(&task)? {
-                rewritten += 1;
-            }
-        }
-        Ok(rewritten)
-    }
-
     /// Prune empty / orphan refs under `refs/tsk/*` and recover from
     /// partial multi-ref writes. Returns
     /// `(queues_dropped, prop_orphans_dropped, ghost_bindings_dropped, orphan_queue_entries_dropped)`.
@@ -1229,8 +1195,13 @@ impl Workspace {
         let active_namespace = self.namespace()?;
         let task_exists = |s: &StableId| object::exists(&repo, s);
         let mut report = CleanReport::default();
+        let (queues, property_orphans, ghost_bindings, queue_entries) = self.gc_refs()?;
+        report.queues_pruned = queues;
+        report.property_orphans_pruned = property_orphans;
+        report.ghost_bindings_pruned = ghost_bindings;
+        report.queue_entries_pruned = queue_entries;
         let queue_prune = prune_orphan_queue_entries(&repo, "clean")?;
-        report.queue_entries_pruned = queue_prune.queue_entries_pruned;
+        report.queue_entries_pruned += queue_prune.queue_entries_pruned;
 
         let bindings = references::binding_map(&repo, task_exists)?;
 
@@ -2342,7 +2313,7 @@ mod test {
     }
 
     #[test]
-    fn backfill_status_marks_legacy_tasks_open_and_skips_done() {
+    fn clean_marks_legacy_tasks_open_and_skips_done() {
         let (_d, ws) = fresh_workspace();
 
         // Simulate a legacy task: bind a stable id with no status property.
@@ -2367,8 +2338,8 @@ mod test {
         let read = ws.task(TaskIdentifier::Id(Id(h_legacy))).unwrap();
         assert!(!read.attributes.contains_key(STATUS_KEY));
 
-        let n = ws.backfill_status().unwrap();
-        assert_eq!(n, 1, "only the legacy task gets backfilled");
+        let report = ws.clean().unwrap();
+        assert_eq!(report.tasks_repaired, 1, "only the legacy task is repaired");
 
         // Legacy is now open, fresh-open stays open, dropped stays done.
         let read = ws.task(TaskIdentifier::Id(Id(h_legacy))).unwrap();
@@ -2388,8 +2359,7 @@ mod test {
         );
 
         // Re-running is a no-op.
-        let n = ws.backfill_status().unwrap();
-        assert_eq!(n, 0);
+        assert_eq!(ws.clean().unwrap(), CleanReport::default());
     }
 
     #[test]
@@ -2591,6 +2561,39 @@ mod test {
 
         // Idempotent: second pass changes nothing.
         assert_eq!(ws.gc_refs().unwrap(), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn clean_prunes_all_stale_ref_drift_classes() {
+        let (_d, ws) = fresh_workspace();
+        let repo = ws.repo().unwrap();
+
+        ws.create_queue("empty", None).unwrap();
+        let orphan = StableId("0".repeat(40));
+        properties::set(&repo, "ghost", &orphan, &["x".into()], "test").unwrap();
+        namespace::assign_id(&repo, "tsk", orphan.clone(), "ghost-bind").unwrap();
+        queue::push_top(&repo, "tsk", orphan.clone(), "orphan-push").unwrap();
+
+        let report = ws.clean().unwrap();
+        assert_eq!(report.queues_pruned, 1, "empty queue pruned");
+        assert_eq!(
+            report.property_orphans_pruned, 1,
+            "orphan property entry pruned"
+        );
+        assert_eq!(
+            report.ghost_bindings_pruned, 1,
+            "ghost namespace binding dropped"
+        );
+        assert_eq!(report.queue_entries_pruned, 1, "orphan queue entry pruned");
+        assert!(repo.find_reference(&queue::refname("empty")).is_err());
+        assert!(repo.find_reference(&properties::refname("ghost")).is_err());
+        assert!(
+            namespace::human_for(&repo, "tsk", &orphan)
+                .unwrap()
+                .is_none()
+        );
+
+        assert_eq!(ws.clean().unwrap(), CleanReport::default());
     }
 
     #[test]

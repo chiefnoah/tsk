@@ -181,12 +181,8 @@ enum Commands {
         #[command(flatten)]
         task_id: TaskId,
     },
-    /// Drop index entries whose stable ids no longer resolve.
+    /// Repair calculated properties and prune stale tsk refs.
     Clean,
-    /// Run every known one-shot migration against the active workspace.
-    /// Currently: backfill `status=open` on tasks without a status property.
-    /// New migrations land here as they're added.
-    FixUp,
     /// Export one or more tasks as a concatenated mbox-format patch series.
     /// With no -T / --where / --all, drops into fzf for a single-task pick.
     /// Pipe to a file for offline transfer; recipient runs `tsk import`.
@@ -553,7 +549,6 @@ fn dispatch(cli: Cli) -> Result<()> {
         } => commands::command_export(dir, ids, r#where, all, bind),
         Commands::Import { bind } => commands::command_import(dir, bind),
         Commands::Log { target } => commands::command_log(dir, target),
-        Commands::FixUp => commands::fix_up(dir),
         Commands::GitSetup { remote } => commands::git_setup(dir, remote),
         Commands::GitPush { remote } => commands::git_push(dir, remote),
         Commands::GitPull { remote, rebase } => commands::git_pull(dir, remote, rebase),

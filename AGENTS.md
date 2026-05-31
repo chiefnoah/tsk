@@ -79,12 +79,11 @@ tsk log queue [<name>]           # pushes / drops / inbox moves in a queue
 
 ## Migrations
 
-Storage and conventions evolve. A single command runs every known one-shot
-fix-up against the active workspace; safe to re-run (each migration is
-idempotent):
+Storage and conventions evolve. A single command repairs calculated state,
+prunes stale refs, and runs known idempotent storage cleanup:
 
 ```
-tsk fix-up
+tsk clean
 ```
 
 ## Sync with the user

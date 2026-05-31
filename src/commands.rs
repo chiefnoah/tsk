@@ -12,22 +12,13 @@ use std::process::{Command, Stdio, exit};
 pub(crate) fn clean(dir: PathBuf) -> Result<()> {
     let report = Workspace::from_path(dir)?.clean()?;
     println!(
-        "clean: pruned {} queue entries, repaired {} task(s)",
-        report.queue_entries_pruned, report.tasks_repaired
-    );
-    Ok(())
-}
-
-pub(crate) fn fix_up(dir: PathBuf) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    let n = ws.backfill_status()?;
-    println!("backfill-status: set status=open on {n} task(s)");
-    let m = ws.migrate_property_encoding()?;
-    println!("migrate-property-encoding: rewrote {m} task(s)");
-    let (q, p, b, qe) = ws.gc_refs()?;
-    println!(
-        "gc-refs: pruned {q} empty queue(s), {p} orphan property entries, \
-         {b} ghost namespace binding(s), {qe} orphan queue index entries"
+        "clean: repaired {} task(s), pruned {} queue entries, {} empty queues, \
+         {} orphan property entries, {} ghost namespace bindings",
+        report.tasks_repaired,
+        report.queue_entries_pruned,
+        report.queues_pruned,
+        report.property_orphans_pruned,
+        report.ghost_bindings_pruned
     );
     Ok(())
 }
