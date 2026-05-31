@@ -32,11 +32,12 @@ tsk stores its data in git refs (`refs/tsk/*`) inside a host git repository, so
 any filesystem git itself runs on will work. Use the `tsk git-pull` and
 `tsk git-push` commands to update/push these refs.
 
-When `tsk git-pull` finds incompatible edits to the same task body, it writes a
-normal two-parent merge commit with conflict markers in the conflicted body.
-Incompatible property edits are resolved last-one-wins by the task commit
-timestamps, and the merge commit message records each property conflict and the
-side that won.
+When `tsk git-pull` finds incompatible edits to the same task body, it opens an
+editor on a temporary file with conflict markers, then commits the edited result
+as a normal two-parent merge commit. Saving an empty resolution aborts that task
+merge and leaves the local task ref unchanged. Incompatible property edits are
+resolved last-one-wins by the task commit timestamps, and the merge commit
+message records each property conflict and the side that won.
 
 
 Installation

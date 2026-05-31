@@ -1075,6 +1075,62 @@ fn divergent_task_edits_merge_on_pull() {
 }
 
 #[test]
+fn body_conflict_on_pull_opens_editor_and_commits_result() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_dir, alice, bob) = setup_two_clones();
+
+    tsk_ok(&alice, &["push", "shared task\n\ninitial body"]);
+    tsk_ok(&alice, &["git-push"]);
+    tsk_ok(&bob, &["git-pull"]);
+
+    tsk_ok(&alice, &["edit", "-T", "tsk-1", "-b", "alice body"]);
+    tsk_ok(&bob, &["edit", "-T", "tsk-1", "-b", "bob body"]);
+    tsk_ok(&alice, &["git-push"]);
+
+    let editor_dir = tempfile::tempdir().unwrap();
+    let editor = editor_dir.path().join("resolve-conflict");
+    std::fs::write(
+        &editor,
+        "#!/bin/sh\nprintf 'resolved title\\n\\nresolved body\\n' > \"$1\"\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&editor).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&editor, perms).unwrap();
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(&bob)
+        .env("EDITOR", &editor)
+        .env("VISUAL", &editor)
+        .arg("git-pull");
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(
+        code, 0,
+        "git-pull should succeed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Conflict"),
+        "pull summary should report the conflict: {stdout}"
+    );
+
+    let raw = tsk_ok(&bob, &["show", "-T", "tsk-1", "-R"]);
+    assert!(
+        raw.starts_with("resolved title\n\nresolved body\n"),
+        "editor result should be committed: {raw}"
+    );
+    assert!(
+        !raw.contains("<<<<<<<"),
+        "conflict markers should not be committed after editor resolution: {raw}"
+    );
+    let log = tsk_ok(&bob, &["log", "task", "-T", "tsk-1"]);
+    assert!(
+        log.contains("merge-conflict"),
+        "resolved conflict should be committed as a merge-conflict: {log}"
+    );
+}
+
+#[test]
 fn divergent_task_edits_rebase_on_pull() {
     let (_dir, alice, bob) = setup_two_clones();
 

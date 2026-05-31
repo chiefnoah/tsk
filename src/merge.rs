@@ -29,6 +29,7 @@ use crate::queue::{self, QUEUE_REF_PREFIX, Queue};
 use crate::references;
 use git2::{Commit, IndexEntry, Oid, Repository, Tree};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::process::Command;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Strategy {
@@ -139,7 +140,7 @@ fn reconcile_one(
                 Ok(ReconKind::FastForward)
             } else {
                 match strategy {
-                    Strategy::Merge => merge_strategy(repo, stable, l, r),
+                    Strategy::Merge => merge_strategy(repo, stable, l, r, edit_conflict_content),
                     Strategy::Rebase => rebase_strategy(repo, stable, l, r),
                 }
             }
@@ -152,6 +153,17 @@ fn merge_strategy(
     stable: &StableId,
     local: Oid,
     remote: Oid,
+    edit_conflict: impl FnMut(String) -> Result<Option<String>>,
+) -> Result<ReconKind> {
+    merge_strategy_inner(repo, stable, local, remote, edit_conflict)
+}
+
+fn merge_strategy_inner(
+    repo: &Repository,
+    stable: &StableId,
+    local: Oid,
+    remote: Oid,
+    mut edit_conflict: impl FnMut(String) -> Result<Option<String>>,
 ) -> Result<ReconKind> {
     let base_oid = repo.merge_base(local, remote)?;
     let base_tree = repo.find_commit(base_oid)?.tree()?;
@@ -169,7 +181,11 @@ fn merge_strategy(
             &mut idx,
             local_commit.time().seconds(),
             remote_commit.time().seconds(),
+            &mut edit_conflict,
         )?;
+        let Some(tree_oid) = resolution.tree_oid else {
+            return Ok(ReconKind::Conflict);
+        };
         let sig = object::signature(repo);
         let parents: Vec<&Commit> = vec![&local_commit, &remote_commit];
         let short = &stable.0[..12.min(stable.0.len())];
@@ -183,7 +199,7 @@ fn merge_strategy(
             &sig,
             &sig,
             &message,
-            &repo.find_tree(resolution.tree_oid)?,
+            &repo.find_tree(tree_oid)?,
             &parents,
         )?;
         repo.reference(&stable.refname(), merge_oid, true, "merge-conflict")?;
@@ -209,6 +225,40 @@ fn merge_strategy(
     Ok(ReconKind::Merged)
 }
 
+fn edit_conflict_content(initial: String) -> Result<Option<String>> {
+    let editor = std::env::var_os("VISUAL")
+        .or_else(|| std::env::var_os("EDITOR"))
+        .ok_or_else(|| {
+            crate::errors::Error::Parse(
+                "task body conflict requires VISUAL or EDITOR to resolve".into(),
+            )
+        })?;
+    let path = conflict_temp_path()?;
+    std::fs::write(&path, initial)?;
+    let status = Command::new(editor).arg(&path).status()?;
+    if !status.success() {
+        return Err(crate::errors::Error::Parse(
+            "editor exited unsuccessfully while resolving task body conflict".into(),
+        ));
+    }
+    let edited = std::fs::read_to_string(&path)?;
+    let _ = std::fs::remove_file(&path);
+    if edited.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(edited))
+    }
+}
+
+fn conflict_temp_path() -> Result<std::path::PathBuf> {
+    let mut path = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    path.push(format!("tsk-conflict-{}-{nanos}.tmp", std::process::id()));
+    Ok(path)
+}
+
 fn reindex_merged_task(repo: &Repository, stable: &StableId) -> Result<()> {
     if let Some(task) = object::read(repo, stable)? {
         properties::reindex_task(repo, stable, &task.properties)?;
@@ -217,7 +267,7 @@ fn reindex_merged_task(repo: &Repository, stable: &StableId) -> Result<()> {
 }
 
 struct ConflictResolution {
-    tree_oid: Oid,
+    tree_oid: Option<Oid>,
     property_logs: Vec<String>,
 }
 
@@ -229,6 +279,7 @@ fn write_conflict_resolution_tree(
     idx: &mut git2::Index,
     local_time: i64,
     remote_time: i64,
+    edit_conflict: &mut impl FnMut(String) -> Result<Option<String>>,
 ) -> Result<ConflictResolution> {
     let mut tb = repo.treebuilder(None)?;
     for entry in idx.iter().filter(|entry| index_stage(entry) == 0) {
@@ -257,7 +308,20 @@ fn write_conflict_resolution_tree(
             let ours = String::from_utf8_lossy(ours.as_deref().unwrap_or_default());
             let base = String::from_utf8_lossy(base.as_deref().unwrap_or_default());
             let theirs = String::from_utf8_lossy(theirs.as_deref().unwrap_or_default());
-            let bytes = conflict_markers(&ours, Some(&base), &theirs).into_bytes();
+            let initial = conflict_markers(&ours, Some(&base), &theirs);
+            let Some(edited) = edit_conflict(initial)? else {
+                return Ok(ConflictResolution {
+                    tree_oid: None,
+                    property_logs,
+                });
+            };
+            if edited.trim().is_empty() {
+                return Ok(ConflictResolution {
+                    tree_oid: None,
+                    property_logs,
+                });
+            };
+            let bytes = edited.into_bytes();
             let oid = repo.blob(&bytes)?;
             tb.insert(path.as_str(), oid, 0o100644)?;
         } else {
@@ -278,7 +342,7 @@ fn write_conflict_resolution_tree(
     }
 
     Ok(ConflictResolution {
-        tree_oid: tb.write()?,
+        tree_oid: Some(tb.write()?),
         property_logs,
     })
 }
@@ -941,39 +1005,22 @@ mod test {
         assert_eq!(task.properties.get("status").unwrap(), &vec!["urgent"]);
     }
 
-    #[test]
-    fn conflict_writes_merge_commit_with_markers() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = init_repo(dir.path());
-        let stable = object::create(&repo, &Task::new("v0"), "create").unwrap();
+    fn make_content_conflict(repo: &Repository) -> (StableId, Oid, Oid) {
+        let stable = object::create(repo, &Task::new("v0"), "create").unwrap();
         let root_oid = repo
             .find_reference(&stable.refname())
             .unwrap()
             .target()
             .unwrap();
-        // Local: change content to "v-local".
-        let mut t_local = Task::new("v-local");
-        object::update(&repo, &stable, &t_local, "edit-local").unwrap();
-        // Remote: branch off root with "v-remote".
-        t_local.content = "v-remote".into();
-        let content_oid = repo.blob(t_local.content.as_bytes()).unwrap();
-        let mut tb = repo.treebuilder(None).unwrap();
-        tb.insert("content", content_oid, 0o100644).unwrap();
-        let title_oid = repo.blob(t_local.title().as_bytes()).unwrap();
-        tb.insert("title", title_oid, 0o100644).unwrap();
-        let tree_oid = tb.write().unwrap();
-        let sig = Signature::now("Remote", "r@x").unwrap();
-        let parent = repo.find_commit(root_oid).unwrap();
-        let remote_oid = repo
-            .commit(
-                None,
-                &sig,
-                &sig,
-                "edit-remote",
-                &repo.find_tree(tree_oid).unwrap(),
-                &[&parent],
-            )
+        let t_local = Task::new("v-local");
+        object::update(repo, &stable, &t_local, "edit-local").unwrap();
+        let local_oid = repo
+            .find_reference(&stable.refname())
+            .unwrap()
+            .target()
             .unwrap();
+        let t_remote = Task::new("v-remote");
+        let remote_oid = commit_task_at(repo, root_oid, &t_remote, "edit-remote", "Remote", 200);
         repo.reference(
             &format!("refs/tsk-fetched/origin/tasks/{}", stable.0),
             remote_oid,
@@ -981,8 +1028,23 @@ mod test {
             "test",
         )
         .unwrap();
-        let recs = reconcile_task_refs(&repo, "origin", Strategy::Merge).unwrap();
-        assert_eq!(recs[0].kind, ReconKind::Conflict);
+        (stable, local_oid, remote_oid)
+    }
+
+    #[test]
+    fn content_conflict_commits_editor_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        let (stable, local_oid, remote_oid) = make_content_conflict(&repo);
+        let kind = merge_strategy_inner(&repo, &stable, local_oid, remote_oid, |initial| {
+            assert!(initial.contains("<<<<<<< ours\nv-local\n"));
+            assert!(initial.contains("||||||| base\nv0\n"));
+            assert!(initial.contains("=======\nv-remote\n"));
+            assert!(initial.contains(">>>>>>> theirs\n"));
+            Ok(Some("resolved title\n\nresolved body\n".into()))
+        })
+        .unwrap();
+        assert_eq!(kind, ReconKind::Conflict);
         let head = repo
             .find_reference(&stable.refname())
             .unwrap()
@@ -991,10 +1053,27 @@ mod test {
         let merge = repo.find_commit(head).unwrap();
         assert_eq!(merge.parent_count(), 2);
         let task = object::read(&repo, &stable).unwrap().unwrap();
-        assert!(task.content.contains("<<<<<<< ours\nv-local\n"));
-        assert!(task.content.contains("||||||| base\nv0\n"));
-        assert!(task.content.contains("=======\nv-remote\n"));
-        assert!(task.content.contains(">>>>>>> theirs\n"));
+        assert_eq!(task.content, "resolved title\n\nresolved body\n");
+    }
+
+    #[test]
+    fn empty_content_conflict_resolution_leaves_local_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        let (stable, local_oid, remote_oid) = make_content_conflict(&repo);
+        let kind = merge_strategy_inner(&repo, &stable, local_oid, remote_oid, |_initial| {
+            Ok(Some("   \n\t\n".into()))
+        })
+        .unwrap();
+        assert_eq!(kind, ReconKind::Conflict);
+        let head = repo
+            .find_reference(&stable.refname())
+            .unwrap()
+            .target()
+            .unwrap();
+        assert_eq!(head, local_oid);
+        let task = object::read(&repo, &stable).unwrap().unwrap();
+        assert_eq!(task.content, "v-local");
     }
 
     #[test]
