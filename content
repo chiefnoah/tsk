@@ -1,1 +1,6 @@
 Conflict resolution for tasks
+
+When two different users have modified the same task, we need the ability to
+manually resolve conflicts, particularly in property values and task
+bodies/titles. This conflict resolution should be a last-ditch effort to resolve
+the issues and should behave similarly to a conflict in a normal git repo/file.
