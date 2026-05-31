@@ -17,9 +17,11 @@
       let
         pkgs = import nixpkgs { inherit system; };
         naersk-lib = pkgs.callPackage naersk { };
+        tsk = naersk-lib.buildPackage ./.;
       in
       {
-        defaultPackage = naersk-lib.buildPackage ./.;
+        packages.default = tsk;
+        defaultPackage = tsk;
         devShell =
           with pkgs;
           mkShell {
@@ -37,5 +39,9 @@
             RUST_SRC_PATH = rustPlatform.rustLibSrc;
           };
       }
-    );
+    )
+    // {
+      nixosModules.default = import ./module.nix { inherit self; };
+      nixosModules.tsk-serv = self.nixosModules.default;
+    };
 }
