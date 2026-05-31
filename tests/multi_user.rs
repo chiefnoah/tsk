@@ -901,6 +901,63 @@ fn edit_reports_new_blocking_tasks_on_stderr() {
 }
 
 #[test]
+fn assign_without_target_uses_fzf_queue_picker() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["queue", "create", "review"]);
+    tsk_ok(dir.path(), &["push", "assign me"]);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let capture = fake_bin.path().join("fzf-input");
+    let fzf = fake_bin.path().join("fzf");
+    std::fs::write(
+        &fzf,
+        "#!/bin/sh\ntr '\\000' '\\n' > \"$FZF_CAPTURE\"\nprintf 'review\\n'\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fzf).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fzf, perms).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .env("PATH", path)
+        .env("FZF_CAPTURE", &capture)
+        .args(["assign", "-T", "tsk-1", "-R", ""]);
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(
+        code, 0,
+        "assign should succeed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Assigned to review"),
+        "assign should print picked queue: {stdout}"
+    );
+
+    let input = std::fs::read_to_string(capture).unwrap();
+    assert!(
+        input.lines().any(|line| line == "review"),
+        "assign picker should include review queue: {input}"
+    );
+    assert!(
+        !input.lines().any(|line| line == "tsk"),
+        "assign picker should exclude current queue: {input}"
+    );
+    let review = tsk_ok(dir.path(), &["--queue", "review", "inbox", "-R", ""]);
+    assert!(
+        review.contains("tsk-1\tfrom tsk\tassign me"),
+        "review inbox should receive assigned task: {review}"
+    );
+}
+
+#[test]
 fn edit_body_flag_replaces_body_without_editor() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_with_commit(dir.path());
