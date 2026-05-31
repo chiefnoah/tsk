@@ -285,10 +285,15 @@ pub(crate) fn command_show(
     dir: PathBuf,
     task_id: TaskId,
     show_attrs: bool,
+    stable_id: bool,
     raw: bool,
 ) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let task = ws.task(task_id.into())?;
+    if stable_id {
+        println!("{}", task.stable);
+        return Ok(());
+    }
     if show_attrs && !task.attributes.is_empty() {
         println!("---");
         for (k, vs) in &task.attributes {
@@ -419,7 +424,7 @@ pub(crate) fn command_follow(
             if edit {
                 command_edit(dir, task_id)
             } else {
-                command_show(dir, task_id, false, false)
+                command_show(dir, task_id, false, false, false)
             }
         }
         task::ParsedLink::Namespaced { namespace, id } => {

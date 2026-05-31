@@ -748,6 +748,36 @@ fn show_renders_styled_body() {
 }
 
 #[test]
+fn show_stable_id_prints_stable_id_only() {
+    let (_dir, alice, _bob) = setup_two_clones();
+    tsk_ok(&alice, &["push", "stable title\n\nstable body"]);
+
+    let stable = tsk_ok(&alice, &["show", "-T", "tsk-1", "--stable-id"]);
+    let stable = stable.trim();
+    assert_eq!(stable.len(), 40, "stable id should be full hex: {stable}");
+    assert!(
+        stable.chars().all(|c| c.is_ascii_hexdigit()),
+        "stable id should be hex: {stable}"
+    );
+    assert!(
+        !stable.contains("stable title") && !stable.contains("stable body"),
+        "show --stable-id should not render task content: {stable}"
+    );
+
+    git(
+        &alice,
+        &["show-ref", "--verify", &format!("refs/tsk/tasks/{stable}")],
+    );
+
+    let with_attrs = tsk_ok(&alice, &["show", "-T", "tsk-1", "-x", "--stable-id"]);
+    assert_eq!(
+        with_attrs.trim(),
+        stable,
+        "show --stable-id should print only the stable id even when -x is passed"
+    );
+}
+
+#[test]
 fn edit_reports_new_blocking_tasks_on_stderr() {
     use std::os::unix::fs::PermissionsExt;
 

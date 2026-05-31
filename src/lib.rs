@@ -106,6 +106,9 @@ enum Commands {
         /// Print xattr-style YAML front-matter for the task's properties.
         #[arg(short = 'x', default_value_t = false)]
         show_attrs: bool,
+        /// Print the task's stable id instead of its body.
+        #[arg(short = 'i', long = "stable-id", default_value_t = false)]
+        stable_id: bool,
         /// Skip the rich-text parser and print the raw bytes verbatim.
         #[arg(short = 'R', default_value_t = false)]
         raw: bool,
@@ -509,8 +512,9 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Show {
             task_id,
             show_attrs,
+            stable_id,
             raw,
-        } => commands::command_show(dir, task_id, show_attrs, raw),
+        } => commands::command_show(dir, task_id, show_attrs, stable_id, raw),
         Commands::Follow {
             task_id,
             link_index,
