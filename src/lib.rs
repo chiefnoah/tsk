@@ -369,22 +369,24 @@ pub(crate) enum PropAction {
 
 #[derive(Subcommand)]
 pub(crate) enum NamespaceAction {
-    List,
-    Current,
+    List {
+        /// Include each namespace ref's HEAD commit.
+        #[arg(long)]
+        head: bool,
+    },
+    Current {
+        /// Print the active namespace ref's HEAD commit instead of its name.
+        #[arg(long)]
+        head: bool,
+    },
     /// Switch active namespace. With no name, fzf-picks from existing
     /// namespaces (plus a `<new>` sentinel for creating one on the fly).
-    Switch {
-        name: Option<String>,
-    },
+    Switch { name: Option<String> },
     /// List every task bound in a namespace (defaults to active),
     /// regardless of which queue (if any) it's on. One row per id.
-    Tasks {
-        name: Option<String>,
-    },
+    Tasks { name: Option<String> },
     /// List unique property keys on tasks in a namespace (defaults to active).
-    Props {
-        name: Option<String>,
-    },
+    Props { name: Option<String> },
 }
 
 #[derive(Subcommand)]

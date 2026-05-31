@@ -578,6 +578,25 @@ fn property_index_pushed_and_visible_to_other_clone() {
 }
 
 #[test]
+fn namespace_current_and_list_can_print_ref_tips() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "first"]);
+
+    let expected = git(dir.path(), &["rev-parse", "refs/tsk/namespaces/tsk"])
+        .trim()
+        .to_string();
+    let current = tsk_ok(dir.path(), &["namespace", "current", "--head"]);
+    assert_eq!(current.trim(), expected);
+
+    let list = tsk_ok(dir.path(), &["namespace", "list", "--head"]);
+    assert!(
+        list.lines().any(|line| line == format!("tsk\t{expected}")),
+        "namespace list --head should include namespace tip: {list}"
+    );
+}
+
+#[test]
 fn drop_can_record_current_head_commit() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_with_commit(dir.path());

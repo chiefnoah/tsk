@@ -961,6 +961,19 @@ impl Workspace {
         Ok(self.repo()?.head()?.peel_to_commit()?.id().to_string())
     }
 
+    /// Current commit of a namespace ref.
+    pub fn namespace_head_commit(&self, name: &str) -> Result<String> {
+        namespace::validate_name(name)?;
+        let repo = self.repo()?;
+        let reference = repo
+            .find_reference(&namespace::refname(name))
+            .map_err(|_| Error::Parse(format!("namespace '{name}' has no ref")))?;
+        let target = reference
+            .target()
+            .ok_or_else(|| Error::Parse(format!("namespace '{name}' has no HEAD")))?;
+        Ok(target.to_string())
+    }
+
     /// History of edits to a namespace's tree (id assignments, drops, shares).
     pub fn log_namespace(&self, name: &str) -> Result<Vec<LogCommit>> {
         self.log_ref(&namespace::refname(name))

@@ -806,8 +806,23 @@ fn print_lines<I: std::fmt::Display>(items: impl IntoIterator<Item = I>) {
 pub(crate) fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
-        NamespaceAction::List => print_lines(ws.list_namespaces()?),
-        NamespaceAction::Current => println!("{}", ws.namespace()?),
+        NamespaceAction::List { head } => {
+            if head {
+                for name in ws.list_namespaces()? {
+                    println!("{}\t{}", name, ws.namespace_head_commit(&name)?);
+                }
+            } else {
+                print_lines(ws.list_namespaces()?);
+            }
+        }
+        NamespaceAction::Current { head } => {
+            let name = ws.namespace()?;
+            if head {
+                println!("{}", ws.namespace_head_commit(&name)?);
+            } else {
+                println!("{name}");
+            }
+        }
         NamespaceAction::Switch { name } => return resolve_and_switch_namespace(&ws, name),
         NamespaceAction::Tasks { name } => {
             let target = match name {
