@@ -704,16 +704,12 @@ fn render_property_value(
 
 fn render_git_commit(repo: &Repository, value: &str) -> Option<String> {
     let oid = Oid::from_str(value).ok()?;
-    let commit = repo.find_commit(oid).ok()?;
-    Some(render_commit_link(&commit, value))
+    repo.find_commit(oid).ok()?;
+    Some(commit_link(&oid.to_string(), value))
 }
 
 fn render_task_commit(repo: &Repository, stable: &StableId) -> String {
-    let stable_html = format!(
-        "<code title=\"{}\">{}</code>",
-        h(&stable.0),
-        h(stable.short())
-    );
+    let stable_html = oid_code(&stable.0);
     let Some(commit_oid) = repo
         .find_reference(&stable.refname())
         .ok()
@@ -721,28 +717,23 @@ fn render_task_commit(repo: &Repository, stable: &StableId) -> String {
     else {
         return stable_html;
     };
-    let Ok(commit) = repo.find_commit(commit_oid) else {
+    if repo.find_commit(commit_oid).is_err() {
         return stable_html;
-    };
-    render_commit_link(&commit, &stable.0)
+    }
+    commit_link(&commit_oid.to_string(), &stable.0)
 }
 
-fn render_commit_link(commit: &git2::Commit<'_>, label_oid: &str) -> String {
-    let commit_oid = commit.id().to_string();
-    let short = &label_oid[..label_oid.len().min(12)];
-    let summary = commit.summary().ok().flatten().unwrap_or("<no summary>");
-    let author = commit.author();
-    let author = author.name().unwrap_or("unknown");
-    let when = format_unix(commit.time().seconds());
+fn commit_link(commit_oid: &str, label_oid: &str) -> String {
     format!(
-        "<span class=\"git-commit\"><a href=\"/commits/{}\"><code title=\"{}\">{}</code></a> {} <span class=\"meta\">{} ({})</span></span>",
-        h(&commit_oid),
-        h(label_oid),
-        h(short),
-        h(summary),
-        h(author),
-        h(&when)
+        "<a href=\"/commits/{}\">{}</a>",
+        h(commit_oid),
+        oid_code(label_oid)
     )
+}
+
+fn oid_code(label_oid: &str) -> String {
+    let short = &label_oid[..label_oid.len().min(12)];
+    format!("<code title=\"{}\">{}</code>", h(label_oid), h(short))
 }
 
 fn render_internal_link(
@@ -1174,21 +1165,25 @@ mod tests {
         let task_html = render_task(&ws, &stable.0).unwrap();
         assert!(
             task_html.contains(&format!(
-                "<span class=\"git-commit\"><a href=\"/commits/{closed_on}\"><code title=\"{closed_on}\">{short}</code></a> implement feature"
+                "<a href=\"/commits/{closed_on}\"><code title=\"{closed_on}\">{short}</code></a>"
             )),
-            "task page should render closed-on as a git commit: {task_html}"
+            "task page should render closed-on as a commit page link: {task_html}"
         );
         assert!(
-            task_html.contains("<span class=\"meta\">Test ("),
-            "task page should include commit metadata: {task_html}"
+            !task_html.contains("implement feature") && !task_html.contains("Test ("),
+            "task page should not render commit details inline: {task_html}"
         );
 
         let properties_html = render_properties(&ws, 1).unwrap();
         assert!(
             properties_html.contains(&format!(
-                "<span class=\"git-commit\"><a href=\"/commits/{closed_on}\"><code title=\"{closed_on}\">{short}</code></a> implement feature"
+                "<a href=\"/commits/{closed_on}\"><code title=\"{closed_on}\">{short}</code></a>"
             )),
-            "properties page should render closed-on as a git commit: {properties_html}"
+            "properties page should render closed-on as a commit page link: {properties_html}"
+        );
+        assert!(
+            !properties_html.contains("implement feature"),
+            "properties page should not render commit details inline: {properties_html}"
         );
 
         let commit_html = render_commit(&ws, &closed_on).unwrap();
