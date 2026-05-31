@@ -3,7 +3,7 @@
 //! compiled `tsk` binary.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn tsk_bin() -> PathBuf {
     // Cargo sets CARGO_BIN_EXE_<name> for each [[bin]] when running tests.
@@ -856,6 +856,75 @@ fn edit_reports_new_blocking_tasks_on_stderr() {
     let child = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-R"]);
     assert!(
         child.contains("prereq from editor"),
+        "created dependency should be addressable: {child}"
+    );
+}
+
+#[test]
+fn edit_body_flag_replaces_body_without_editor() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "original title\n\noriginal body"]);
+
+    tsk_ok(
+        dir.path(),
+        &["edit", "-T", "tsk-1", "-b", "replacement body"],
+    );
+
+    let edited = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-R"]);
+    assert!(
+        edited.starts_with("original title\n\n"),
+        "edit -b should preserve the title: {edited}"
+    );
+    assert!(
+        edited.contains("replacement body"),
+        "edit -b should replace the body: {edited}"
+    );
+    assert!(
+        !edited.contains("original body"),
+        "edit -b should remove the old body: {edited}"
+    );
+}
+
+#[test]
+fn edit_body_flag_can_read_stdin_and_expand_dependencies() {
+    use std::io::Write as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "parent"]);
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .args(["edit", "-T", "tsk-1", "-b", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn tsk edit");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(b"needs [> prereq from stdin <]\n")
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait for tsk edit");
+    let code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stderr.contains("Created blocking task [[tsk-2]]\tprereq from stdin"),
+        "edit -b - should report created dependencies: {stderr}"
+    );
+
+    let parent = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-R"]);
+    assert!(
+        parent.contains("needs [[tsk-2]]"),
+        "placeholder should be replaced in edited body: {parent}"
+    );
+    let child = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-R"]);
+    assert!(
+        child.contains("prereq from stdin"),
         "created dependency should be addressable: {child}"
     );
 }

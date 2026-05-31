@@ -138,6 +138,9 @@ enum Commands {
     },
     /// Open `$EDITOR` to modify a task.
     Edit {
+        /// Replace the task body non-interactively. Use `-b -` to read stdin.
+        #[arg(short = 'b')]
+        body: Option<String>,
         #[command(flatten)]
         task_id: TaskId,
     },
@@ -528,7 +531,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             select,
             edit,
         } => commands::command_follow(dir, task_id, link_index, select, edit),
-        Commands::Edit { task_id } => commands::command_edit(dir, task_id),
+        Commands::Edit { body, task_id } => commands::command_edit(dir, task_id, body),
         Commands::Drop {
             closed_on_commit,
             task_id,

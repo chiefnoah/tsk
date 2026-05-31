@@ -454,7 +454,7 @@ pub(crate) fn command_follow(
         task::ParsedLink::Internal(id) => {
             let task_id = taskid_from_id(*id);
             if edit {
-                command_edit(dir, task_id)
+                command_edit(dir, task_id, None)
             } else {
                 command_show(dir, task_id, false, false, false, false)
             }
@@ -506,20 +506,35 @@ fn open_detached(target: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn command_edit(dir: PathBuf, task_id: TaskId) -> Result<()> {
+pub(crate) fn command_edit(dir: PathBuf, task_id: TaskId, body: Option<String>) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let mut task = ws.task(task_id.into())?;
-    let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))?;
-    if let Some((t, b)) = new_content.split_once('\n') {
-        task.title = t.replace(['\n', '\r'], " ");
-        task.body = b.trim_start_matches('\n').to_string();
-        let outcome = ws.save_task_with_outcome(&task)?;
-        for dependency in outcome.created_dependencies {
-            eprintln!(
-                "Created blocking task {}\t{}",
-                dependency.task_ref, dependency.title
-            );
+    if let Some(mut body) = body {
+        if body == "-" {
+            body.clear();
+            io::stdin().read_to_string(&mut body)?;
         }
+        task.body = body;
+        save_edited_task(&ws, &task)?;
+        return Ok(());
+    }
+
+    let new_content = open_editor(format!("{}\n\n{}", task.title.trim(), task.body.trim()))?;
+    if let Some((title, body)) = new_content.split_once('\n') {
+        task.title = title.replace(['\n', '\r'], " ");
+        task.body = body.trim_start_matches('\n').to_string();
+        save_edited_task(&ws, &task)?;
+    }
+    Ok(())
+}
+
+fn save_edited_task(ws: &Workspace, task: &workspace::Task) -> Result<()> {
+    let outcome = ws.save_task_with_outcome(task)?;
+    for dependency in outcome.created_dependencies {
+        eprintln!(
+            "Created blocking task {}\t{}",
+            dependency.task_ref, dependency.title
+        );
     }
     Ok(())
 }

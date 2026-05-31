@@ -48,6 +48,15 @@ Read the body from stdin when another command already produced the detail:
 printf 'Failure details...\n' | tsk push -- "Record failing CI output" -b -
 ```
 
+Edit an existing task interactively with `$EDITOR`, or replace only the body
+non-interactively with `-b`. Use `-b -` to read the replacement body from stdin:
+
+```sh
+tsk edit -T tsk-12
+tsk edit -T tsk-12 -b "New body text"
+printf 'New body from a script\n' | tsk edit -T tsk-12 -b -
+```
+
 Reopen completed work when it becomes active again:
 
 ```sh
