@@ -658,9 +658,21 @@ fn pick_inbox_key(ws: &Workspace, key: Option<String>) -> Result<String> {
 pub(crate) fn command_accept(
     dir: PathBuf,
     key: Option<String>,
+    task_id: TaskId,
     remote: Option<String>,
 ) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
+    if !task_id.is_empty() {
+        if key.is_some() {
+            return Err(errors::Error::Parse(
+                "accept takes either an inbox key or a task id, not both".into(),
+            ));
+        }
+        let (id, stable) = ws.accept_unassigned(task_id.into())?;
+        println!("Accepted {id}");
+        auto_push_refs(&ws, remote, ws.refs_for_accept_unassigned(&stable)?)?;
+        return Ok(());
+    }
     let key = pick_inbox_key(&ws, key)?;
     let id = ws.accept_inbox(&key)?;
     println!("Accepted as {id}");

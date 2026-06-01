@@ -88,7 +88,9 @@ Queues are independent ordered stacks; task lifecycle comes from the protected
 `tsk queue create NAME`; new queues default to `can-pull=false`, which prevents
 other queues from pulling tasks out of them. Use `tsk queue create -p NAME` to
 create a pullable queue, or `tsk queue can-pull NAME true|false` to change that
-flag later.
+flag later. Inbox items are ordered top-first like queue tasks; `tsk accept`
+with no key accepts the top inbox item. Use `tsk accept -T tsk-N` to place an
+open task that is not currently assigned to any queue onto the active queue.
 
 The priority of a task may be manipulated in any of several ways:
 

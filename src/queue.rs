@@ -3,6 +3,7 @@
 //! Stored as a commit chain at `refs/tsk/queues/<name>`. Tree layout:
 //!   index           → blob: ordered stable ids (one per line, top-of-stack first)
 //!   can-pull        → blob: "true" or "false" (defaults: true for `tsk`, false otherwise)
+//!   inbox-index     → blob: ordered inbox keys (one per line, top-of-inbox first)
 //!   inbox/<src>-<n> → blob: stable id of a task assigned by queue <src>
 //!
 //! Queues are pushed/shared (refspec `refs/tsk/*`). The active queue per-user
@@ -17,6 +18,7 @@ pub const QUEUE_REF_PREFIX: &str = "refs/tsk/queues/";
 pub const DEFAULT_QUEUE: &str = "tsk";
 const INDEX_FILE: &str = "index";
 const CAN_PULL_FILE: &str = "can-pull";
+const INBOX_INDEX_FILE: &str = "inbox-index";
 const INBOX_DIR: &str = "inbox";
 
 pub fn refname(name: &str) -> String {
@@ -43,6 +45,8 @@ pub struct Queue {
     /// top-of-stack first
     pub index: Vec<StableId>,
     pub can_pull: bool,
+    /// top-of-inbox first
+    pub inbox_order: Vec<String>,
     /// inbox key → stable id of the task being offered
     pub inbox: BTreeMap<String, StableId>,
 }
@@ -52,6 +56,7 @@ impl Queue {
         Self {
             index: Vec::new(),
             can_pull: name == DEFAULT_QUEUE,
+            inbox_order: Vec::new(),
             inbox: BTreeMap::new(),
         }
     }
@@ -85,6 +90,15 @@ pub fn read_at_commit(repo: &Repository, name: &str, commit_oid: Oid) -> Result<
         let blob = e.to_object(repo)?.peel_to_blob()?;
         q.can_pull = String::from_utf8_lossy(blob.content()).trim() == "true";
     }
+    if let Some(e) = tree.get_name(INBOX_INDEX_FILE) {
+        let blob = e.to_object(repo)?.peel_to_blob()?;
+        q.inbox_order = String::from_utf8_lossy(blob.content())
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(ToString::to_string)
+            .collect();
+    }
     if let Some(e) = tree.get_name(INBOX_DIR) {
         let inbox_tree = e.to_object(repo)?.peel_to_tree()?;
         for ie in inbox_tree.iter() {
@@ -96,6 +110,7 @@ pub fn read_at_commit(repo: &Repository, name: &str, commit_oid: Oid) -> Result<
             }
         }
     }
+    normalize_inbox_order(&mut q);
     Ok(q)
 }
 
@@ -108,6 +123,9 @@ pub fn build_tree(repo: &Repository, q: &Queue) -> Result<Oid> {
     let cp_oid = repo.blob(cp.as_bytes())?;
     tb.insert(CAN_PULL_FILE, cp_oid, 0o100644)?;
     if !q.inbox.is_empty() {
+        let inbox_index_text: String = q.inbox_order.iter().map(|k| format!("{k}\n")).collect();
+        let inbox_index_oid = repo.blob(inbox_index_text.as_bytes())?;
+        tb.insert(INBOX_INDEX_FILE, inbox_index_oid, 0o100644)?;
         let mut ib = repo.treebuilder(None)?;
         for (k, v) in &q.inbox {
             let oid = repo.blob(v.0.as_bytes())?;
@@ -117,6 +135,17 @@ pub fn build_tree(repo: &Repository, q: &Queue) -> Result<Oid> {
         tb.insert(INBOX_DIR, ib_oid, 0o040000)?;
     }
     Ok(tb.write()?)
+}
+
+fn normalize_inbox_order(q: &mut Queue) {
+    let mut seen = std::collections::BTreeSet::new();
+    q.inbox_order
+        .retain(|key| q.inbox.contains_key(key) && seen.insert(key.clone()));
+    for key in q.inbox.keys() {
+        if !seen.contains(key) {
+            q.inbox_order.push(key.clone());
+        }
+    }
 }
 
 pub fn write(repo: &Repository, name: &str, q: &Queue, message: &str) -> Result<()> {
@@ -226,7 +255,9 @@ pub fn add_to_inbox(
     message: &str,
 ) -> Result<()> {
     let mut q = read(repo, name)?;
-    q.inbox.insert(key, stable);
+    q.inbox.insert(key.clone(), stable);
+    q.inbox_order.retain(|existing| existing != &key);
+    q.inbox_order.insert(0, key);
     write(repo, name, &q, message)
 }
 
@@ -240,6 +271,7 @@ pub fn take_from_inbox(
     let Some(stable) = q.inbox.remove(key) else {
         return Ok(None);
     };
+    q.inbox_order.retain(|existing| existing != key);
     write(repo, name, &q, message)?;
     Ok(Some(stable))
 }

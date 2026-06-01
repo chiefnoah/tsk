@@ -180,11 +180,14 @@ fn render_queue(ws: &Workspace, name: &str, page_num: usize) -> Result<String> {
         "<p><em>Inbox empty</em></p>".to_string()
     } else {
         let mut items = String::new();
-        for (key, stable) in q.inbox {
+        for key in q.inbox_order {
+            let Some(stable) = q.inbox.get(&key) else {
+                continue;
+            };
             items.push_str(&format!(
                 "<li>{}: {}</li>",
                 h(&key),
-                task_anchor(&stable, h(&title_for(&repo, &stable)?))
+                task_anchor(stable, h(&title_for(&repo, stable)?))
             ));
         }
         format!("<ul>{items}</ul>")

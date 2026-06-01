@@ -861,6 +861,24 @@ fn three_way_queue_merge(base: &Queue, local: &Queue, remote: &Queue) -> Queue {
         }
     }
 
+    let mut inbox_order = Vec::new();
+    let mut seen_inbox = HashSet::new();
+    for key in remote
+        .inbox_order
+        .iter()
+        .chain(local.inbox_order.iter())
+        .chain(base.inbox_order.iter())
+    {
+        if inbox.contains_key(key) && seen_inbox.insert(key.clone()) {
+            inbox_order.push(key.clone());
+        }
+    }
+    for key in inbox.keys() {
+        if seen_inbox.insert(key.clone()) {
+            inbox_order.push(key.clone());
+        }
+    }
+
     let can_pull = if local.can_pull == base.can_pull {
         remote.can_pull
     } else {
@@ -870,6 +888,7 @@ fn three_way_queue_merge(base: &Queue, local: &Queue, remote: &Queue) -> Queue {
     Queue {
         index,
         can_pull,
+        inbox_order,
         inbox,
     }
 }

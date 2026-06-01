@@ -123,6 +123,7 @@ Work an inbox from the receiving queue:
 tsk queue switch review
 tsk inbox
 tsk accept
+tsk accept -T tsk-9
 tsk accept review-1
 tsk reject review-2
 tsk inbox -R ""
@@ -132,7 +133,10 @@ tsk reject review-2 -R ""
 
 - `tsk inbox` lists pending items for the active queue and auto-pulls first by
   default.
-- `tsk accept [key]` moves an inbox item onto the active queue.
+- `tsk accept [key]` moves an inbox item onto the active queue; with no key,
+  it accepts the top inbox item.
+- `tsk accept -T tsk-N` moves an open task with no queue assignment onto the
+  active queue.
 - `tsk reject [key]` returns an inbox item to its source queue's inbox.
 - Use `-R ""` on inbox, accept, or reject to skip the default remote action.
 

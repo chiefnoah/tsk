@@ -763,6 +763,54 @@ fn abandon_removes_from_queue_without_changing_status() {
 }
 
 #[test]
+fn accept_task_id_assigns_unqueued_task_to_active_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["push", "ready later"]);
+    tsk_ok(dir.path(), &["abandon", "-T", "tsk-1"]);
+
+    let out = tsk_ok(dir.path(), &["accept", "-T", "tsk-1", "-R", ""]);
+    assert!(out.contains("Accepted tsk-1"), "got {out}");
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        list.starts_with("tsk-1\tready later"),
+        "accepted unqueued task should be on top of active queue: {list}"
+    );
+    let open = tsk_ok(dir.path(), &["open"]);
+    assert!(
+        open.contains("tsk-1\ttsk\tready later"),
+        "accepted task should report active queue membership: {open}"
+    );
+}
+
+#[test]
+fn bare_accept_takes_top_inbox_item() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["queue", "create", "review"]);
+    tsk_ok(dir.path(), &["push", "first assigned"]);
+    tsk_ok(dir.path(), &["assign", "review", "-T", "tsk-1", "-R", ""]);
+    tsk_ok(dir.path(), &["push", "second assigned"]);
+    tsk_ok(dir.path(), &["assign", "review", "-T", "tsk-2", "-R", ""]);
+    tsk_ok(dir.path(), &["queue", "switch", "review"]);
+
+    let inbox = tsk_ok(dir.path(), &["inbox", "-R", ""]);
+    assert!(
+        inbox.starts_with("tsk-2\tfrom tsk\tsecond assigned"),
+        "newest inbox item should be top: {inbox}"
+    );
+    let out = tsk_ok(dir.path(), &["accept", "-R", ""]);
+    assert!(out.contains("Accepted as tsk-2"), "got {out}");
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        list.starts_with("tsk-2\tsecond assigned"),
+        "bare accept should take the top inbox item: {list}"
+    );
+}
+
+#[test]
 fn reopen_can_skip_or_assign_active_queue() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_with_commit(dir.path());

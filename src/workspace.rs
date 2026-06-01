@@ -1387,10 +1387,25 @@ impl Workspace {
         Ok((key, stable))
     }
 
+    fn task_has_queue_membership(&self, stable: &StableId) -> Result<bool> {
+        let repo = self.repo()?;
+        for name in self.list_queues()? {
+            let q = queue::read(&repo, &name)?;
+            if q.index.iter().any(|s| s == stable) || q.inbox.values().any(|s| s == stable) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn list_inbox(&self) -> Result<Vec<InboxItem>> {
         let repo = self.repo()?;
         let mut out = Vec::new();
-        for (key, stable) in queue::read(&repo, &self.queue()?)?.inbox {
+        let q = queue::read(&repo, &self.queue()?)?;
+        for key in q.inbox_order {
+            let Some(stable) = q.inbox.get(&key).cloned() else {
+                continue;
+            };
             let source_queue = key
                 .rsplit_once('-')
                 .map(|(s, _)| s.to_string())
@@ -1404,6 +1419,26 @@ impl Workspace {
             });
         }
         Ok(out)
+    }
+
+    /// Accept an unqueued task into the active queue. This gives unassigned
+    /// open tasks the same workflow shape as accepting work from an inbox.
+    pub fn accept_unassigned(&self, identifier: TaskIdentifier) -> Result<(Id, StableId)> {
+        let (id, stable) = self.resolve(identifier)?;
+        if self.task_has_queue_membership(&stable)? {
+            return Err(Error::Parse(format!(
+                "Task {id} is already assigned to a queue or inbox"
+            )));
+        }
+
+        let mut task = self.task(TaskIdentifier::Id(id))?;
+        task.attributes
+            .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
+        self.save_task(&task)?;
+
+        let msg = self.queue_task_message("accept", id, &stable)?;
+        queue::push_top(&self.repo()?, &self.queue()?, stable.clone(), &msg)?;
+        Ok((id, stable))
     }
 
     /// Accept an inbox item: bind to a human id in the active namespace
@@ -1602,6 +1637,24 @@ impl Workspace {
             queue::refname(&self.queue()?),
             namespace::refname(&self.namespace()?),
         ])
+    }
+
+    /// Refs to push after accepting an unqueued task: the active queue,
+    /// namespace binding, task object, and property indices containing it.
+    pub fn refs_for_accept_unassigned(&self, stable: &StableId) -> Result<Vec<String>> {
+        let repo = self.repo()?;
+        let mut refs = vec![
+            queue::refname(&self.queue()?),
+            namespace::refname(&self.namespace()?),
+            stable.refname(),
+        ];
+        for key in properties::list_keys(&repo)? {
+            let entries = properties::read(&repo, &key)?;
+            if entries.contains_key(stable) {
+                refs.push(properties::refname(&key));
+            }
+        }
+        Ok(refs)
     }
 
     /// Refs to push after `reject_inbox`: the active queue (entry left the

@@ -271,9 +271,11 @@ enum Commands {
         #[arg(short = 'R')]
         remote: Option<String>,
     },
-    /// Accept an inbox item by key (no key = first item).
+    /// Accept an inbox item by key (no key = top item), or accept an unqueued task by id.
     Accept {
         key: Option<String>,
+        #[command(flatten)]
+        task_id: TaskId,
         /// Auto-push refs to this remote after accepting. Empty string skips. Default: origin.
         #[arg(short = 'R')]
         remote: Option<String>,
@@ -584,7 +586,11 @@ fn dispatch(cli: Cli) -> Result<()> {
         } => commands::command_assign(dir, target, task_id, remote),
         Commands::Pull { source, task_id } => commands::command_pull(dir, source, task_id),
         Commands::Inbox { remote } => commands::command_inbox(dir, remote),
-        Commands::Accept { key, remote } => commands::command_accept(dir, key, remote),
+        Commands::Accept {
+            key,
+            task_id,
+            remote,
+        } => commands::command_accept(dir, key, task_id, remote),
         Commands::Reject { key, remote } => commands::command_reject(dir, key, remote),
         Commands::Prop { action } => commands::command_prop(dir, action),
         Commands::Namespace { action } => commands::command_namespace(dir, action),
