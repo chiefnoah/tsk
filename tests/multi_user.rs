@@ -1201,7 +1201,7 @@ fn body_conflict_on_pull_opens_editor_and_commits_result() {
     let editor = editor_dir.path().join("resolve-conflict");
     std::fs::write(
         &editor,
-        "#!/bin/sh\nprintf 'resolved title\\n\\nresolved body\\n' > \"$1\"\n",
+        "#!/bin/sh\nfor arg do path=$arg; done\nprintf 'resolved title\\n\\nresolved body\\n' > \"$path\"\n",
     )
     .unwrap();
     let mut perms = std::fs::metadata(&editor).unwrap().permissions();
@@ -1210,8 +1210,8 @@ fn body_conflict_on_pull_opens_editor_and_commits_result() {
 
     let mut cmd = Command::new(tsk_bin());
     cmd.current_dir(&bob)
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
+        .env("EDITOR", "false")
+        .env("VISUAL", format!("{} --wait", editor.display()))
         .arg("git-pull");
     let (code, stdout, stderr) = run(&mut cmd);
     assert_eq!(

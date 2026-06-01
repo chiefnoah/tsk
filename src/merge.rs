@@ -29,7 +29,9 @@ use crate::queue::{self, QUEUE_REF_PREFIX, Queue};
 use crate::references;
 use git2::{Commit, IndexEntry, Oid, Repository, Tree};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::process::Command;
+use std::ffi::OsStr;
+use std::path::Path;
+use std::process::{Command, ExitStatus};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Strategy {
@@ -235,7 +237,7 @@ fn edit_conflict_content(initial: String) -> Result<Option<String>> {
         })?;
     let path = conflict_temp_path()?;
     std::fs::write(&path, initial)?;
-    let status = Command::new(editor).arg(&path).status()?;
+    let status = run_editor_command(&editor, &path)?;
     if !status.success() {
         return Err(crate::errors::Error::Parse(
             "editor exited unsuccessfully while resolving task body conflict".into(),
@@ -247,6 +249,33 @@ fn edit_conflict_content(initial: String) -> Result<Option<String>> {
         Ok(None)
     } else {
         Ok(Some(edited))
+    }
+}
+
+fn run_editor_command(editor: &OsStr, path: &Path) -> Result<ExitStatus> {
+    let command = editor.to_string_lossy();
+    if command.trim().is_empty() {
+        return Err(crate::errors::Error::Parse(
+            "task body conflict requires VISUAL or EDITOR to resolve".into(),
+        ));
+    }
+
+    #[cfg(windows)]
+    {
+        Ok(Command::new("cmd")
+            .arg("/C")
+            .arg(format!("{command} \"{}\"", path.display()))
+            .status()?)
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(Command::new("sh")
+            .arg("-c")
+            .arg(format!("{command} \"$1\""))
+            .arg("tsk-editor")
+            .arg(path)
+            .status()?)
     }
 }
 
