@@ -53,6 +53,7 @@ const REMOTE_FILE: &str = "remote";
 pub const DEFAULT_REMOTE: &str = "origin";
 /// Auto-managed property holding the task's lifecycle state. Set to
 /// `STATUS_OPEN` on creation and flipped to `STATUS_DONE` by [`Workspace::drop`].
+/// Queue membership is independent worklist placement, not lifecycle state.
 pub const STATUS_KEY: &str = "status";
 pub const STATUS_OPEN: &str = "open";
 pub const STATUS_DONE: &str = "done";
@@ -830,28 +831,27 @@ impl Workspace {
         Ok(out)
     }
 
-    /// Tasks in the active namespace that are not present in any queue index
-    /// or inbox. Queue membership is the authoritative signal that a task is
-    /// still active somewhere.
+    /// Tasks in the active namespace whose authoritative lifecycle status is
+    /// `done`, regardless of whether a stale or intentional queue entry still
+    /// points at them.
     pub fn closed_tasks(&self) -> Result<Vec<StackEntry>> {
         let repo = self.repo()?;
-        let mut active = BTreeSet::new();
-        for name in self.list_queues()? {
-            let q = queue::read(&repo, &name)?;
-            active.extend(q.index);
-            active.extend(q.inbox.into_values());
-        }
-
         let mut out = Vec::new();
         for (human, stable) in namespace::read(&repo, &self.namespace()?)?.mapping {
-            if active.contains(&stable) {
+            let Some(task) = object::read(&repo, &stable)? else {
+                continue;
+            };
+            let is_done = task
+                .properties
+                .get(STATUS_KEY)
+                .is_some_and(|values| values.iter().any(|value| value == STATUS_DONE));
+            if !is_done {
                 continue;
             }
-            let title = Self::title_for(&repo, &stable)?;
             out.push(StackEntry {
                 id: Id(human),
                 stable,
-                title,
+                title: task.title().to_string(),
             });
         }
         Ok(out)
@@ -1261,9 +1261,11 @@ impl Workspace {
 
     /// Repair calculated state from canonical task data.
     ///
-    /// Task bodies own `references` / `referenced-by`; queue index membership
-    /// owns `status`. Existing calculated properties are overwritten when they
-    /// disagree, because they are informational caches.
+    /// Task bodies own `references` / `referenced-by`; the protected `status`
+    /// property owns lifecycle state. Existing calculated properties are
+    /// overwritten when they disagree, because they are informational caches.
+    /// Status is only inferred from queue membership for legacy tasks that do
+    /// not yet have an open/done status value.
     pub fn clean(&self) -> Result<CleanReport> {
         let repo = self.repo()?;
         let active_namespace = self.namespace()?;
@@ -1311,13 +1313,20 @@ impl Workspace {
                 }
             }
 
-            let status = if queue_prune.queued.contains(&stable) {
-                STATUS_OPEN
-            } else {
-                STATUS_DONE
-            };
-            task.properties
-                .insert(STATUS_KEY.into(), vec![status.to_string()]);
+            let has_status = task.properties.get(STATUS_KEY).is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|value| value == STATUS_OPEN || value == STATUS_DONE)
+            });
+            if !has_status {
+                let status = if queue_prune.queued.contains(&stable) {
+                    STATUS_OPEN
+                } else {
+                    STATUS_DONE
+                };
+                task.properties
+                    .insert(STATUS_KEY.into(), vec![status.to_string()]);
+            }
             tasks.insert(stable, task);
         }
 
@@ -2003,37 +2012,55 @@ mod test {
     }
 
     #[test]
-    fn clean_uses_queue_membership_as_status_authority() {
+    fn clean_preserves_status_as_lifecycle_authority() {
         let (_d, ws) = fresh_workspace();
-        let queued = ws.new_task("queued".into(), "".into()).unwrap();
-        let queued_id = queued.id;
-        let queued_stable = queued.stable.clone();
-        ws.push_task(queued).unwrap();
-        let done = ws.new_task("done".into(), "".into()).unwrap();
-        let done_id = done.id;
-        let done_stable = done.stable.clone();
-        ws.push_task(done).unwrap();
-        ws.drop(TaskIdentifier::Id(done_id)).unwrap();
-
-        set_task_property(&ws, &queued_stable, STATUS_KEY, vec![STATUS_DONE.into()]);
-        set_task_property(&ws, &done_stable, STATUS_KEY, vec![STATUS_OPEN.into()]);
+        let open_unqueued = ws.new_task("open unqueued".into(), "".into()).unwrap();
+        let open_unqueued_id = open_unqueued.id;
+        ws.push_task(open_unqueued).unwrap();
+        ws.abandon(TaskIdentifier::Id(open_unqueued_id)).unwrap();
+        let done_queued = ws.new_task("done queued".into(), "".into()).unwrap();
+        let done_queued_id = done_queued.id;
+        let done_queued_stable = done_queued.stable.clone();
+        ws.push_task(done_queued).unwrap();
+        set_task_property(
+            &ws,
+            &done_queued_stable,
+            STATUS_KEY,
+            vec![STATUS_DONE.into()],
+        );
 
         let report = ws.clean().unwrap();
         assert_eq!(report.queue_entries_pruned, 0);
-        assert_eq!(report.tasks_repaired, 2);
+        assert_eq!(report.tasks_repaired, 0);
         assert_eq!(
-            ws.task(TaskIdentifier::Id(queued_id))
+            ws.task(TaskIdentifier::Id(open_unqueued_id))
                 .unwrap()
                 .attributes
                 .get(STATUS_KEY),
             Some(&vec![STATUS_OPEN.to_string()])
         );
         assert_eq!(
-            ws.task(TaskIdentifier::Id(done_id))
+            ws.task(TaskIdentifier::Id(done_queued_id))
                 .unwrap()
                 .attributes
                 .get(STATUS_KEY),
             Some(&vec![STATUS_DONE.to_string()])
+        );
+        assert_eq!(
+            ws.open_tasks()
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![open_unqueued_id]
+        );
+        assert_eq!(
+            ws.closed_tasks()
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![done_queued_id]
         );
     }
 

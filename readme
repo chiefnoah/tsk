@@ -83,10 +83,12 @@ status unchanged, use `tsk abandon`. Completed tasks can be marked open again
 with `tsk reopen`; by default this places them at the top of the active queue,
 or `tsk reopen --no-queue` can leave them unqueued.
 
-Queues are independent ordered stacks. Create one with `tsk queue create NAME`;
-new queues default to `can-pull=false`, which prevents other queues from
-pulling tasks out of them. Use `tsk queue create -p NAME` to create a pullable
-queue, or `tsk queue can-pull NAME true|false` to change that flag later.
+Queues are independent ordered stacks; task lifecycle comes from the protected
+`status` property, not from queue membership. Create one with
+`tsk queue create NAME`; new queues default to `can-pull=false`, which prevents
+other queues from pulling tasks out of them. Use `tsk queue create -p NAME` to
+create a pullable queue, or `tsk queue can-pull NAME true|false` to change that
+flag later.
 
 The priority of a task may be manipulated in any of several ways:
 

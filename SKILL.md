@@ -162,8 +162,10 @@ follow-up bookkeeping that should not disturb the user's namespace.
 
 ## Queues
 
-Queues are ordered work stacks. Keep the user's queue focused; put agent-created
-follow-ups in an agent queue when they are not part of the current request.
+Queues are ordered work stacks. Task lifecycle comes from the protected
+`status` property, not queue membership. Keep the user's queue focused; put
+agent-created follow-ups in an agent queue when they are not part of the current
+request.
 
 ```sh
 tsk queue current
