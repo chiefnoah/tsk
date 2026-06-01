@@ -1,0 +1,5 @@
+Add tsk open to list open tasks with queue membership
+
+Add an open subcommand that lists tasks in the active namespace whose status property is open, independent of whether they are in the active queue.
+
+The output should include each task id, title, and the queue the task is currently in when it appears in a queue, or none when it is not queued. Decide and document behavior for tasks in multiple queues, then cover queued, unqueued, and done-task cases in tests.
