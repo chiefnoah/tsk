@@ -42,6 +42,9 @@ struct Cli {
     /// reject, export, ...).
     #[arg(short = 'q', long = "queue", value_name = "QUEUE", global = true)]
     queue: Option<String>,
+    /// Print header rows for commands that emit tabular output.
+    #[arg(long, global = true)]
+    headers: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -532,8 +535,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             all,
             count,
             ids_only,
-        } => commands::command_list(dir, all, count, ids_only),
-        Commands::Open => commands::command_open(dir),
+        } => commands::command_list(dir, all, count, ids_only, cli.headers),
+        Commands::Open => commands::command_open(dir, cli.headers),
         Commands::Find { multi, all, body } => commands::command_find(dir, multi, all, body),
         Commands::Show {
             task_id,
@@ -585,16 +588,16 @@ fn dispatch(cli: Cli) -> Result<()> {
             remote,
         } => commands::command_assign(dir, target, task_id, remote),
         Commands::Pull { source, task_id } => commands::command_pull(dir, source, task_id),
-        Commands::Inbox { remote } => commands::command_inbox(dir, remote),
+        Commands::Inbox { remote } => commands::command_inbox(dir, remote, cli.headers),
         Commands::Accept {
             key,
             task_id,
             remote,
         } => commands::command_accept(dir, key, task_id, remote),
         Commands::Reject { key, remote } => commands::command_reject(dir, key, remote),
-        Commands::Prop { action } => commands::command_prop(dir, action),
-        Commands::Namespace { action } => commands::command_namespace(dir, action),
-        Commands::Queue { action } => commands::command_queue(dir, action),
+        Commands::Prop { action } => commands::command_prop(dir, action, cli.headers),
+        Commands::Namespace { action } => commands::command_namespace(dir, action, cli.headers),
+        Commands::Queue { action } => commands::command_queue(dir, action, cli.headers),
         Commands::Remote { action } => commands::command_remote(dir, action),
         Commands::Switch { name } => {
             commands::resolve_and_switch_namespace(&Workspace::from_path(dir)?, name)

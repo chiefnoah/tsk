@@ -87,6 +87,10 @@ fn print_two_col_row(left: impl std::fmt::Display, right: impl std::fmt::Display
     println!("{left}\t{right}");
 }
 
+fn print_header(cols: &[&str]) {
+    println!("{}", cols.join("\t"));
+}
+
 fn render_two_col_row(left: impl std::fmt::Display, right: impl std::fmt::Display) -> String {
     format!("{left}\t{right}")
 }
@@ -162,12 +166,25 @@ pub(crate) fn command_push(
     }
 }
 
-pub(crate) fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool) -> Result<()> {
+pub(crate) fn command_list(
+    dir: PathBuf,
+    all: bool,
+    count: usize,
+    ids_only: bool,
+    headers: bool,
+) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let stack = ws.read_stack()?;
     if stack.is_empty() {
         println!("*No tasks*");
         return Ok(());
+    }
+    if headers {
+        if ids_only {
+            print_header(&["id"]);
+        } else {
+            print_header(&["id", "title"]);
+        }
     }
     for (i, entry) in stack.iter().enumerate() {
         if !all && i >= count {
@@ -182,12 +199,15 @@ pub(crate) fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool
     Ok(())
 }
 
-pub(crate) fn command_open(dir: PathBuf) -> Result<()> {
+pub(crate) fn command_open(dir: PathBuf, headers: bool) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     let tasks = ws.open_tasks()?;
     if tasks.is_empty() {
         println!("*No open tasks*");
         return Ok(());
+    }
+    if headers {
+        print_header(&["id", "queues", "title"]);
     }
     for task in tasks {
         let queues = if task.queues.is_empty() {
@@ -626,7 +646,7 @@ pub(crate) fn command_pull(dir: PathBuf, source: String, task_id: TaskId) -> Res
     Ok(())
 }
 
-pub(crate) fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> {
+pub(crate) fn command_inbox(dir: PathBuf, remote: Option<String>, headers: bool) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     if let Some(r) = effective_remote(&ws, remote)? {
         let refs = ws.refs_for_inbox_pull()?;
@@ -636,6 +656,9 @@ pub(crate) fn command_inbox(dir: PathBuf, remote: Option<String>) -> Result<()> 
     if inbox.is_empty() {
         println!("*Empty*");
         return Ok(());
+    }
+    if headers {
+        print_header(&["key", "source", "title"]);
     }
     for item in inbox {
         print_inbox_row(&item);
@@ -808,11 +831,14 @@ fn relative_time(secs: u64) -> String {
     }
 }
 
-pub(crate) fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
+pub(crate) fn command_prop(dir: PathBuf, action: PropAction, headers: bool) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
         PropAction::List { task_id } => {
             let task = ws.task(task_id.into())?;
+            if headers && !task.attributes.is_empty() {
+                print_header(&["key", "value"]);
+            }
             for (key, values) in &task.attributes {
                 if values.is_empty() {
                     println!("{key}");
@@ -847,9 +873,18 @@ pub(crate) fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
         } => ws.unset_property(task_id.into(), &key, value.as_deref())?,
         PropAction::Keys { task_id } => {
             let task = ws.task(task_id.into())?;
+            if headers && !task.attributes.is_empty() {
+                print_header(&["key"]);
+            }
             print_lines(task.attributes.keys());
         }
-        PropAction::Values { key } => print_lines(ws.property_values(&key)?),
+        PropAction::Values { key } => {
+            let values = ws.property_values(&key)?;
+            if headers && !values.is_empty() {
+                print_header(&["value"]);
+            }
+            print_lines(values);
+        }
         PropAction::Find { key, value } => {
             let key = match key {
                 Some(k) => k,
@@ -871,7 +906,11 @@ pub(crate) fn command_prop(dir: PathBuf, action: PropAction) -> Result<()> {
                     }
                 }
             };
-            for (id, _stable, title) in ws.find_by_property(&key, value.as_deref())? {
+            let matches = ws.find_by_property(&key, value.as_deref())?;
+            if headers && !matches.is_empty() {
+                print_header(&["id", "title"]);
+            }
+            for (id, _stable, title) in matches {
                 print_two_col_row(id, title);
             }
         }
@@ -885,16 +924,28 @@ fn print_lines<I: std::fmt::Display>(items: impl IntoIterator<Item = I>) {
     }
 }
 
-pub(crate) fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result<()> {
+pub(crate) fn command_namespace(
+    dir: PathBuf,
+    action: NamespaceAction,
+    headers: bool,
+) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
         NamespaceAction::List { head } => {
+            let namespaces = ws.list_namespaces()?;
+            if headers && !namespaces.is_empty() {
+                if head {
+                    print_header(&["namespace", "head"]);
+                } else {
+                    print_header(&["namespace"]);
+                }
+            }
             if head {
-                for name in ws.list_namespaces()? {
+                for name in namespaces {
                     print_key_value_row(&name, ws.namespace_head_commit(&name)?);
                 }
             } else {
-                print_lines(ws.list_namespaces()?);
+                print_lines(namespaces);
             }
         }
         NamespaceAction::Current { head } => {
@@ -911,7 +962,11 @@ pub(crate) fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result
                 Some(name) => name,
                 None => ws.namespace()?,
             };
-            for entry in ws.list_namespace_tasks(&target)? {
+            let entries = ws.list_namespace_tasks(&target)?;
+            if headers && !entries.is_empty() {
+                print_header(&["id", "title"]);
+            }
+            for entry in entries {
                 print_two_col_row(entry.id, entry.title);
             }
         }
@@ -920,7 +975,11 @@ pub(crate) fn command_namespace(dir: PathBuf, action: NamespaceAction) -> Result
                 Some(name) => name,
                 None => ws.namespace()?,
             };
-            print_lines(ws.namespace_property_keys(&target)?);
+            let keys = ws.namespace_property_keys(&target)?;
+            if headers && !keys.is_empty() {
+                print_header(&["key"]);
+            }
+            print_lines(keys);
         }
     }
     Ok(())
@@ -938,10 +997,16 @@ pub(crate) fn command_remote(dir: PathBuf, action: RemoteAction) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn command_queue(dir: PathBuf, action: QueueAction) -> Result<()> {
+pub(crate) fn command_queue(dir: PathBuf, action: QueueAction, headers: bool) -> Result<()> {
     let ws = Workspace::from_path(dir)?;
     match action {
-        QueueAction::List => print_lines(ws.list_queues()?),
+        QueueAction::List => {
+            let queues = ws.list_queues()?;
+            if headers && !queues.is_empty() {
+                print_header(&["queue"]);
+            }
+            print_lines(queues);
+        }
         QueueAction::Current => println!("{}", ws.queue()?),
         QueueAction::Create { name, can_pull } => {
             ws.create_queue(&name, Some(can_pull))?;

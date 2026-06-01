@@ -605,6 +605,66 @@ fn property_index_pushed_and_visible_to_other_clone() {
 }
 
 #[test]
+fn tabular_commands_can_print_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "first"]);
+    tsk_ok(
+        dir.path(),
+        &["prop", "add", "-T", "tsk-1", "owner", "alice"],
+    );
+
+    let plain_list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        plain_list.starts_with("tsk-1\tfirst"),
+        "default list output should not grow a header: {plain_list}"
+    );
+    let list = tsk_ok(dir.path(), &["--headers", "list"]);
+    assert!(
+        list.starts_with("id\ttitle\ntsk-1\tfirst"),
+        "list should include a header row: {list}"
+    );
+    let ids = tsk_ok(dir.path(), &["--headers", "list", "-i"]);
+    assert_eq!(ids, "id\ntsk-1\n");
+
+    let open = tsk_ok(dir.path(), &["--headers", "open"]);
+    assert!(
+        open.starts_with("id\tqueues\ttitle\ntsk-1\ttsk\tfirst"),
+        "open should include column headers: {open}"
+    );
+    let prop_list = tsk_ok(dir.path(), &["--headers", "prop", "list", "-T", "tsk-1"]);
+    assert!(
+        prop_list.starts_with("key\tvalue\n"),
+        "prop list should include column headers: {prop_list}"
+    );
+    let prop_find = tsk_ok(dir.path(), &["--headers", "prop", "find", "owner", "alice"]);
+    assert!(
+        prop_find.starts_with("id\ttitle\ntsk-1\tfirst"),
+        "prop find should include column headers: {prop_find}"
+    );
+    let namespace_list = tsk_ok(dir.path(), &["--headers", "namespace", "list"]);
+    assert!(
+        namespace_list.starts_with("namespace\ntsk"),
+        "namespace list should include a header row: {namespace_list}"
+    );
+    let namespace_tasks = tsk_ok(dir.path(), &["--headers", "namespace", "tasks"]);
+    assert!(
+        namespace_tasks.starts_with("id\ttitle\ntsk-1\tfirst"),
+        "namespace tasks should include column headers: {namespace_tasks}"
+    );
+    let namespace_props = tsk_ok(dir.path(), &["--headers", "namespace", "props"]);
+    assert!(
+        namespace_props.starts_with("key\nowner"),
+        "namespace props should include a header row: {namespace_props}"
+    );
+    let queue_list = tsk_ok(dir.path(), &["--headers", "queue", "list"]);
+    assert!(
+        queue_list.starts_with("queue\ntsk"),
+        "queue list should include a header row: {queue_list}"
+    );
+}
+
+#[test]
 fn namespace_current_and_list_can_print_ref_tips() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_with_commit(dir.path());
