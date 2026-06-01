@@ -73,6 +73,9 @@ scoped to the namespace and may be used to as a stable reference within that
 namespace.
 
 The contents of the stack may be printed using the `tsk list` command.
+Open tasks across the active namespace may be printed using `tsk open`; it
+shows each task id, the queue index or indexes containing it (comma-separated),
+or `none` when the open task is not currently queued.
 
 Tasks are marked as "completed" and removed from the index with the `tsk drop`
 command. They will remain in the .tsk/archive folder, but are excluded from

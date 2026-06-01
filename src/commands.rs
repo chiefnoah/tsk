@@ -182,6 +182,24 @@ pub(crate) fn command_list(dir: PathBuf, all: bool, count: usize, ids_only: bool
     Ok(())
 }
 
+pub(crate) fn command_open(dir: PathBuf) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let tasks = ws.open_tasks()?;
+    if tasks.is_empty() {
+        println!("*No open tasks*");
+        return Ok(());
+    }
+    for task in tasks {
+        let queues = if task.queues.is_empty() {
+            "none".to_string()
+        } else {
+            task.queues.join(",")
+        };
+        println!("{}\t{}\t{}", task.id, queues, task.title);
+    }
+    Ok(())
+}
+
 pub(crate) fn command_find(dir: PathBuf, multi: bool, all: bool, body: bool) -> Result<()> {
     let ws = Workspace::from_path(dir.clone())?;
     let entries = if all {

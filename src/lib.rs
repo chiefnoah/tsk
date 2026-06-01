@@ -92,6 +92,11 @@ enum Commands {
         #[arg(short = 'i', default_value_t = false)]
         ids_only: bool,
     },
+    /// Print open tasks in the active namespace, with queue membership.
+    ///
+    /// Queue membership is printed as a comma-separated list, or `none`
+    /// when the open task is not currently in any queue index.
+    Open,
     /// Fuzzy-find tasks and print the selected task id(s).
     Find {
         /// Allow selecting multiple tasks.
@@ -518,6 +523,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             count,
             ids_only,
         } => commands::command_list(dir, all, count, ids_only),
+        Commands::Open => commands::command_open(dir),
         Commands::Find { multi, all, body } => commands::command_find(dir, multi, all, body),
         Commands::Show {
             task_id,

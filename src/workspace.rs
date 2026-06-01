@@ -126,6 +126,13 @@ pub struct StackEntry {
     pub title: String,
 }
 
+/// One row of the open-task listing.
+pub struct OpenTaskEntry {
+    pub id: Id,
+    pub title: String,
+    pub queues: Vec<String>,
+}
+
 /// User-facing task: human id (in active namespace) + content + properties.
 /// Each property holds zero or more text values.
 #[derive(Debug)]
@@ -861,6 +868,42 @@ impl Workspace {
                 id: Id(human),
                 stable,
                 title,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Every open task bound in the active namespace, annotated with queue
+    /// index membership. Queue membership is informational here; lifecycle
+    /// comes from the task's `status` property.
+    pub fn open_tasks(&self) -> Result<Vec<OpenTaskEntry>> {
+        let repo = self.repo()?;
+        let mut queues_by_stable: BTreeMap<StableId, Vec<String>> = BTreeMap::new();
+        for queue_name in queue::list_names(&repo)? {
+            for stable in queue::read(&repo, &queue_name)?.index {
+                queues_by_stable
+                    .entry(stable)
+                    .or_default()
+                    .push(queue_name.clone());
+            }
+        }
+
+        let mut out = Vec::new();
+        for (human, stable) in namespace::read(&repo, &self.namespace()?)?.mapping {
+            let Some(task) = object::read(&repo, &stable)? else {
+                continue;
+            };
+            let is_open = task
+                .properties
+                .get(STATUS_KEY)
+                .is_some_and(|values| values.iter().any(|value| value == STATUS_OPEN));
+            if !is_open {
+                continue;
+            }
+            out.push(OpenTaskEntry {
+                id: Id(human),
+                title: task.title().to_string(),
+                queues: queues_by_stable.remove(&stable).unwrap_or_default(),
             });
         }
         Ok(out)

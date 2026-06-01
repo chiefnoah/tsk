@@ -169,6 +169,33 @@ fn share_and_pull_between_clones() {
 }
 
 #[test]
+fn open_lists_open_tasks_with_queue_membership() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["push", "queued open"]);
+    tsk_ok(dir.path(), &["queue", "create", "review"]);
+    tsk_ok(dir.path(), &["push", "unqueued open"]);
+    tsk_ok(dir.path(), &["assign", "review", "-T", "tsk-2", "-R", ""]);
+    tsk_ok(dir.path(), &["push", "closed task"]);
+    tsk_ok(dir.path(), &["drop", "-T", "tsk-3"]);
+
+    let open = tsk_ok(dir.path(), &["open"]);
+    assert!(
+        open.contains("tsk-1\ttsk\tqueued open"),
+        "queued open task should report queue membership: {open:?}"
+    );
+    assert!(
+        open.contains("tsk-2\tnone\tunqueued open"),
+        "open task outside queue indexes should report none: {open:?}"
+    );
+    assert!(
+        !open.contains("closed task"),
+        "done tasks should be excluded from tsk open: {open:?}"
+    );
+}
+
+#[test]
 fn assign_to_other_queue_visible_after_push_pull() {
     let (_dir, alice, bob) = setup_two_clones();
 
