@@ -1,0 +1,5 @@
+Separate queue removal from lifecycle with abandon and reopen semantics
+
+Add tsk abandon as the command for removing a task from the active queue without changing status.
+
+Update tsk reopen so it marks the task status=open and pushes it to the top of the active queue by default, with a flag to mark it open without queueing. Queue operations such as prioritize, deprioritize, assign, and drop should verify active queue membership before mutating queue state or lifecycle state. Add regression tests for dropped/nonqueued tasks, abandon preserving status, and reopen with and without queue assignment.
