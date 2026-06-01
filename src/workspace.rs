@@ -274,9 +274,38 @@ impl Workspace {
     /// `tsk git-pull` (and the auto-push paths) target it without an
     /// explicit `<remote>` arg.
     pub fn default_remote(&self) -> Result<String> {
-        let name = self.read_selector(REMOTE_FILE, DEFAULT_REMOTE);
-        validate_remote_name(&name)?;
-        Ok(name)
+        self.default_remote_optional()?.ok_or_else(|| {
+            Error::Parse(
+                "no git remote configured; add one with `git remote add`, run \
+                 `tsk remote set-default <name>`, or pass `-R \"\"` to skip auto-sync"
+                    .into(),
+            )
+        })
+    }
+
+    /// Best-effort default remote for automatic sync paths. Returns `None`
+    /// when the repo has no usable default instead of forcing the historical
+    /// `origin` fallback and letting git print a low-level fatal error.
+    pub fn default_remote_optional(&self) -> Result<Option<String>> {
+        let configured = std::fs::read_to_string(self.path.join(REMOTE_FILE))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(name) = configured {
+            validate_remote_name(&name)?;
+            return Ok(self
+                .git_remotes()?
+                .into_iter()
+                .any(|r| r == name)
+                .then_some(name));
+        }
+
+        let remotes = self.git_remotes()?;
+        if remotes.iter().any(|r| r == DEFAULT_REMOTE) {
+            Ok(Some(DEFAULT_REMOTE.to_string()))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Persist `name` as the default remote. Errors if `name` isn't a

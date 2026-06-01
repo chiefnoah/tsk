@@ -71,7 +71,7 @@ fn effective_remote(ws: &Workspace, supplied: Option<String>) -> Result<Option<S
     match supplied {
         Some(s) if s.is_empty() => Ok(None),
         Some(s) => Ok(Some(s)),
-        None => Ok(Some(ws.default_remote()?)),
+        None => ws.default_remote_optional(),
     }
 }
 

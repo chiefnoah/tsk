@@ -196,6 +196,75 @@ fn open_lists_open_tasks_with_queue_membership() {
 }
 
 #[test]
+fn auto_sync_paths_skip_cleanly_without_git_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["queue", "create", "review"]);
+    tsk_ok(dir.path(), &["push", "first assigned"]);
+
+    let (code, assign_out, assign_err) = tsk(dir.path(), &["assign", "review"]);
+    assert_eq!(code, 0, "assign should succeed: {assign_err}");
+    assert!(
+        assign_out.contains("Assigned to review"),
+        "assign should report success: {assign_out}"
+    );
+    assert!(
+        assign_err.is_empty(),
+        "assign should not print git remote errors: {assign_err}"
+    );
+
+    tsk_ok(dir.path(), &["queue", "switch", "review"]);
+    let (code, inbox_out, inbox_err) = tsk(dir.path(), &["inbox"]);
+    assert_eq!(code, 0, "inbox should succeed: {inbox_err}");
+    assert!(
+        inbox_out.contains("first assigned"),
+        "inbox should list local assignment: {inbox_out}"
+    );
+    assert!(
+        inbox_err.is_empty(),
+        "inbox should not print git remote errors: {inbox_err}"
+    );
+
+    let (code, accept_out, accept_err) = tsk(dir.path(), &["accept"]);
+    assert_eq!(code, 0, "accept should succeed: {accept_err}");
+    assert!(
+        accept_out.contains("Accepted as"),
+        "accept should report success: {accept_out}"
+    );
+    assert!(
+        accept_err.is_empty(),
+        "accept should not print git remote errors: {accept_err}"
+    );
+
+    tsk_ok(dir.path(), &["queue", "switch", "tsk"]);
+    tsk_ok(dir.path(), &["push", "second assigned"]);
+    tsk_ok(dir.path(), &["assign", "review"]);
+    tsk_ok(dir.path(), &["queue", "switch", "review"]);
+    let (code, reject_out, reject_err) = tsk(dir.path(), &["reject"]);
+    assert_eq!(code, 0, "reject should succeed: {reject_err}");
+    assert!(
+        reject_out.contains("Rejected"),
+        "reject should report success: {reject_out}"
+    );
+    assert!(
+        reject_err.is_empty(),
+        "reject should not print git remote errors: {reject_err}"
+    );
+
+    let (code, _stdout, stderr) = tsk(dir.path(), &["git-push"]);
+    assert_ne!(code, 0, "git-push should still require an explicit remote");
+    assert!(
+        stderr.contains("no git remote configured"),
+        "git-push should explain the missing remote: {stderr}"
+    );
+    assert!(
+        !stderr.contains("fatal:"),
+        "git-push should not fall through to git's fatal remote error: {stderr}"
+    );
+}
+
+#[test]
 fn assign_to_other_queue_visible_after_push_pull() {
     let (_dir, alice, bob) = setup_two_clones();
 
