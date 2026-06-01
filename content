@@ -1,1 +1,5 @@
 Gracefully handle no remote set on repo
+
+Several subcommands including accept, pull, inbox, assign immediately push/pull
+to the remote. We should gracefully handle the case where there is no remote
+configured.
