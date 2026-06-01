@@ -1,1 +1,4 @@
 Allow accept to assign task from unassigned
+
+Additionally, inboxes should be similar to a queue's index: ordered and the
+default behavior for accept should be to take the top task off the inbox.
