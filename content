@@ -1,0 +1,5 @@
+Make status the source of truth for task lifecycle
+
+Treat the protected status property as the authoritative open/done state instead of deriving lifecycle from queue membership.
+
+Update clean so it repairs property indexes and calculated references without forcing status from queue membership, except for any explicitly needed legacy repair path. Queue membership should only mean placement in a worklist/routing queue, not whether a task is open. Add regression coverage for open tasks outside queues and done tasks still present in a queue.
