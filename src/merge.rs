@@ -78,9 +78,19 @@ pub fn fetched_prefix(remote: &str) -> String {
 /// Reconcile every `refs/tsk/tasks/*` against its fetched counterpart at
 /// `refs/tsk-fetched/<remote>/tasks/*`. Returns one entry per task that
 /// existed in either side.
+#[allow(dead_code)] // kept for callers that do not have a workspace namespace.
 pub fn reconcile_task_refs(
     repo: &Repository,
     remote: &str,
+    strategy: Strategy,
+) -> Result<Vec<Reconciliation>> {
+    reconcile_task_refs_in_namespace(repo, remote, namespace::DEFAULT_NS, strategy)
+}
+
+pub fn reconcile_task_refs_in_namespace(
+    repo: &Repository,
+    remote: &str,
+    active_namespace: &str,
     strategy: Strategy,
 ) -> Result<Vec<Reconciliation>> {
     let fetched_tasks = format!("{}tasks/", fetched_prefix(remote));
@@ -113,7 +123,7 @@ pub fn reconcile_task_refs(
             .find_reference(&remote_ref)
             .ok()
             .and_then(|r| r.target());
-        let kind = reconcile_one(repo, &stable, local, remote_tip, strategy)?;
+        let kind = reconcile_one(repo, &stable, local, remote_tip, active_namespace, strategy)?;
         out.push(Reconciliation { stable, kind });
     }
     Ok(out)
@@ -124,6 +134,7 @@ fn reconcile_one(
     stable: &StableId,
     local: Option<Oid>,
     remote: Option<Oid>,
+    active_namespace: &str,
     strategy: Strategy,
 ) -> Result<ReconKind> {
     match (local, remote) {
@@ -142,7 +153,9 @@ fn reconcile_one(
                 Ok(ReconKind::FastForward)
             } else {
                 match strategy {
-                    Strategy::Merge => merge_strategy(repo, stable, l, r, edit_conflict_content),
+                    Strategy::Merge => {
+                        merge_strategy(repo, stable, l, r, active_namespace, edit_conflict_content)
+                    }
                     Strategy::Rebase => rebase_strategy(repo, stable, l, r),
                 }
             }
@@ -155,9 +168,10 @@ fn merge_strategy(
     stable: &StableId,
     local: Oid,
     remote: Oid,
+    active_namespace: &str,
     edit_conflict: impl FnMut(String) -> Result<Option<String>>,
 ) -> Result<ReconKind> {
-    merge_strategy_inner(repo, stable, local, remote, edit_conflict)
+    merge_strategy_inner(repo, stable, local, remote, active_namespace, edit_conflict)
 }
 
 fn merge_strategy_inner(
@@ -165,6 +179,7 @@ fn merge_strategy_inner(
     stable: &StableId,
     local: Oid,
     remote: Oid,
+    active_namespace: &str,
     mut edit_conflict: impl FnMut(String) -> Result<Option<String>>,
 ) -> Result<ReconKind> {
     let base_oid = repo.merge_base(local, remote)?;
@@ -205,7 +220,7 @@ fn merge_strategy_inner(
             &parents,
         )?;
         repo.reference(&stable.refname(), merge_oid, true, "merge-conflict")?;
-        reindex_merged_task(repo, stable)?;
+        refresh_merged_task_references(repo, stable, active_namespace)?;
         return Ok(ReconKind::Conflict);
     }
     let tree_oid = idx.write_tree_to(repo)?;
@@ -223,7 +238,7 @@ fn merge_strategy_inner(
         &parents,
     )?;
     repo.reference(&stable.refname(), merge_oid, true, "merge")?;
-    reindex_merged_task(repo, stable)?;
+    refresh_merged_task_references(repo, stable, active_namespace)?;
     Ok(ReconKind::Merged)
 }
 
@@ -288,10 +303,30 @@ fn conflict_temp_path() -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-fn reindex_merged_task(repo: &Repository, stable: &StableId) -> Result<()> {
-    if let Some(task) = object::read(repo, stable)? {
+fn refresh_merged_task_references(
+    repo: &Repository,
+    stable: &StableId,
+    active_namespace: &str,
+) -> Result<()> {
+    let Some(mut task) = object::read(repo, stable)? else {
+        return Ok(());
+    };
+    let bindings = references::binding_map(repo, |s| object::exists(repo, s))?;
+    let Some((source_namespace, source_id)) =
+        references::canonical_binding(&bindings, active_namespace, stable)
+    else {
         properties::reindex_task(repo, stable, &task.properties)?;
-    }
+        return Ok(());
+    };
+    let refresh = references::refresh_task(repo, &source_namespace, &mut task, source_id, stable)?;
+    properties::update_task(repo, stable, &task, "refresh-references")?;
+    references::sync_referenced_by(
+        repo,
+        stable,
+        &refresh.source_ref,
+        &refresh.old_refs,
+        &refresh.new_refs,
+    )?;
     Ok(())
 }
 
@@ -1065,13 +1100,20 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
         let (stable, local_oid, remote_oid) = make_content_conflict(&repo);
-        let kind = merge_strategy_inner(&repo, &stable, local_oid, remote_oid, |initial| {
-            assert!(initial.contains("<<<<<<< ours\nv-local\n"));
-            assert!(initial.contains("||||||| base\nv0\n"));
-            assert!(initial.contains("=======\nv-remote\n"));
-            assert!(initial.contains(">>>>>>> theirs\n"));
-            Ok(Some("resolved title\n\nresolved body\n".into()))
-        })
+        let kind = merge_strategy_inner(
+            &repo,
+            &stable,
+            local_oid,
+            remote_oid,
+            namespace::DEFAULT_NS,
+            |initial| {
+                assert!(initial.contains("<<<<<<< ours\nv-local\n"));
+                assert!(initial.contains("||||||| base\nv0\n"));
+                assert!(initial.contains("=======\nv-remote\n"));
+                assert!(initial.contains(">>>>>>> theirs\n"));
+                Ok(Some("resolved title\n\nresolved body\n".into()))
+            },
+        )
         .unwrap();
         assert_eq!(kind, ReconKind::Conflict);
         let head = repo
@@ -1090,9 +1132,14 @@ mod test {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
         let (stable, local_oid, remote_oid) = make_content_conflict(&repo);
-        let kind = merge_strategy_inner(&repo, &stable, local_oid, remote_oid, |_initial| {
-            Ok(Some("   \n\t\n".into()))
-        })
+        let kind = merge_strategy_inner(
+            &repo,
+            &stable,
+            local_oid,
+            remote_oid,
+            namespace::DEFAULT_NS,
+            |_initial| Ok(Some("   \n\t\n".into())),
+        )
         .unwrap();
         assert_eq!(kind, ReconKind::Conflict);
         let head = repo

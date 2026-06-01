@@ -1648,7 +1648,8 @@ impl Workspace {
             .difference(&new_shadow_queues)
             .cloned()
             .collect::<BTreeSet<_>>();
-        let tasks = merge::reconcile_task_refs(&repo, remote, strategy)?;
+        let tasks =
+            merge::reconcile_task_refs_in_namespace(&repo, remote, &self.namespace()?, strategy)?;
         let namespaces = merge::reconcile_namespace_refs(&repo, remote)?;
         let queues = merge::reconcile_queue_refs_with_deletions(&repo, remote, &deleted_queues)?;
         merge::fast_forward_non_task_refs(&repo, remote)?;

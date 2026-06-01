@@ -1189,19 +1189,20 @@ fn body_conflict_on_pull_opens_editor_and_commits_result() {
 
     let (_dir, alice, bob) = setup_two_clones();
 
+    tsk_ok(&alice, &["push", "link target"]);
     tsk_ok(&alice, &["push", "shared task\n\ninitial body"]);
     tsk_ok(&alice, &["git-push"]);
     tsk_ok(&bob, &["git-pull"]);
 
-    tsk_ok(&alice, &["edit", "-T", "tsk-1", "-b", "alice body"]);
-    tsk_ok(&bob, &["edit", "-T", "tsk-1", "-b", "bob body"]);
+    tsk_ok(&alice, &["edit", "-T", "tsk-2", "-b", "alice body"]);
+    tsk_ok(&bob, &["edit", "-T", "tsk-2", "-b", "bob body"]);
     tsk_ok(&alice, &["git-push"]);
 
     let editor_dir = tempfile::tempdir().unwrap();
     let editor = editor_dir.path().join("resolve-conflict");
     std::fs::write(
         &editor,
-        "#!/bin/sh\nfor arg do path=$arg; done\nprintf 'resolved title\\n\\nresolved body\\n' > \"$path\"\n",
+        "#!/bin/sh\nfor arg do path=$arg; done\nprintf 'resolved title\\n\\nresolved body links [[tsk-1]]\\n' > \"$path\"\n",
     )
     .unwrap();
     let mut perms = std::fs::metadata(&editor).unwrap().permissions();
@@ -1223,16 +1224,26 @@ fn body_conflict_on_pull_opens_editor_and_commits_result() {
         "pull summary should report the conflict: {stdout}"
     );
 
-    let raw = tsk_ok(&bob, &["show", "-T", "tsk-1", "-R"]);
+    let raw = tsk_ok(&bob, &["show", "-T", "tsk-2", "-R"]);
     assert!(
-        raw.starts_with("resolved title\n\nresolved body\n"),
+        raw.starts_with("resolved title\n\nresolved body links [[tsk-1]]\n"),
         "editor result should be committed: {raw}"
     );
     assert!(
         !raw.contains("<<<<<<<"),
         "conflict markers should not be committed after editor resolution: {raw}"
     );
-    let log = tsk_ok(&bob, &["log", "task", "-T", "tsk-1"]);
+    let found = tsk_ok(&bob, &["prop", "find", "references", "[[tsk-1]]"]);
+    assert!(
+        found.contains("tsk-2\tresolved title"),
+        "references index should match resolved body links: {found}"
+    );
+    let target = tsk_ok(&bob, &["show", "-T", "tsk-1", "-x"]);
+    assert!(
+        target.contains("referenced-by: \"[[tsk-2]]\""),
+        "target backlink should match resolved body links: {target}"
+    );
+    let log = tsk_ok(&bob, &["log", "task", "-T", "tsk-2"]);
     assert!(
         log.contains("merge-conflict"),
         "resolved conflict should be committed as a merge-conflict: {log}"
