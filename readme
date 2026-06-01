@@ -47,6 +47,23 @@ Installation
 cargo install --locked tsk-cli
 ```
 
+With Nix Home Manager, add this flake's module and enable `programs.tsk`:
+
+```nix
+{
+  imports = [
+    inputs.tsk.homeManagerModules.default
+  ];
+
+  programs.tsk = {
+    enable = true;
+    installSkill = true;
+  };
+}
+```
+
+`installSkill` writes the output of `tsk skill` to
+`~/.agents/skills/tsk/SKILL.md`.
 
 Building
 --------

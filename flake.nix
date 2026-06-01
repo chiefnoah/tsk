@@ -12,6 +12,12 @@
       utils,
       naersk,
     }:
+    let
+      homeManagerModules = rec {
+        tsk = import ./nix/home-manager/tsk.nix { inherit self; };
+        default = tsk;
+      };
+    in
     utils.lib.eachDefaultSystem (
       system:
       let
@@ -41,6 +47,7 @@
       }
     )
     // {
+      inherit homeManagerModules;
       nixosModules.default = import ./module.nix { inherit self; };
       nixosModules.tsk-serv = self.nixosModules.default;
     };
