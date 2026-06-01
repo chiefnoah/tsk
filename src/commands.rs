@@ -289,7 +289,12 @@ fn single_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(crate) fn command_reopen(dir: PathBuf, task_id: TaskId, body: bool) -> Result<()> {
+pub(crate) fn command_reopen(
+    dir: PathBuf,
+    task_id: TaskId,
+    body: bool,
+    no_queue: bool,
+) -> Result<()> {
     let ws = Workspace::from_path(dir.clone())?;
     let identifier = if task_id.is_empty() {
         let entries = ws.closed_tasks()?;
@@ -304,7 +309,7 @@ pub(crate) fn command_reopen(dir: PathBuf, task_id: TaskId, body: bool) -> Resul
     } else {
         task_id.into()
     };
-    let id = ws.reopen(identifier)?;
+    let id = ws.reopen(identifier, !no_queue)?;
     println!("Reopened {id}");
     Ok(())
 }
@@ -563,6 +568,13 @@ pub(crate) fn command_drop(dir: PathBuf, task_id: TaskId, closed_on_commit: bool
         eprintln!("No task to drop.");
         exit(1);
     }
+}
+
+pub(crate) fn command_abandon(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    let ws = Workspace::from_path(dir)?;
+    let id = ws.abandon(task_id.into())?;
+    println!("Abandoned {id}");
+    Ok(())
 }
 
 pub(crate) fn command_share(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {

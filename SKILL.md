@@ -20,6 +20,7 @@ tsk push -e -- "Draft task"      # open $EDITOR before saving
 tsk append -- "Follow up: document parser edge cases"
 tsk append -e -- "Follow up"     # open $EDITOR before saving
 tsk drop -T tsk-12
+tsk abandon -T tsk-12
 ```
 
 - `tsk list` prints the active queue top first.
@@ -31,6 +32,8 @@ tsk drop -T tsk-12
 - `tsk drop -x -T tsk-N` records the current git commit in `closed-on`, marks
   work done, and removes it from the active queue. Use plain `drop` only when
   there is no implementing commit to record.
+- `tsk abandon -T tsk-N` removes a task from the active queue without changing
+  its status.
 
 ## Creating and editing tasks
 
@@ -61,6 +64,7 @@ Reopen completed work when it becomes active again:
 
 ```sh
 tsk reopen -T tsk-12
+tsk reopen --no-queue -T tsk-12
 ```
 
 ## Queue order

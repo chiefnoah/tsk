@@ -740,6 +740,88 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
 }
 
 #[test]
+fn abandon_removes_from_queue_without_changing_status() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["push", "parked open task"]);
+    let out = tsk_ok(dir.path(), &["abandon", "-T", "tsk-1"]);
+    assert!(out.contains("Abandoned tsk-1"), "got {out}");
+
+    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-x"]);
+    assert!(attrs.contains("status: \"open\""), "got {attrs}");
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        !list.contains("tsk-1"),
+        "abandoned task should leave the active queue: {list}"
+    );
+    let open = tsk_ok(dir.path(), &["open"]);
+    assert!(
+        open.contains("tsk-1\tnone\tparked open task"),
+        "abandoned open task should remain open with no queue: {open}"
+    );
+}
+
+#[test]
+fn reopen_can_skip_or_assign_active_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["push", "reopen target"]);
+    tsk_ok(dir.path(), &["drop", "-T", "tsk-1"]);
+
+    tsk_ok(dir.path(), &["reopen", "--no-queue", "-T", "tsk-1"]);
+    let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-x"]);
+    assert!(attrs.contains("status: \"open\""), "got {attrs}");
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        !list.contains("tsk-1"),
+        "reopen --no-queue should leave the task out of the queue: {list}"
+    );
+
+    tsk_ok(dir.path(), &["reopen", "-T", "tsk-1"]);
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        list.starts_with("tsk-1\treopen target"),
+        "default reopen should queue the task at the top: {list}"
+    );
+}
+
+#[test]
+fn queue_mutations_require_active_queue_membership() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["queue", "create", "review"]);
+    tsk_ok(dir.path(), &["queue", "create", "later"]);
+    tsk_ok(dir.path(), &["push", "assigned away"]);
+    tsk_ok(dir.path(), &["assign", "review", "-T", "tsk-1", "-R", ""]);
+
+    for args in [
+        &["prioritize", "-T", "tsk-1"][..],
+        &["deprioritize", "-T", "tsk-1"][..],
+        &["assign", "later", "-T", "tsk-1", "-R", ""][..],
+        &["drop", "-T", "tsk-1"][..],
+    ] {
+        let (code, _stdout, stderr) = tsk(dir.path(), args);
+        assert_ne!(code, 0, "tsk {args:?} should fail for nonqueued task");
+        assert!(
+            stderr.contains("not on active queue"),
+            "failure should mention active queue membership: {stderr}"
+        );
+    }
+
+    tsk_ok(dir.path(), &["push", "already dropped"]);
+    tsk_ok(dir.path(), &["drop", "-T", "tsk-2"]);
+    let (code, _stdout, stderr) = tsk(dir.path(), &["prioritize", "-T", "tsk-2"]);
+    assert_ne!(code, 0, "prioritize should reject a dropped task");
+    assert!(
+        stderr.contains("not on active queue"),
+        "failure should mention active queue membership: {stderr}"
+    );
+}
+
+#[test]
 fn queue_set_can_pull_changes_pull_permission() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_with_commit(dir.path());

@@ -1107,17 +1107,31 @@ impl Workspace {
         ))
     }
 
-    /// Flip a task back to `status=open` and push it to the top of the
-    /// active queue. Idempotent — already-open tasks are unchanged on
-    /// disk; the queue push deduplicates on the existing entry.
-    pub fn reopen(&self, identifier: TaskIdentifier) -> Result<Id> {
+    /// Flip a task back to `status=open`. By default this also pushes it to
+    /// the top of the active queue; callers can opt out when they only want
+    /// to update lifecycle state.
+    pub fn reopen(&self, identifier: TaskIdentifier, queue_task: bool) -> Result<Id> {
         let mut task = self.task(identifier)?;
         task.attributes
             .insert(STATUS_KEY.into(), vec![STATUS_OPEN.into()]);
         self.save_task(&task)?;
-        let msg = self.queue_task_message("reopen", task.id, &task.stable)?;
-        queue::push_top(&self.repo()?, &self.queue()?, task.stable, &msg)?;
+        if queue_task {
+            let msg = self.queue_task_message("reopen", task.id, &task.stable)?;
+            queue::push_top(&self.repo()?, &self.queue()?, task.stable, &msg)?;
+        }
         Ok(task.id)
+    }
+
+    fn resolve_active_queue_member(&self, identifier: TaskIdentifier) -> Result<(Id, StableId)> {
+        let (id, stable) = self.resolve(identifier)?;
+        let queue_name = self.queue()?;
+        let q = queue::read(&self.repo()?, &queue_name)?;
+        if q.index.iter().any(|s| s == &stable) {
+            return Ok((id, stable));
+        }
+        Err(Error::Parse(format!(
+            "Task {id} is not on active queue '{queue_name}'"
+        )))
     }
 
     /// Drop a task from the active queue and mark it `status=done`. The
@@ -1135,7 +1149,7 @@ impl Workspace {
         identifier: TaskIdentifier,
         closed_on: Option<String>,
     ) -> Result<Option<Id>> {
-        let (id, stable) = self.resolve(identifier)?;
+        let (id, stable) = self.resolve_active_queue_member(identifier)?;
         let repo = self.repo()?;
         let msg = self.queue_task_message("drop", id, &stable)?;
         queue::remove(&repo, &self.queue()?, &stable, &msg)?;
@@ -1148,6 +1162,15 @@ impl Workspace {
         }
         self.save_task(&task)?;
         Ok(Some(id))
+    }
+
+    /// Remove a task from the active queue without changing its lifecycle
+    /// status or task properties.
+    pub fn abandon(&self, identifier: TaskIdentifier) -> Result<Id> {
+        let (id, stable) = self.resolve_active_queue_member(identifier)?;
+        let msg = self.queue_task_message("abandon", id, &stable)?;
+        queue::remove(&self.repo()?, &self.queue()?, &stable, &msg)?;
+        Ok(id)
     }
 
     fn mutate_index<F: FnOnce(&mut Vec<StableId>)>(&self, f: F, msg: &str) -> Result<()> {
@@ -1205,7 +1228,7 @@ impl Workspace {
     }
 
     fn move_in_index(&self, identifier: TaskIdentifier, to_front: bool) -> Result<()> {
-        let (id, stable) = self.resolve(identifier)?;
+        let (id, stable) = self.resolve_active_queue_member(identifier)?;
         let msg = self.queue_task_message(
             if to_front {
                 "prioritize"
@@ -1339,7 +1362,7 @@ impl Workspace {
             ));
         }
         queue::validate_name(target_queue)?;
-        let (id, stable) = self.resolve(identifier)?;
+        let (id, stable) = self.resolve_active_queue_member(identifier)?;
         let repo = self.repo()?;
         let key = queue::inbox_key(&cur, id.0);
         let assign_msg = self.queue_task_message("assign", id, &stable)?;

@@ -162,11 +162,19 @@ enum Commands {
         #[command(flatten)]
         task_id: TaskId,
     },
+    /// Remove a task from the active queue without changing its status.
+    Abandon {
+        #[command(flatten)]
+        task_id: TaskId,
+    },
     /// Flip a `done` task back to `open` and push it onto the active queue.
     Reopen {
         /// Include task bodies in the interactive search text.
         #[arg(short, long, default_value_t = false)]
         body: bool,
+        /// Mark the task open without adding it to the active queue.
+        #[arg(long, default_value_t = false)]
+        no_queue: bool,
         #[command(flatten)]
         task_id: TaskId,
     },
@@ -543,7 +551,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             closed_on_commit,
             task_id,
         } => commands::command_drop(dir, task_id, closed_on_commit),
-        Commands::Reopen { body, task_id } => commands::command_reopen(dir, task_id, body),
+        Commands::Abandon { task_id } => commands::command_abandon(dir, task_id),
+        Commands::Reopen {
+            body,
+            no_queue,
+            task_id,
+        } => commands::command_reopen(dir, task_id, body, no_queue),
         Commands::Swap => Workspace::from_path(dir)?.swap_top(),
         Commands::Rot => Workspace::from_path(dir)?.rot(),
         Commands::Tor => Workspace::from_path(dir)?.tor(),
