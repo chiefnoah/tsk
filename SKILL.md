@@ -214,8 +214,8 @@ tsk git-push
 ## Agent rules of thumb
 
 - Run `tsk list` before choosing work unless the user gave an explicit task.
-- Use `./target/release/tsk` after rebuilding this repo, because an installed
-  `tsk` may lag behind local changes.
+- If in the tsk repo during development, use `cargo run --bin tsk --` to ensure local
+  changes are picked up and apply.
 - Commit completed code changes before dropping the task. Include the
   human-readable task id at the bottom of the commit message body, then drop the
   task with `./target/release/tsk drop -x -T tsk-N` so `closed-on` records the
