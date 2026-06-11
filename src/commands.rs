@@ -99,6 +99,19 @@ fn print_key_value_row(key: impl std::fmt::Display, value: impl std::fmt::Displa
     println!("{key}\t{value}");
 }
 
+fn print_indented_block(s: &str) {
+    if s.is_empty() {
+        return;
+    }
+    println!();
+    for line in s.split_inclusive('\n') {
+        print!("    {line}");
+    }
+    if !s.ends_with('\n') {
+        println!();
+    }
+}
+
 fn print_inbox_row(item: &InboxItem) {
     println!("{}\tfrom {}\t{}", item.key, item.source_queue, item.title);
 }
@@ -957,17 +970,26 @@ pub(crate) fn command_namespace(
             }
         }
         NamespaceAction::Switch { name } => return resolve_and_switch_namespace(&ws, name),
-        NamespaceAction::Tasks { name } => {
+        NamespaceAction::Tasks { body, name } => {
             let target = match name {
                 Some(name) => name,
                 None => ws.namespace()?,
             };
             let entries = ws.list_namespace_tasks(&target)?;
-            if headers && !entries.is_empty() {
+            if headers && !body && !entries.is_empty() {
                 print_header(&["id", "title"]);
             }
-            for entry in entries {
-                print_two_col_row(entry.id, entry.title);
+            for (i, entry) in entries.into_iter().enumerate() {
+                if body {
+                    if i > 0 {
+                        println!();
+                    }
+                    let task = ws.task_in_namespace(&target, entry.id)?;
+                    println!("{} {}", entry.id, entry.title);
+                    print_indented_block(&task.body);
+                } else {
+                    print_two_col_row(entry.id, entry.title);
+                }
             }
         }
         NamespaceAction::Props { name } => {

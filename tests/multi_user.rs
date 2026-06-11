@@ -677,7 +677,7 @@ fn property_index_pushed_and_visible_to_other_clone() {
 fn tabular_commands_can_print_headers() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_with_commit(dir.path());
-    tsk_ok(dir.path(), &["push", "first"]);
+    tsk_ok(dir.path(), &["push", "first\nbody line one\nbody line two"]);
     tsk_ok(
         dir.path(),
         &["prop", "add", "-T", "tsk-1", "owner", "alice"],
@@ -721,6 +721,11 @@ fn tabular_commands_can_print_headers() {
         namespace_tasks.starts_with("id\ttitle\ntsk-1\tfirst"),
         "namespace tasks should include column headers: {namespace_tasks}"
     );
+    let namespace_tasks_body = tsk_ok(dir.path(), &["--headers", "namespace", "tasks", "--body"]);
+    assert_eq!(
+        namespace_tasks_body,
+        "tsk-1 first\n\n    body line one\n    body line two\n"
+    );
     let namespace_props = tsk_ok(dir.path(), &["--headers", "namespace", "props"]);
     assert!(
         namespace_props.starts_with("key\nowner"),
@@ -731,6 +736,20 @@ fn tabular_commands_can_print_headers() {
         queue_list.starts_with("queue\ntsk"),
         "queue list should include a header row: {queue_list}"
     );
+}
+
+#[test]
+fn namespace_tasks_body_reads_the_requested_namespace() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    tsk_ok(dir.path(), &["namespace", "switch", "alpha"]);
+    tsk_ok(dir.path(), &["push", "alpha task\nalpha body"]);
+    tsk_ok(dir.path(), &["namespace", "switch", "tsk"]);
+    tsk_ok(dir.path(), &["push", "tsk task\ntsk body"]);
+
+    let listed = tsk_ok(dir.path(), &["namespace", "tasks", "--body", "alpha"]);
+    assert_eq!(listed, "tsk-1 alpha task\n\n    alpha body\n");
 }
 
 #[test]

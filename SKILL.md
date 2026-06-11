@@ -231,3 +231,6 @@ tsk git-push
   provision database <]` creates a new task titled `provision database`, replaces that
   text with an internal link such as `[[tsk-12]]`, and records protected `depends-on` /
   `blocks` properties between the two tasks.
+- Update tasks with information discovered during implementation. This can be later
+  discovered and referenced using `tsk namespace tasks -b` and filtered with text
+  filtering tools.

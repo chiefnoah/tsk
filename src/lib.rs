@@ -410,7 +410,12 @@ pub(crate) enum NamespaceAction {
     Switch { name: Option<String> },
     /// List every task bound in a namespace (defaults to active),
     /// regardless of which queue (if any) it's on. One row per id.
-    Tasks { name: Option<String> },
+    Tasks {
+        /// Include each task's body as a third column.
+        #[arg(short = 'b', long)]
+        body: bool,
+        name: Option<String>,
+    },
     /// List unique property keys on tasks in a namespace (defaults to active).
     Props { name: Option<String> },
 }
