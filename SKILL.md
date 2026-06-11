@@ -7,7 +7,7 @@ description: Use tsk, the task tracker maintained alongside this repository, to 
 
 Use `tsk` as the source of truth for local task work in this repository. Start by
 looking at the active queue, keep user-visible task state accurate, and prefer
-`tsk` records over ad hoc TODO comments.
+`tsk` records over ad hoc TODO comments or plan files.
 
 ## Basic workflow
 
@@ -34,6 +34,8 @@ tsk abandon -T tsk-12
   there is no implementing commit to record.
 - `tsk abandon -T tsk-N` removes a task from the active queue without changing
   its status.
+- All commands that reference a task may implicitly reference to task at the top
+  of the active queue by omitting selectors such as `-T tsk-N`.
 
 ## Creating and editing tasks
 
@@ -224,3 +226,8 @@ tsk git-push
 - Treat properties and queue changes as user-visible state.
 - Prefer `tsk push` in an agent queue for follow-up work instead of adding
   unrelated `TODO` comments in code.
+- When creating an overarching task that is composed of many smaller tasks, use the
+  shorthand by writing a title between `[>` and `<]`. For example, `blocked by [>
+  provision database <]` creates a new task titled `provision database`, replaces that
+  text with an internal link such as `[[tsk-12]]`, and records protected `depends-on` /
+  `blocks` properties between the two tasks.
