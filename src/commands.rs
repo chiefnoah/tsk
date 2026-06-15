@@ -1,7 +1,9 @@
 use crate::errors::{self, Result};
 use crate::parse_id;
 use crate::workspace::{self, Id, InboxItem, LogCommit, TaskIdentifier, Workspace};
-use crate::{LogTarget, NamespaceAction, PropAction, QueueAction, RemoteAction, TaskId, Title};
+use crate::{
+    LogTarget, NamespaceAction, PropAction, QueueAction, RemoteAction, TaskId, TaskPickScope, Title,
+};
 use crate::{fzf, merge, queue, task};
 use edit::edit as open_editor;
 use std::ffi::OsString;
@@ -295,7 +297,7 @@ fn task_search_args(dir: &std::path::Path, body: bool, multi: bool) -> Result<Ve
     Ok(args)
 }
 
-fn select_task_ids(
+pub(crate) fn select_task_ids(
     dir: &std::path::Path,
     ws: &Workspace,
     entries: Vec<workspace::StackEntry>,
@@ -329,19 +331,7 @@ pub(crate) fn command_reopen(
     no_queue: bool,
 ) -> Result<()> {
     let ws = Workspace::from_path(dir.clone())?;
-    let identifier = if task_id.is_empty() {
-        let entries = ws.closed_tasks()?;
-        if entries.is_empty() {
-            return Err(errors::Error::NoTasks);
-        }
-        let picked = select_task_ids(&dir, &ws, entries, body, false)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| errors::Error::Parse("No task selected".into()))?;
-        TaskIdentifier::Id(picked)
-    } else {
-        task_id.into()
-    };
+    let identifier = task_id.resolve_or_pick(&dir, &ws, TaskPickScope::Namespace, body)?;
     let id = ws.reopen(identifier, !no_queue)?;
     println!("Reopened {id}");
     Ok(())
@@ -359,8 +349,8 @@ pub(crate) fn command_show(
     latest_commit: bool,
     raw: bool,
 ) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    let task = ws.task(task_id.into())?;
+    let ws = Workspace::from_path(dir.clone())?;
+    let task = ws.task(task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?)?;
     if stable_id {
         println!("{}", task.stable);
         return Ok(());
@@ -432,6 +422,8 @@ fn taskid_from_id(id: Id) -> TaskId {
         id: None,
         tsk_id: Some(id),
         relative_id: None,
+        fuzzy: false,
+        fuzzy_body: false,
     }
 }
 
@@ -443,7 +435,7 @@ pub(crate) fn command_follow(
     edit: bool,
 ) -> Result<()> {
     let ws = Workspace::from_path(dir.clone())?;
-    let task = ws.task(task_id.into())?;
+    let task = ws.task(task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?)?;
     let Some(parsed_task) = task::parse(&task.to_string()) else {
         eprintln!("Unable to parse any links from body.");
         exit(1);
@@ -554,8 +546,8 @@ fn open_detached(target: &str) -> Result<()> {
 }
 
 pub(crate) fn command_edit(dir: PathBuf, task_id: TaskId, body: Option<String>) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    let mut task = ws.task(task_id.into())?;
+    let ws = Workspace::from_path(dir.clone())?;
+    let mut task = ws.task(task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?)?;
     if let Some(mut body) = body {
         if body == "-" {
             body.clear();
@@ -587,12 +579,13 @@ fn save_edited_task(ws: &Workspace, task: &workspace::Task) -> Result<()> {
 }
 
 pub(crate) fn command_drop(dir: PathBuf, task_id: TaskId, closed_on_commit: bool) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
+    let ws = Workspace::from_path(dir.clone())?;
+    let identifier = task_id.resolve(&dir, &ws, TaskPickScope::ActiveQueue)?;
     let dropped = if closed_on_commit {
         let closed_on = ws.head_commit()?;
-        ws.drop_with_closed_on(task_id.into(), Some(closed_on))?
+        ws.drop_with_closed_on(identifier, Some(closed_on))?
     } else {
-        ws.drop(task_id.into())?
+        ws.drop(identifier)?
     };
     if let Some(id) = dropped {
         println!("Dropped {id}");
@@ -604,15 +597,28 @@ pub(crate) fn command_drop(dir: PathBuf, task_id: TaskId, closed_on_commit: bool
 }
 
 pub(crate) fn command_abandon(dir: PathBuf, task_id: TaskId) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    let id = ws.abandon(task_id.into())?;
+    let ws = Workspace::from_path(dir.clone())?;
+    let id = ws.abandon(task_id.resolve(&dir, &ws, TaskPickScope::ActiveQueue)?)?;
     println!("Abandoned {id}");
     Ok(())
 }
 
+pub(crate) fn command_prioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    let ws = Workspace::from_path(dir.clone())?;
+    ws.prioritize(task_id.resolve_or_pick(&dir, &ws, TaskPickScope::ActiveQueue, false)?)
+}
+
+pub(crate) fn command_deprioritize(dir: PathBuf, task_id: TaskId) -> Result<()> {
+    let ws = Workspace::from_path(dir.clone())?;
+    ws.deprioritize(task_id.resolve(&dir, &ws, TaskPickScope::ActiveQueue)?)
+}
+
 pub(crate) fn command_share(dir: PathBuf, target: String, task_id: TaskId) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
-    let h = ws.share(task_id.into(), &target)?;
+    let ws = Workspace::from_path(dir.clone())?;
+    let h = ws.share(
+        task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?,
+        &target,
+    )?;
     println!("Shared as {target}/tsk-{h}");
     Ok(())
 }
@@ -623,12 +629,15 @@ pub(crate) fn command_assign(
     task_id: TaskId,
     remote: Option<String>,
 ) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
+    let ws = Workspace::from_path(dir.clone())?;
     let target = match target {
         Some(t) => t,
         None => pick_assign_target(&ws)?,
     };
-    let (key, stable) = ws.assign_to_queue(task_id.into(), &target)?;
+    let (key, stable) = ws.assign_to_queue(
+        task_id.resolve(&dir, &ws, TaskPickScope::ActiveQueue)?,
+        &target,
+    )?;
     println!("Assigned to {target} as {key}");
     auto_push_refs(&ws, remote, ws.refs_for_assign_out(&target, &stable)?)?;
     Ok(())
@@ -649,12 +658,14 @@ fn pick_assign_target(ws: &Workspace) -> Result<String> {
 }
 
 pub(crate) fn command_pull(dir: PathBuf, source: String, task_id: TaskId) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
+    let ws = Workspace::from_path(dir.clone())?;
     // For pull, the task id is interpreted in the source queue's namespace
     // mapping context. Simplification: require the caller to use -T <stable>
     // form via human id in active namespace. For v1 we just resolve in
     // active namespace; sharing first lets the user reference foreign tasks.
-    let id = ws.pull_from_queue(&source, task_id.into())?;
+    let identifier =
+        task_id.resolve_or_pick(&dir, &ws, TaskPickScope::Queue(source.clone()), false)?;
+    let id = ws.pull_from_queue(&source, identifier)?;
     println!("Pulled {id}");
     Ok(())
 }
@@ -697,14 +708,15 @@ pub(crate) fn command_accept(
     task_id: TaskId,
     remote: Option<String>,
 ) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
+    let ws = Workspace::from_path(dir.clone())?;
     if !task_id.is_empty() {
         if key.is_some() {
             return Err(errors::Error::Parse(
                 "accept takes either an inbox key or a task id, not both".into(),
             ));
         }
-        let (id, stable) = ws.accept_unassigned(task_id.into())?;
+        let (id, stable) =
+            ws.accept_unassigned(task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?)?;
         println!("Accepted {id}");
         auto_push_refs(&ws, remote, ws.refs_for_accept_unassigned(&stable)?)?;
         return Ok(());
@@ -742,7 +754,7 @@ pub(crate) fn command_export(
     all: bool,
     bind: bool,
 ) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
+    let ws = Workspace::from_path(dir.clone())?;
     let mut identifiers: Vec<TaskIdentifier> = ids.into_iter().map(Into::into).collect();
     if all {
         for entry in ws.list_namespace_tasks(&ws.namespace()?)? {
@@ -759,7 +771,12 @@ pub(crate) fn command_export(
     }
     if identifiers.is_empty() {
         // Interactive fallback: fzf single-pick.
-        identifiers.push(TaskId::default().resolve_or_pick(&ws)?);
+        identifiers.push(TaskId::default().resolve_or_pick(
+            &dir,
+            &ws,
+            TaskPickScope::Namespace,
+            false,
+        )?);
     }
     // Dedupe while preserving order.
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -789,9 +806,11 @@ pub(crate) fn command_import(dir: PathBuf, bind: bool) -> Result<()> {
 }
 
 pub(crate) fn command_log(dir: PathBuf, target: LogTarget) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
+    let ws = Workspace::from_path(dir.clone())?;
     let commits = match target {
-        LogTarget::Task { task_id } => ws.log_task(task_id.into())?,
+        LogTarget::Task { task_id } => {
+            ws.log_task(task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?)?
+        }
         LogTarget::Namespace { name } => {
             let target = match name {
                 Some(name) => name,
@@ -845,10 +864,10 @@ fn relative_time(secs: u64) -> String {
 }
 
 pub(crate) fn command_prop(dir: PathBuf, action: PropAction, headers: bool) -> Result<()> {
-    let ws = Workspace::from_path(dir)?;
+    let ws = Workspace::from_path(dir.clone())?;
     match action {
         PropAction::List { task_id } => {
-            let task = ws.task(task_id.into())?;
+            let task = ws.task(task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?)?;
             if headers && !task.attributes.is_empty() {
                 print_header(&["key", "value"]);
             }
@@ -863,7 +882,7 @@ pub(crate) fn command_prop(dir: PathBuf, action: PropAction, headers: bool) -> R
             }
         }
         PropAction::Get { task_id, key } => {
-            let task = ws.task(task_id.into())?;
+            let task = ws.task(task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?)?;
             let values = task.attributes.get(&key).ok_or_else(|| {
                 errors::Error::Parse(format!("Task {} has no property '{key}'", task.id))
             })?;
@@ -873,19 +892,31 @@ pub(crate) fn command_prop(dir: PathBuf, action: PropAction, headers: bool) -> R
             task_id,
             key,
             value,
-        } => ws.add_property_value(task_id.into(), &key, &value)?,
+        } => ws.add_property_value(
+            task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?,
+            &key,
+            &value,
+        )?,
         PropAction::Set {
             task_id,
             key,
             values,
-        } => ws.set_property(task_id.into(), &key, values)?,
+        } => ws.set_property(
+            task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?,
+            &key,
+            values,
+        )?,
         PropAction::Unset {
             task_id,
             key,
             value,
-        } => ws.unset_property(task_id.into(), &key, value.as_deref())?,
+        } => ws.unset_property(
+            task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?,
+            &key,
+            value.as_deref(),
+        )?,
         PropAction::Keys { task_id } => {
-            let task = ws.task(task_id.into())?;
+            let task = ws.task(task_id.resolve(&dir, &ws, TaskPickScope::Namespace)?)?;
             if headers && !task.attributes.is_empty() {
                 print_header(&["key"]);
             }

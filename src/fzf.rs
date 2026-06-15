@@ -1,7 +1,7 @@
 use crate::errors::{Error, Result};
 use std::ffi::OsStr;
 use std::fmt::Display;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 
@@ -17,6 +17,7 @@ where
     Error: From<<O as FromStr>::Err>,
     S: AsRef<OsStr>,
 {
+    ensure_interactive()?;
     let mut command = Command::new("fzf");
     let mut child = command
         .args(extra)
@@ -25,10 +26,12 @@ where
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
-    // unwrap: this can never fail
-    let child_in = child.stdin.as_mut().unwrap();
-    for item in input.into_iter() {
-        write!(child_in, "{item}\0")?;
+    {
+        // unwrap: this can never fail
+        let mut child_in = child.stdin.take().unwrap();
+        for item in input.into_iter() {
+            write!(child_in, "{item}\0")?;
+        }
     }
     let output = child.wait_with_output()?;
     if output.stdout.is_empty() {
@@ -50,6 +53,7 @@ where
     I: Display,
     S: AsRef<OsStr>,
 {
+    ensure_interactive()?;
     let mut command = Command::new("fzf");
     let mut child = command
         .args(extra)
@@ -59,9 +63,11 @@ where
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
-    let child_in = child.stdin.as_mut().unwrap();
-    for item in input.into_iter() {
-        write!(child_in, "{item}\0")?;
+    {
+        let mut child_in = child.stdin.take().unwrap();
+        for item in input.into_iter() {
+            write!(child_in, "{item}\0")?;
+        }
     }
     let output = child.wait_with_output()?;
     if output.stdout.is_empty() {
@@ -73,4 +79,14 @@ where
         .filter(|line| !line.is_empty())
         .map(|line| line.to_string())
         .collect())
+}
+
+fn ensure_interactive() -> Result<()> {
+    if std::io::stdin().is_terminal() || std::env::var_os("TSK_TEST_ALLOW_FZF").is_some() {
+        Ok(())
+    } else {
+        Err(Error::Parse(
+            "refusing to launch fzf without an interactive terminal".into(),
+        ))
+    }
 }

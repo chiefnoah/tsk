@@ -842,10 +842,14 @@ impl Workspace {
     }
 
     pub fn read_stack(&self) -> Result<Vec<StackEntry>> {
+        self.read_queue_stack(&self.queue()?)
+    }
+
+    pub fn read_queue_stack(&self, queue_name: &str) -> Result<Vec<StackEntry>> {
         let repo = self.repo()?;
         let by_stable = ns_reverse(&namespace::read(&repo, &self.namespace()?)?);
         let mut out = Vec::new();
-        for stable in queue::read(&repo, &self.queue()?)?.index {
+        for stable in queue::read(&repo, queue_name)?.index {
             // Skip tasks not visible in the active namespace (different ns owns them).
             let Some(&human) = by_stable.get(&stable) else {
                 continue;
@@ -855,32 +859,6 @@ impl Workspace {
                 id: Id(human),
                 stable,
                 title,
-            });
-        }
-        Ok(out)
-    }
-
-    /// Tasks in the active namespace whose authoritative lifecycle status is
-    /// `done`, regardless of whether a stale or intentional queue entry still
-    /// points at them.
-    pub fn closed_tasks(&self) -> Result<Vec<StackEntry>> {
-        let repo = self.repo()?;
-        let mut out = Vec::new();
-        for (human, stable) in namespace::read(&repo, &self.namespace()?)?.mapping {
-            let Some(task) = object::read(&repo, &stable)? else {
-                continue;
-            };
-            let is_done = task
-                .properties
-                .get(STATUS_KEY)
-                .is_some_and(|values| values.iter().any(|value| value == STATUS_DONE));
-            if !is_done {
-                continue;
-            }
-            out.push(StackEntry {
-                id: Id(human),
-                stable,
-                title: task.title().to_string(),
             });
         }
         Ok(out)
@@ -2136,14 +2114,6 @@ mod test {
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
             vec![open_unqueued_id]
-        );
-        assert_eq!(
-            ws.closed_tasks()
-                .unwrap()
-                .into_iter()
-                .map(|entry| entry.id)
-                .collect::<Vec<_>>(),
-            vec![done_queued_id]
         );
     }
 

@@ -17,7 +17,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use errors::Result;
 use std::env::current_dir;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use workspace::{Id, TaskIdentifier, Workspace};
@@ -477,39 +477,93 @@ pub(crate) struct TaskId {
     pub(crate) tsk_id: Option<Id>,
     #[arg(short = 'r', value_name = "RELATIVE")]
     pub(crate) relative_id: Option<u32>,
+    /// Fuzzy-find a task by title.
+    #[arg(short = 'f', default_value_t = false)]
+    pub(crate) fuzzy: bool,
+    /// Fuzzy-find a task by title and body.
+    #[arg(short = 'F', default_value_t = false)]
+    pub(crate) fuzzy_body: bool,
+}
+
+pub(crate) enum TaskPickScope {
+    Namespace,
+    ActiveQueue,
+    Queue(String),
 }
 
 impl TaskId {
-    /// True when the user passed none of `-t`, `-T`, or `-r`. Commands
-    /// that fall back to a fuzzy finder use this to decide whether to
-    /// prompt; commands that prefer "top of stack" silently treat this
-    /// as `Relative(0)` via the `From` impl.
+    /// True when the user passed none of `-t`, `-T`, `-r`, `-f`, or `-F`.
+    /// Commands with fuzzy default behavior use this to decide whether to
+    /// prompt; commands that prefer "top of stack" treat this as `Relative(0)`.
     pub(crate) fn is_empty(&self) -> bool {
-        self.id.is_none() && self.tsk_id.is_none() && self.relative_id.is_none()
+        !self.has_id_selector() && !self.is_fuzzy()
     }
 
-    /// Resolve to a `TaskIdentifier`, dropping into an fzf picker when no
-    /// flag was supplied. Use when interactive selection is the desired
-    /// fallback (e.g. `tsk export`); otherwise prefer `Into`, which
-    /// silently picks the top of the stack.
-    pub(crate) fn resolve_or_pick(self, ws: &Workspace) -> Result<TaskIdentifier> {
-        if !self.is_empty() {
+    pub(crate) fn resolve(
+        self,
+        dir: &std::path::Path,
+        ws: &Workspace,
+        scope: TaskPickScope,
+    ) -> Result<TaskIdentifier> {
+        self.resolve_inner(dir, ws, scope, false, false)
+    }
+
+    pub(crate) fn resolve_or_pick(
+        self,
+        dir: &std::path::Path,
+        ws: &Workspace,
+        scope: TaskPickScope,
+        body: bool,
+    ) -> Result<TaskIdentifier> {
+        self.resolve_inner(dir, ws, scope, body, true)
+    }
+
+    fn resolve_inner(
+        self,
+        dir: &std::path::Path,
+        ws: &Workspace,
+        scope: TaskPickScope,
+        default_body: bool,
+        pick_when_empty: bool,
+    ) -> Result<TaskIdentifier> {
+        if self.has_id_selector() {
             return Ok(self.into());
         }
-        let entries = ws.list_namespace_tasks(&ws.namespace()?)?;
+        if !self.is_fuzzy() && !pick_when_empty {
+            return Ok(TaskIdentifier::Relative(0));
+        }
+        if !task_picker_allowed() {
+            return Err(errors::Error::Parse(
+                "task selection requires an interactive terminal".into(),
+            ));
+        }
+        let entries = match scope {
+            TaskPickScope::Namespace => ws.list_namespace_tasks(&ws.namespace()?)?,
+            TaskPickScope::ActiveQueue => ws.read_stack()?,
+            TaskPickScope::Queue(queue) => ws.read_queue_stack(&queue)?,
+        };
         if entries.is_empty() {
             return Err(errors::Error::NoTasks);
         }
-        let lines: Vec<String> = entries
-            .iter()
-            .map(|e| format!("{}\t{}", e.id, e.title))
-            .collect();
-        let picked: Option<String> = fzf::select(lines, ["--prompt=task> "])?;
-        let picked = picked.ok_or(errors::Error::NoTasks)?;
-        let id_str = picked.split('\t').next().unwrap_or("");
-        let id: Id = parse_id(id_str).map_err(|e| errors::Error::Parse(e.to_string()))?;
+        let include_body = self.fuzzy_body || (pick_when_empty && default_body);
+        let id = commands::select_task_ids(dir, ws, entries, include_body, false)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| errors::Error::Parse("No task selected".into()))?;
         Ok(TaskIdentifier::Id(id))
     }
+
+    fn has_id_selector(&self) -> bool {
+        self.id.is_some() || self.tsk_id.is_some() || self.relative_id.is_some()
+    }
+
+    fn is_fuzzy(&self) -> bool {
+        self.fuzzy || self.fuzzy_body
+    }
+}
+
+fn task_picker_allowed() -> bool {
+    io::stdin().is_terminal() || std::env::var_os("TSK_TEST_ALLOW_FZF").is_some()
 }
 
 impl From<TaskId> for TaskIdentifier {
@@ -570,10 +624,8 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Swap => Workspace::from_path(dir)?.swap_top(),
         Commands::Rot => Workspace::from_path(dir)?.rot(),
         Commands::Tor => Workspace::from_path(dir)?.tor(),
-        Commands::Prioritize { task_id } => Workspace::from_path(dir)?.prioritize(task_id.into()),
-        Commands::Deprioritize { task_id } => {
-            Workspace::from_path(dir)?.deprioritize(task_id.into())
-        }
+        Commands::Prioritize { task_id } => commands::command_prioritize(dir, task_id),
+        Commands::Deprioritize { task_id } => commands::command_deprioritize(dir, task_id),
         Commands::Clean => commands::clean(dir),
         Commands::Export {
             ids,

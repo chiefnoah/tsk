@@ -839,7 +839,7 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
     let fzf = fake_bin.path().join("fzf");
     std::fs::write(
         &fzf,
-        "#!/bin/sh\ntr '\\000' '\\n' > \"$FZF_CAPTURE\"\nhead -n 1 \"$FZF_CAPTURE\"\n",
+        "#!/bin/sh\ntr '\\000' '\\n' > \"$FZF_CAPTURE\"\ngrep '^tsk-2\t' \"$FZF_CAPTURE\" | head -n 1 | tr '\\n' '\\000'\n",
     )
     .unwrap();
     let mut perms = std::fs::metadata(&fzf).unwrap().permissions();
@@ -855,6 +855,7 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
     cmd.current_dir(dir.path())
         .env("PATH", path)
         .env("FZF_CAPTURE", &capture)
+        .env("TSK_TEST_ALLOW_FZF", "1")
         .args(["reopen", "-b"]);
     let (code, stdout, stderr) = run(&mut cmd);
     assert_eq!(
@@ -871,12 +872,12 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
         "reopen -b should include task body in fzf input: {input}"
     );
     assert!(
-        !input.contains("open body should not show"),
-        "reopen picker should exclude queued tasks: {input}"
+        input.contains("open body should not show"),
+        "reopen picker should include namespace tasks: {input}"
     );
     assert!(
-        !input.contains("inbox body should not show"),
-        "reopen picker should exclude inboxed tasks: {input}"
+        input.contains("inbox body should not show"),
+        "reopen picker should include inboxed namespace tasks: {input}"
     );
     let attrs = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-x"]);
     assert!(attrs.contains("status: \"open\""), "got {attrs}");
@@ -884,6 +885,131 @@ fn reopen_without_id_uses_fzf_search_with_body_option() {
     assert!(
         list.contains("tsk-2"),
         "reopened task should be queued: {list}"
+    );
+}
+
+#[test]
+fn edit_without_id_uses_top_task() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "top task\n\nold body"]);
+    tsk_ok(dir.path(), &["append", "selected task\n\nold body"]);
+
+    tsk_ok(dir.path(), &["edit", "-b", "new body"]);
+    let top = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-R"]);
+    assert!(top.contains("new body"), "top task should be edited: {top}");
+    let selected = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-R"]);
+    assert!(
+        selected.contains("old body"),
+        "non-top task should not be edited: {selected}"
+    );
+}
+
+#[test]
+fn task_id_f_flag_fuzzy_finds_by_title_without_body() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "top task\n\nbody needle"]);
+    tsk_ok(dir.path(), &["append", "selected task\n\nselected body"]);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let capture = fake_bin.path().join("fzf-input");
+    let fzf = fake_bin.path().join("fzf");
+    std::fs::write(
+        &fzf,
+        "#!/bin/sh\ntr '\\000' '\\n' > \"$FZF_CAPTURE\"\ngrep '^tsk-2\t' \"$FZF_CAPTURE\" | head -n 1 | tr '\\n' '\\000'\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fzf).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fzf, perms).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .env("PATH", path)
+        .env("FZF_CAPTURE", &capture)
+        .env("TSK_TEST_ALLOW_FZF", "1")
+        .args(["show", "-f", "-R"]);
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(
+        code, 0,
+        "show -f should succeed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("selected task"),
+        "selected task should be shown: {stdout}"
+    );
+
+    let input = std::fs::read_to_string(capture).unwrap();
+    assert!(
+        input.contains("tsk-1\ttop task") && input.contains("tsk-2\tselected task"),
+        "fuzzy picker should include task titles: {input}"
+    );
+    assert!(
+        !input.contains("body needle") && !input.contains("selected body"),
+        "-f picker input should not include bodies: {input}"
+    );
+}
+
+#[test]
+fn task_id_capital_f_flag_fuzzy_finds_with_body() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "top task\n\nold body"]);
+    tsk_ok(dir.path(), &["append", "selected task\n\nbody needle"]);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let capture = fake_bin.path().join("fzf-input");
+    let fzf = fake_bin.path().join("fzf");
+    std::fs::write(
+        &fzf,
+        "#!/bin/sh\ntr '\\000' '\\n' > \"$FZF_CAPTURE\"\ngrep 'body needle' \"$FZF_CAPTURE\" | head -n 1 | tr '\\n' '\\000'\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fzf).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fzf, perms).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .env("PATH", path)
+        .env("FZF_CAPTURE", &capture)
+        .env("TSK_TEST_ALLOW_FZF", "1")
+        .args(["edit", "-F", "-b", "new body"]);
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(
+        code, 0,
+        "edit -F should succeed: stdout={stdout} stderr={stderr}"
+    );
+
+    let input = std::fs::read_to_string(capture).unwrap();
+    assert!(
+        input.contains("body needle"),
+        "-F picker input should include bodies: {input}"
+    );
+    let top = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-R"]);
+    assert!(
+        top.contains("old body"),
+        "top task should not be edited: {top}"
+    );
+    let selected = tsk_ok(dir.path(), &["show", "-T", "tsk-2", "-R"]);
+    assert!(
+        selected.contains("new body"),
+        "body-selected task should be edited: {selected}"
     );
 }
 
@@ -1018,6 +1144,56 @@ fn queue_mutations_require_active_queue_membership() {
 }
 
 #[test]
+fn prioritize_without_id_fuzzy_finds_active_queue() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["push", "top task"]);
+    tsk_ok(dir.path(), &["append", "selected task"]);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let capture = fake_bin.path().join("fzf-input");
+    let fzf = fake_bin.path().join("fzf");
+    std::fs::write(
+        &fzf,
+        "#!/bin/sh\ntr '\\000' '\\n' > \"$FZF_CAPTURE\"\ngrep '^tsk-2\t' \"$FZF_CAPTURE\" | head -n 1 | tr '\\n' '\\000'\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fzf).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fzf, perms).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .env("PATH", path)
+        .env("FZF_CAPTURE", &capture)
+        .env("TSK_TEST_ALLOW_FZF", "1")
+        .args(["prioritize"]);
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(
+        code, 0,
+        "prioritize should succeed: stdout={stdout} stderr={stderr}"
+    );
+
+    let input = std::fs::read_to_string(capture).unwrap();
+    assert!(
+        input.contains("tsk-1\ttop task") && input.contains("tsk-2\tselected task"),
+        "prioritize picker should include active queue tasks: {input}"
+    );
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        list.starts_with("tsk-2\tselected task"),
+        "selected task should be prioritized: {list}"
+    );
+}
+
+#[test]
 fn queue_set_can_pull_changes_pull_permission() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_with_commit(dir.path());
@@ -1054,6 +1230,63 @@ fn queue_set_can_pull_changes_pull_permission() {
     assert!(
         stderr.contains("can-pull=false"),
         "failure should mention can-pull=false: {stderr}"
+    );
+}
+
+#[test]
+fn pull_without_id_fuzzy_finds_source_queue() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+    tsk_ok(dir.path(), &["queue", "create", "private", "-p"]);
+    tsk_ok(dir.path(), &["queue", "switch", "private"]);
+    tsk_ok(dir.path(), &["push", "private top"]);
+    tsk_ok(dir.path(), &["append", "private selected"]);
+    tsk_ok(dir.path(), &["queue", "switch", "tsk"]);
+
+    let fake_bin = tempfile::tempdir().unwrap();
+    let capture = fake_bin.path().join("fzf-input");
+    let fzf = fake_bin.path().join("fzf");
+    std::fs::write(
+        &fzf,
+        "#!/bin/sh\ntr '\\000' '\\n' > \"$FZF_CAPTURE\"\ngrep '^tsk-2\t' \"$FZF_CAPTURE\" | head -n 1 | tr '\\n' '\\000'\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fzf).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fzf, perms).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .env("PATH", path)
+        .env("FZF_CAPTURE", &capture)
+        .env("TSK_TEST_ALLOW_FZF", "1")
+        .args(["pull", "private"]);
+    let (code, stdout, stderr) = run(&mut cmd);
+    assert_eq!(
+        code, 0,
+        "pull should succeed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Pulled tsk-2"),
+        "pull should report selected task: {stdout}"
+    );
+
+    let input = std::fs::read_to_string(capture).unwrap();
+    assert!(
+        input.contains("tsk-1\tprivate top") && input.contains("tsk-2\tprivate selected"),
+        "pull picker should include source queue tasks: {input}"
+    );
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        list.starts_with("tsk-2\tprivate selected"),
+        "pulled task should be queued: {list}"
     );
 }
 
@@ -1235,6 +1468,7 @@ fn assign_without_target_uses_fzf_queue_picker() {
     cmd.current_dir(dir.path())
         .env("PATH", path)
         .env("FZF_CAPTURE", &capture)
+        .env("TSK_TEST_ALLOW_FZF", "1")
         .args(["assign", "-T", "tsk-1", "-R", ""]);
     let (code, stdout, stderr) = run(&mut cmd);
     assert_eq!(
