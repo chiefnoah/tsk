@@ -63,7 +63,12 @@ enum Commands {
             help = "Open $EDITOR before saving the new task"
         )]
         edit: bool,
-        #[arg(short = 'b')]
+        /// Set the task body. Use `-b -` to read the body from stdin.
+        #[arg(
+            short = 'b',
+            value_name = "BODY",
+            help = "Set the task body. Use `-b -` to read stdin"
+        )]
         body: Option<String>,
         #[command(flatten)]
         title: Title,
@@ -78,7 +83,12 @@ enum Commands {
             help = "Open $EDITOR before saving the new task"
         )]
         edit: bool,
-        #[arg(short = 'b')]
+        /// Set the task body. Use `-b -` to read the body from stdin.
+        #[arg(
+            short = 'b',
+            value_name = "BODY",
+            help = "Set the task body. Use `-b -` to read stdin"
+        )]
         body: Option<String>,
         #[command(flatten)]
         title: Title,
