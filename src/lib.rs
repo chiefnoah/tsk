@@ -472,9 +472,16 @@ pub(crate) enum RemoteAction {
 #[derive(Args)]
 #[group(required = true, multiple = false)]
 pub(crate) struct Title {
-    #[arg(short, value_name = "TITLE")]
+    #[arg(
+        short,
+        value_name = "TITLE",
+        help = "Task title. A multiline value is split at the first newline into title + body. Use `-` to read the full title + body from stdin"
+    )]
     pub(crate) title: Option<String>,
-    #[arg(value_name = "TITLE")]
+    #[arg(
+        value_name = "TITLE",
+        help = "Task title. A multiline value is split at the first newline into title + body. Use `-` to read the full title + body from stdin"
+    )]
     pub(crate) title_simple: Option<Vec<String>>,
 }
 

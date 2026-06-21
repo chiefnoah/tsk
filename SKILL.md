@@ -53,6 +53,15 @@ Read the body from stdin when another command already produced the detail:
 printf 'Failure details...\n' | tsk push -- "Record failing CI output" -b -
 ```
 
+Read the whole task (title + body) from stdin with `-` as the title. Parsed
+the same way `tsk edit` parses its editor buffer: first line is the title,
+the remainder is the body. Round-trips a task across repos:
+
+```sh
+tsk show -T tsk-9 -R | tsk push -      # import a task from another clone
+tsk show -T tsk-9 -R | tsk append -    # ...or append it to the bottom
+```
+
 Edit an existing task interactively with `$EDITOR`, or replace only the body
 non-interactively with `-b`. Use `-b -` to read the replacement body from stdin:
 

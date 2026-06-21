@@ -13,6 +13,8 @@ tsk push -- "title"      # new task at top of active queue, status=open
 tsk push -- "title
 body"                    # multi-line title gets split at first newline
 tsk push -- "title" -b - # read body from stdin
+tsk push -               # read whole title + body from stdin
+tsk show -T tsk-N -R | tsk push -   # import a task from another repo
 tsk drop -T tsk-N        # remove from queue, flip status=done
 tsk edit -T tsk-N        # open $EDITOR on the task body
 ```
@@ -110,6 +112,13 @@ need an explicit `git push <remote> <branch>`. If that's not what you
 want, just keep using `tsk git-push` and skip the setup.
 
 ## Offline transfer (email, etc.)
+
+For a quick, low-fidelity copy (text only — no history or properties), pipe
+the raw task text straight into `tsk push -` on the receiver:
+
+```
+tsk show -T tsk-N -R | (cd ../other-repo && tsk push -)
+```
 
 Export a task as an mbox-format patch series and pipe it anywhere:
 

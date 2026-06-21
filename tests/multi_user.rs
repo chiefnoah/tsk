@@ -1813,3 +1813,104 @@ fn namespace_collision_rewrites_local_internal_links() {
         "local link must not keep pointing at alice's task: {linked}"
     );
 }
+
+#[test]
+fn push_and_append_dash_read_title_and_body_from_stdin() {
+    use std::io::Write as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dir.path());
+
+    // `tsk push -` reads the whole task text from stdin and parses it the
+    // same way `tsk edit` parses its editor buffer: first line is the
+    // title, the remainder (after a separating blank line) is the body.
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .args(["push", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn tsk push -");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin piped")
+        .write_all(b"Stdin title\n\nstdin body line one\nstdin body line two\n")
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait for tsk push");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "tsk push - failed: {stderr}");
+
+    let show = tsk_ok(dir.path(), &["show", "-T", "tsk-1", "-R"]);
+    assert!(
+        show.starts_with("Stdin title\n\nstdin body line one\nstdin body line two"),
+        "push - should split stdin into title + body: {show}"
+    );
+
+    // `tsk append -` works the same way and lands at the bottom.
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dir.path())
+        .args(["append", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn tsk append -");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin piped")
+        .write_all(b"Appended title\n\nappended body\n")
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait for tsk append");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "tsk append - failed: {stderr}"
+    );
+
+    let list = tsk_ok(dir.path(), &["list"]);
+    assert!(
+        list.starts_with("tsk-1\tStdin title\ntsk-2\tAppended title"),
+        "append - should land at the bottom of the queue: {list}"
+    );
+}
+
+#[test]
+fn show_raw_piped_into_push_imports_task_unchanged() {
+    use std::io::Write as _;
+
+    // The headline use case: print a task with `tsk show -R` in one repo
+    // and import it into another by piping the raw text into `tsk push -`.
+    let src = tempfile::tempdir().unwrap();
+    init_repo_with_commit(src.path());
+    tsk_ok(src.path(), &["push", "Original title\n\noriginal body"]);
+    let raw = tsk_ok(src.path(), &["show", "-T", "tsk-1", "-R"]);
+
+    let dst = tempfile::tempdir().unwrap();
+    init_repo_with_commit(dst.path());
+
+    let mut cmd = Command::new(tsk_bin());
+    cmd.current_dir(dst.path())
+        .args(["push", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn tsk push -");
+    {
+        let stdin = child.stdin.as_mut().expect("stdin piped");
+        stdin.write_all(raw.as_bytes()).expect("write stdin");
+    }
+    let output = child.wait_with_output().expect("wait for tsk push");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "import failed: {stderr}");
+
+    // The imported text matches the source byte-for-byte, and the stable
+    // id is content-addressed so both repos address the same task.
+    let imported = tsk_ok(dst.path(), &["show", "-T", "tsk-1", "-R"]);
+    assert_eq!(imported, raw, "imported task text should match the source");
+
+    let src_id = tsk_ok(src.path(), &["show", "-T", "tsk-1", "-i"]);
+    let dst_id = tsk_ok(dst.path(), &["show", "-T", "tsk-1", "-i"]);
+    assert_eq!(src_id, dst_id, "stable id should be content-addressed");
+}

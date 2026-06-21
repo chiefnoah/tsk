@@ -137,7 +137,25 @@ fn read_title_and_body(
     } else {
         String::new()
     };
-    let mut body = if body.is_none() {
+    let mut body = if body.is_none() && title == "-" {
+        // `-` as the title means: read the entire task text (title +
+        // body) from stdin, parsed the same way `tsk edit` parses its
+        // editor buffer — first line is the title, the remainder (after
+        // a separating blank line) is the body. Lets you round-trip a
+        // task with `tsk show -R -T tsk-N | tsk push -`.
+        let mut content = String::new();
+        io::stdin().read_to_string(&mut content)?;
+        match content.split_once('\n') {
+            Some((t, rest)) => {
+                title = t.to_string();
+                rest.trim_start_matches('\n').to_string()
+            }
+            None => {
+                title = content;
+                String::new()
+            }
+        }
+    } else if body.is_none() {
         if let Some((first, rest)) = title.split_once('\n') {
             let extracted = rest.to_string();
             title = first.to_string();
