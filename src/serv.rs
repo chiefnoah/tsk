@@ -131,6 +131,7 @@ fn render_path(ws: &Workspace, target: &str) -> Result<Rendered> {
         ["namespaces", name] => render_namespace(ws, name, page).map(Rendered::Html),
         ["commits", oid] => render_commit(ws, oid).map(Rendered::Html),
         ["properties"] => render_properties(ws, page).map(Rendered::Html),
+        ["properties", key] => render_property(ws, key, page).map(Rendered::Html),
         ["tasks", stable, "log"] => render_task_log(ws, stable, page).map(Rendered::Html),
         ["tasks", stable] => render_task(ws, stable).map(Rendered::Html),
         _ => Ok(Rendered::NotFound("not found\n".to_string())),
@@ -299,70 +300,34 @@ struct PropertyRow {
     id: Id,
     stable: StableId,
     title: String,
-    key: String,
-    value: Option<String>,
 }
 
 fn render_properties(ws: &Workspace, page_num: usize) -> Result<String> {
     let repo = repo(ws)?;
     let namespace_name = ws.namespace()?;
     let ns = namespace::read(&repo, &namespace_name)?;
-    let mut entries = Vec::new();
-    for (human, stable) in ns.mapping {
+    let mut keys = BTreeSet::new();
+    for (_human, stable) in ns.mapping {
         let Some(task) = object::read(&repo, &stable)? else {
             continue;
         };
-        let title = task.title().to_string();
-        for (key, values) in task.properties {
-            if values.is_empty() {
-                entries.push(PropertyRow {
-                    id: Id(human),
-                    stable: stable.clone(),
-                    title: title.clone(),
-                    key,
-                    value: None,
-                });
-            } else {
-                for value in values {
-                    entries.push(PropertyRow {
-                        id: Id(human),
-                        stable: stable.clone(),
-                        title: title.clone(),
-                        key: key.clone(),
-                        value: Some(value),
-                    });
-                }
-            }
+        for key in task.properties.into_keys() {
+            keys.insert(key);
         }
     }
-    entries.sort_by(|a, b| {
-        a.key
-            .cmp(&b.key)
-            .then(a.id.cmp(&b.id))
-            .then(a.value.cmp(&b.value))
-    });
+    let entries: Vec<_> = keys.into_iter().collect();
 
     let page_slice = paginate(&entries, page_num);
-    let mut rows = String::new();
-    for row in page_slice.items {
-        let value = row
-            .value
-            .as_deref()
-            .map(|value| render_property_value(ws, &repo, &row.key, value))
-            .transpose()?
-            .unwrap_or_else(|| "<em>empty</em>".to_string());
-        rows.push_str(&table_row([
-            format!("<code>{}</code>", h(&row.key)),
-            value,
-            format!(
-                "{} {}",
-                task_anchor(&row.stable, row.id.to_string()),
-                h(&row.title)
-            ),
-        ]));
+    let mut items = String::new();
+    for key in page_slice.items {
+        items.push_str(&format!(
+            "<li><a href=\"/properties/{}\"><code>{}</code></a></li>",
+            property_path_segment(key),
+            h(key)
+        ));
     }
-    if rows.is_empty() {
-        rows.push_str(&empty_table_row(3, "No properties"));
+    if items.is_empty() {
+        items.push_str("<li><em>No properties</em></li>");
     }
     let pagination = pagination_nav("/properties", &page_slice);
     page(
@@ -371,8 +336,58 @@ fn render_properties(ws: &Workspace, page_num: usize) -> Result<String> {
         &format!(
             "<h1>Properties</h1><p class=\"meta\">Namespace <code>{}</code></p>\
              {pagination}\
-             <table><thead><tr><th>Key</th><th>Value</th><th>Task</th></tr></thead><tbody>{rows}</tbody></table>\
+             <ul>{items}</ul>\
              {pagination}",
+            h(&namespace_name)
+        ),
+    )
+}
+
+fn render_property(ws: &Workspace, key: &str, page_num: usize) -> Result<String> {
+    let key = decode_path_segment(key);
+    let repo = repo(ws)?;
+    let namespace_name = ws.namespace()?;
+    let ns = namespace::read(&repo, &namespace_name)?;
+    let mut entries = Vec::new();
+    for (human, stable) in ns.mapping {
+        let Some(task) = object::read(&repo, &stable)? else {
+            continue;
+        };
+        if task.properties.contains_key(&key) {
+            entries.push(PropertyRow {
+                id: Id(human),
+                stable: stable.clone(),
+                title: task.title().to_string(),
+            });
+        }
+    }
+    entries.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let page_slice = paginate(&entries, page_num);
+    let mut items = String::new();
+    for row in page_slice.items {
+        items.push_str(&format!(
+            "<li>{} {}</li>",
+            task_anchor(&row.stable, row.id.to_string()),
+            h(&row.title)
+        ));
+    }
+    if items.is_empty() {
+        items.push_str("<li><em>No tasks</em></li>");
+    }
+    let href = format!("/properties/{}", property_path_segment(&key));
+    let pagination = pagination_nav(&href, &page_slice);
+    page(
+        ws,
+        &format!("Property {key}"),
+        &format!(
+            "<h1>Property <code>{}</code></h1>\
+             <p><a href=\"/properties\">Back to Properties</a></p>\
+             <p class=\"meta\">Namespace <code>{}</code></p>\
+             {pagination}\
+             <ul>{items}</ul>\
+             {pagination}",
+            h(&key),
             h(&namespace_name)
         ),
     )
@@ -1074,6 +1089,47 @@ fn h(input: &str) -> String {
     out
 }
 
+fn property_path_segment(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for byte in key.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn decode_path_segment(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2]))
+        {
+            out.push(high << 4 | low);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1199,13 +1255,13 @@ mod tests {
         let properties_html = render_properties(&ws, 1).unwrap();
         assert!(
             properties_html.contains(&format!(
-                "<a href=\"/commits/{closed_on}\"><code title=\"{closed_on}\">{short}</code></a>"
+                "<a href=\"/properties/{CLOSED_ON_KEY}\"><code>{CLOSED_ON_KEY}</code></a>"
             )),
-            "properties page should render closed-on as a commit page link: {properties_html}"
+            "properties page should link closed-on key: {properties_html}"
         );
         assert!(
-            !properties_html.contains("implement feature"),
-            "properties page should not render commit details inline: {properties_html}"
+            !properties_html.contains(&closed_on) && !properties_html.contains("implement feature"),
+            "properties page should not render property values or commit details inline: {properties_html}"
         );
 
         let commit_html = render_commit(&ws, &closed_on).unwrap();
@@ -1216,11 +1272,10 @@ mod tests {
     }
 
     #[test]
-    fn properties_page_lists_active_namespace_properties() {
+    fn properties_page_lists_active_namespace_property_names() {
         let (_dir, ws) = fresh_workspace();
         let first = ws.new_task("first task".into(), "".into()).unwrap();
         let first_id = first.id;
-        let first_stable = first.stable.clone();
         ws.push_task(first).unwrap();
         ws.add_property_value(first_id.into(), "priority", "high")
             .unwrap();
@@ -1241,26 +1296,58 @@ mod tests {
             "properties page should render heading: {html}"
         );
         assert!(
-            html.contains("<td><code>priority</code></td><td>high</td>"),
-            "properties page should include priority value: {html}"
+            html.contains("<a href=\"/properties/priority\"><code>priority</code></a>"),
+            "properties page should link priority key: {html}"
         );
         assert!(
-            html.contains(&format!(
-                "<a href=\"/tasks/{}\" class=\"task-link\">tsk-1</a>",
-                h(&first_stable.0)
-            )),
-            "properties page should render tsk markup in values: {html}"
+            html.contains("<a href=\"/properties/link\"><code>link</code></a>"),
+            "properties page should link link key: {html}"
         );
         assert!(
-            html.contains(&format!(
-                "<td><a href=\"/tasks/{}\">tsk-1</a> first task</td>",
-                h(&first_stable.0)
-            )),
-            "properties page should link to the owning task: {html}"
+            !html.contains("high") && !html.contains("first task"),
+            "properties page should not list property values or task titles: {html}"
         );
         assert!(
             !html.contains("owner") && !html.contains("alpha task"),
             "properties page should only show active namespace tasks: {html}"
+        );
+    }
+
+    #[test]
+    fn property_page_lists_active_namespace_tasks() {
+        let (_dir, ws) = fresh_workspace();
+        let first = ws.new_task("first task".into(), "".into()).unwrap();
+        let first_id = first.id;
+        let first_stable = first.stable.clone();
+        ws.push_task(first).unwrap();
+        ws.add_property_value(first_id.into(), "priority", "high")
+            .unwrap();
+        ws.add_property_value(first_id.into(), "link", "[[tsk-1]]")
+            .unwrap();
+
+        ws.switch_namespace("alpha").unwrap();
+        let alpha = ws.new_task("alpha task".into(), "".into()).unwrap();
+        let alpha_id = alpha.id;
+        ws.push_task(alpha).unwrap();
+        ws.add_property_value(alpha_id.into(), "priority", "alpha")
+            .unwrap();
+        ws.switch_namespace("tsk").unwrap();
+
+        let html = render_property(&ws, "priority", 1).unwrap();
+        assert!(
+            html.contains("<h1>Property <code>priority</code></h1>"),
+            "property page should render heading: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<li><a href=\"/tasks/{}\">tsk-1</a> first task</li>",
+                h(&first_stable.0)
+            )),
+            "property page should link matching task: {html}"
+        );
+        assert!(
+            !html.contains("high") && !html.contains("alpha task"),
+            "property page should only list active namespace tasks, not values: {html}"
         );
     }
 
@@ -1283,6 +1370,18 @@ mod tests {
         assert!(
             html.contains("status-note"),
             "route should include property key: {html}"
+        );
+
+        let Rendered::Html(html) = render_path(&ws, "/properties/status-note").unwrap() else {
+            panic!("property route should render html");
+        };
+        assert!(
+            html.contains("<h1>Property <code>status-note</code></h1>"),
+            "property route should render property page: {html}"
+        );
+        assert!(
+            html.contains("route props"),
+            "property route should include matching task: {html}"
         );
     }
 
