@@ -166,9 +166,7 @@ Roadmap
 -------
 
 - Configurable workspace-scoped prefix tags (tsk- vs example-)
-- Extended Attribute-based Metadata
 - Task Linking
-- IMAP4/SMTP-based synchronization and sharing
 - Export + sync with external task managers
   - GitLab
   - GitHub
