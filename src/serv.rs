@@ -3,7 +3,7 @@ use crate::object::{self, StableId};
 use crate::workspace::{CLOSED_ON_KEY, Id, LogCommit, Workspace};
 use crate::{namespace, queue};
 use clap::{Args, Parser};
-use git2::{Oid, Repository};
+use git2::{Oid, Patch, Repository};
 use pulldown_cmark::{CowStr, Event, Options, Parser as MarkdownParser, html};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -488,6 +488,7 @@ fn render_commit(ws: &Workspace, oid: &str) -> Result<String> {
     if parents.is_empty() {
         parents.push_str("<li><em>none</em></li>");
     }
+    let diff = render_commit_diff(&repo, &commit)?;
     page(
         ws,
         &format!("Commit {}", &oid.to_string()[..12]),
@@ -496,7 +497,8 @@ fn render_commit(ws: &Workspace, oid: &str) -> Result<String> {
              <p class=\"meta\">{} &lt;{}&gt; ({})</p>\
              <h2>{}</h2>\
              <pre>{}</pre>\
-             <h2>Parents</h2><ul>{parents}</ul>",
+             <h2>Parents</h2><ul>{parents}</ul>\
+             <h2>Changes</h2>{diff}",
             h(&oid.to_string()),
             h(author_name),
             h(author_email),
@@ -505,6 +507,78 @@ fn render_commit(ws: &Workspace, oid: &str) -> Result<String> {
             h(message)
         ),
     )
+}
+
+fn render_commit_diff(repo: &Repository, commit: &git2::Commit<'_>) -> Result<String> {
+    let new_tree = commit.tree()?;
+    let old_tree = commit
+        .parent(0)
+        .ok()
+        .map(|parent| parent.tree())
+        .transpose()?;
+    let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
+    if diff.deltas().len() == 0 {
+        return Ok("<p><em>No file changes.</em></p>".to_string());
+    }
+
+    let mut out = String::from("<div class=\"commit-diff\">");
+    for index in 0..diff.deltas().len() {
+        let delta = diff.get_delta(index).expect("diff delta index");
+        let old_path = delta.old_file().path().map(|p| p.to_string_lossy());
+        let new_path = delta.new_file().path().map(|p| p.to_string_lossy());
+        let display_path = new_path
+            .as_deref()
+            .or(old_path.as_deref())
+            .unwrap_or("unknown");
+        let patch = Patch::from_diff(&diff, index)?;
+        let stats = patch.as_ref().map(Patch::line_stats).transpose()?;
+        let stat = stats
+            .map(|(_, additions, deletions)| {
+                format!(
+                    "<span class=\"diff-stat\"><ins>+{additions}</ins> <del>-{deletions}</del></span>"
+                )
+            })
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "<section class=\"diff-file\"><header><code>{}</code>{stat}</header>",
+            h(display_path)
+        ));
+
+        let Some(patch) = patch else {
+            out.push_str("<p class=\"diff-binary\"><em>Binary file changed</em></p></section>");
+            continue;
+        };
+        out.push_str("<div class=\"diff-scroll\"><table aria-label=\"File diff\"><tbody>");
+        for hunk_index in 0..patch.num_hunks() {
+            let (hunk, line_count) = patch.hunk(hunk_index)?;
+            out.push_str(&format!(
+                "<tr class=\"diff-hunk\"><td colspan=\"3\"><code>{}</code></td></tr>",
+                h(&String::from_utf8_lossy(hunk.header()).trim_end())
+            ));
+            for line_index in 0..line_count {
+                let line = patch.line_in_hunk(hunk_index, line_index)?;
+                let (class, marker) = match line.origin() {
+                    '+' => ("diff-add", "+"),
+                    '-' => ("diff-del", "-"),
+                    '\\' => ("diff-note", "\\"),
+                    _ => ("diff-context", " "),
+                };
+                let content = String::from_utf8_lossy(line.content());
+                let content = content.strip_suffix('\n').unwrap_or(&content);
+                let content = content.strip_suffix('\r').unwrap_or(content);
+                out.push_str(&format!(
+                    "<tr class=\"{class}\"><td class=\"diff-line-no\">{}</td>\
+                     <td class=\"diff-line-no\">{}</td><td class=\"diff-code\"><code>{marker}{}</code></td></tr>",
+                    line.old_lineno().map(|n| n.to_string()).unwrap_or_default(),
+                    line.new_lineno().map(|n| n.to_string()).unwrap_or_default(),
+                    h(content)
+                ));
+            }
+        }
+        out.push_str("</tbody></table></div></section>");
+    }
+    out.push_str("</div>");
+    Ok(out)
 }
 
 fn render_log_page(
@@ -1029,6 +1103,19 @@ table{display:block;max-width:100%;overflow-x:auto;white-space:nowrap}\
 .task-content-markdown pre{padding:1rem;overflow:auto}\
 .task-content-markdown table{white-space:normal}\
 .meta{color:var(--pico-muted-color)}\
+.commit-diff{display:grid;gap:1rem;margin-bottom:2rem}\
+.diff-file{border:var(--pico-border-width) solid var(--pico-muted-border-color);border-radius:var(--pico-border-radius);overflow:hidden}\
+.diff-file>header{display:flex;justify-content:space-between;gap:1rem;padding:.65rem .85rem;background:var(--pico-card-sectioning-background-color)}\
+.diff-stat{white-space:nowrap}.diff-stat ins{color:#2f9e44}.diff-stat del{color:#e03131}\
+.diff-scroll{overflow-x:auto}.diff-scroll table{display:table;width:100%;margin:0;border:0;white-space:pre}\
+.diff-scroll td{border:0;padding:0 .55rem;line-height:1.5;font-family:var(--pico-font-family-monospace);font-size:.875rem}\
+.diff-line-no{width:1%;min-width:3.5rem;text-align:right;user-select:none;color:var(--pico-muted-color);border-right:1px solid var(--pico-muted-border-color)!important}\
+.diff-code{width:100%}.diff-code code,.diff-hunk code{padding:0;background:transparent;color:inherit}\
+.diff-add{background:color-mix(in srgb,#2f9e44 18%,transparent);color:color-mix(in srgb,#2f9e44 75%,var(--pico-color))}\
+.diff-del{background:color-mix(in srgb,#e03131 18%,transparent);color:color-mix(in srgb,#e03131 75%,var(--pico-color))}\
+.diff-note{color:var(--pico-muted-color)}\
+.diff-hunk{background:color-mix(in srgb,#228be6 15%,transparent);color:color-mix(in srgb,#228be6 70%,var(--pico-color))}\
+.diff-hunk td{padding:.35rem .55rem}.diff-binary{margin:0;padding:.85rem}\
 .pagination ul{align-items:center;gap:.5rem;flex-wrap:wrap}\
 .pagination li{margin:0}\
 @media (max-width:700px){\
@@ -1158,7 +1245,9 @@ mod tests {
         let tree_id = builder.write().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         let sig = git2::Signature::now("Test", "t@e").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])
+        let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+        let parents: Vec<_> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
             .unwrap()
             .to_string()
     }
@@ -1268,6 +1357,32 @@ mod tests {
         assert!(
             commit_html.contains("<h2>implement feature</h2>"),
             "commit page should render commit details: {commit_html}"
+        );
+    }
+
+    #[test]
+    fn commit_page_renders_syntax_highlighted_diff() {
+        let (dir, ws) = fresh_workspace();
+        create_git_commit(dir.path(), "old & line\n");
+        let commit = create_git_commit(dir.path(), "new <line>\n");
+
+        let html = render_commit(&ws, &commit).unwrap();
+
+        assert!(
+            html.contains("<section class=\"diff-file\">")
+                && html.contains("<code>file.txt</code>"),
+            "commit page should render a file diff: {html}"
+        );
+        assert!(
+            html.contains("class=\"diff-del\"")
+                && html.contains("-old &amp; line")
+                && html.contains("class=\"diff-add\"")
+                && html.contains("+new &lt;line&gt;"),
+            "changed lines should be escaped and syntax highlighted: {html}"
+        );
+        assert!(
+            html.contains("class=\"diff-hunk\"") && html.contains("@@ -1 +1 @@"),
+            "diff should include highlighted hunk headers: {html}"
         );
     }
 
