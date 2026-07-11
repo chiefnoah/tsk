@@ -1111,13 +1111,18 @@ table{display:block;max-width:100%;overflow-x:auto;white-space:nowrap}\
 .diff-scroll td{border:0;padding:0 .55rem;line-height:1.5;font-family:var(--pico-font-family-monospace);font-size:.875rem}\
 .diff-line-no{width:1%;min-width:3.5rem;text-align:right;user-select:none;color:var(--pico-muted-color);border-right:1px solid var(--pico-muted-border-color)!important}\
 .diff-code{width:100%}.diff-code code,.diff-hunk code{padding:0;background:transparent;color:inherit}\
-.diff-add{background:color-mix(in srgb,#2f9e44 18%,transparent);color:color-mix(in srgb,#2f9e44 75%,var(--pico-color))}\
-.diff-del{background:color-mix(in srgb,#e03131 18%,transparent);color:color-mix(in srgb,#e03131 75%,var(--pico-color))}\
-.diff-note{color:var(--pico-muted-color)}\
-.diff-hunk{background:color-mix(in srgb,#228be6 15%,transparent);color:color-mix(in srgb,#228be6 70%,var(--pico-color))}\
+.diff-add td{background:#dafbe1;color:#1f2328}.diff-add .diff-code{color:#116329}\
+.diff-del td{background:#ffebe9;color:#1f2328}.diff-del .diff-code{color:#82071e}\
+.diff-note td{color:var(--pico-muted-color)}\
+.diff-hunk td{background:#ddf4ff;color:#0550ae}\
 .diff-hunk td{padding:.35rem .55rem}.diff-binary{margin:0;padding:.85rem}\
 .pagination ul{align-items:center;gap:.5rem;flex-wrap:wrap}\
 .pagination li{margin:0}\
+@media (prefers-color-scheme:dark){\
+.diff-add td{background:#12261b;color:#f0f6fc}.diff-add .diff-code{color:#7ee787}\
+.diff-del td{background:#2d1718;color:#f0f6fc}.diff-del .diff-code{color:#ffa198}\
+.diff-hunk td{background:#121d2f;color:#79c0ff}\
+}\
 @media (max-width:700px){\
 .site-nav{display:block;padding-block:.5rem}\
 .site-nav ul{justify-content:flex-start;margin:0}\
@@ -1383,6 +1388,12 @@ mod tests {
         assert!(
             html.contains("class=\"diff-hunk\"") && html.contains("@@ -1 +1 @@"),
             "diff should include highlighted hunk headers: {html}"
+        );
+        assert!(
+            html.contains(".diff-add td{background:#dafbe1")
+                && html.contains(".diff-del td{background:#ffebe9")
+                && html.contains(".diff-hunk td{background:#ddf4ff"),
+            "semantic diff colors should apply to table cells: {html}"
         );
     }
 
