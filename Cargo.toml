@@ -10,6 +10,10 @@ homepage = "https://tsk.ngp.computer/"
 readme = "readme"
 authors = ["Noah Pederson <noah@packetlost.dev>"]
 
+[features]
+default = []
+mcp = ["dep:rmcp", "dep:serde_json", "dep:tokio"]
+
 [lib]
 name = "tsk_cli"
 path = "src/lib.rs"
@@ -29,6 +33,9 @@ itertools = "0"
 git2 = { version = "0.21", default-features = false }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 pulldown-cmark = "0.13.4"
+rmcp = { version = "3.1.4", optional = true, default-features = false, features = ["server", "transport-io"] }
+serde_json = { version = "1", optional = true }
+tokio = { version = "1", optional = true, features = ["io-util", "process", "rt-multi-thread"] }
 
 [dev-dependencies]
 tempfile = "3"

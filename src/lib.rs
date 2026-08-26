@@ -1,6 +1,8 @@
 mod commands;
 pub mod errors;
 mod fzf;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod merge;
 mod namespace;
 mod object;
@@ -337,6 +339,9 @@ enum Commands {
         #[command(flatten)]
         args: serv::ServeArgs,
     },
+    /// Host an MCP server over standard input and output.
+    #[cfg(feature = "mcp")]
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -594,7 +599,7 @@ impl From<TaskId> for TaskIdentifier {
 }
 
 fn dispatch(cli: Cli) -> Result<()> {
-    workspace::set_queue_override(cli.queue);
+    workspace::set_queue_override(cli.queue.clone());
     let dir = match cli.dir {
         Some(d) => d,
         None => default_dir()?,
@@ -685,6 +690,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Serv { args } => serv::serve(dir, args),
+        #[cfg(feature = "mcp")]
+        Commands::Mcp => mcp::serve(dir, cli.queue),
     }
 }
 

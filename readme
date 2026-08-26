@@ -72,7 +72,20 @@ Building
 cargo install --path .
 ```
 
+Build the optional MCP server with:
+
+```sh
+cargo install --path . --features mcp
+```
+
 Make sure ~/.cargo/bin is in your PATH.
+
+MCP server
+----------
+
+Run `tsk mcp` to host an MCP server over standard input and output. Configure
+the client to start `tsk mcp` inside the target repository, or pass `-C DIR`.
+The server exposes each CLI command as a tool, except `mcp` and `serv`.
 
 Overview
 --------
