@@ -1,6 +1,6 @@
-use crate::Cli;
 use crate::errors::{Error, Result};
-use clap::CommandFactory;
+use crate::{Cli, parse_id};
+use clap::{CommandFactory, Parser};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
@@ -49,7 +49,8 @@ impl TskServer {
         if let Some(queue) = &self.queue {
             command.arg("--queue").arg(queue);
         }
-        command.arg(request.name.as_ref()).args(arguments.args);
+        let args = normalize_args(request.name.as_ref(), arguments.args);
+        command.arg(request.name.as_ref()).args(args);
         command
             .stdin(if arguments.stdin.is_some() {
                 Stdio::piped()
@@ -152,6 +153,36 @@ fn cli_tools() -> Vec<Tool> {
         .collect()
 }
 
+fn normalize_args(command: &str, args: Vec<String>) -> Vec<String> {
+    if cli_parses(command, &args) {
+        return args;
+    }
+
+    for (index, value) in args.iter().enumerate() {
+        if parse_id(value).is_err() {
+            continue;
+        }
+
+        let mut candidate = args.clone();
+        candidate.splice(index..=index, ["-T".to_string(), value.clone()]);
+        if cli_parses(command, &candidate) {
+            return candidate;
+        }
+    }
+
+    args
+}
+
+fn cli_parses(command: &str, args: &[String]) -> bool {
+    Cli::try_parse_from(
+        ["tsk", command]
+            .into_iter()
+            .map(String::from)
+            .chain(args.iter().cloned()),
+    )
+    .is_ok()
+}
+
 fn tool_schema() -> Arc<Map<String, Value>> {
     let Value::Object(schema) = json!({
         "type": "object",
@@ -248,5 +279,22 @@ mod tests {
             parse_arguments(Some(arguments)).err().as_deref(),
             Some("Unknown argument: command")
         );
+    }
+
+    #[test]
+    fn positional_task_id_becomes_selector() {
+        assert_eq!(
+            normalize_args("show", vec!["tsk-53".to_string()]),
+            ["-T", "tsk-53"]
+        );
+    }
+
+    #[test]
+    fn valid_task_id_values_remain_values() {
+        let args = ["add", "-T", "tsk-1", "related", "tsk-53"]
+            .map(String::from)
+            .to_vec();
+
+        assert_eq!(normalize_args("prop", args.clone()), args);
     }
 }
