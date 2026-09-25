@@ -2,6 +2,10 @@
   inputs = {
     naersk.url = "github:nix-community/naersk/master";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    pre-commit-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     utils.url = "github:numtide/flake-utils";
   };
 
@@ -9,6 +13,7 @@
     {
       self,
       nixpkgs,
+      pre-commit-hooks,
       utils,
       naersk,
     }:
@@ -24,6 +29,14 @@
         pkgs = import nixpkgs { inherit system; };
         naersk-lib = pkgs.callPackage naersk { };
         tsk = naersk-lib.buildPackage ./.;
+        pre-commit-check = pre-commit-hooks.lib.${system}.run {
+          src = ./.;
+          hooks = {
+            clippy.enable = true;
+            nixfmt.enable = true;
+            rustfmt.enable = true;
+          };
+        };
       in
       {
         packages.default = tsk;
@@ -41,7 +54,9 @@
               plan9port
               pandoc
               codeberg-cli
-            ];
+            ]
+            ++ pre-commit-check.enabledPackages;
+            inherit (pre-commit-check) shellHook;
             RUST_SRC_PATH = rustPlatform.rustLibSrc;
           };
       }

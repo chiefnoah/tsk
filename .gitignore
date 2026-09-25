@@ -1,3 +1,4 @@
 /target
 index.html
 flake.lock
+.pre-commit-config.yaml
