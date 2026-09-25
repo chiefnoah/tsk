@@ -11,7 +11,7 @@ readme = "readme"
 authors = ["Noah Pederson <noah@packetlost.dev>"]
 
 [features]
-default = []
+default = ["mcp"]
 mcp = ["dep:rmcp", "dep:serde_json", "dep:tokio"]
 
 [lib]
