@@ -13,29 +13,30 @@ looking at the active queue, keep user-visible task state accurate, and prefer
 
 ```sh
 tsk list
-tsk show -T tsk-12
+tsk show -t 12
 tsk push -- "Fix parser panic
 Reproduce with an empty input file, then add a regression test."
 tsk push -e -- "Draft task"      # open $EDITOR before saving
 tsk append -- "Follow up: document parser edge cases"
 tsk append -e -- "Follow up"     # open $EDITOR before saving
-tsk drop -T tsk-12
-tsk abandon -T tsk-12
+tsk drop -t 12
+tsk abandon -t 12
 ```
 
 - `tsk list` prints the active queue top first.
-- `tsk show -T tsk-N` renders a task; add `-x` to include properties as YAML
+- `tsk show -t N` renders a task; add `-x` to include properties as YAML
   front matter, or `-R` for raw task text.
 - `tsk push -- "title"` creates a task at the top of the active queue.
 - `tsk append -- "title"` creates a task at the bottom of the active queue.
 - Add `-e` to `push` or `append` to open `$EDITOR` before saving the new task.
-- `tsk drop -x -T tsk-N` records the current git commit in `closed-on`, marks
+- `tsk drop -x -t N` records the current git commit in `closed-on`, marks
   work done, and removes it from the active queue. Use plain `drop` only when
   there is no implementing commit to record.
-- `tsk abandon -T tsk-N` removes a task from the active queue without changing
+- `tsk abandon -t N` removes a task from the active queue without changing
   its status.
 - All commands that reference a task may implicitly reference to task at the top
-  of the active queue by omitting selectors such as `-T tsk-N`.
+  of the active queue by omitting selectors. Favor using explicit selectors such as `-t
+  N` or `-t N`
 
 ## Creating and editing tasks
 
@@ -58,33 +59,67 @@ the same way `tsk edit` parses its editor buffer: first line is the title,
 the remainder is the body. Round-trips a task across repos:
 
 ```sh
-tsk show -T tsk-9 -R | tsk push -      # import a task from another clone
-tsk show -T tsk-9 -R | tsk append -    # ...or append it to the bottom
+tsk show -t 9 -R | tsk push -      # import a task from another clone
+tsk show -t 9 -R | tsk append -    # ...or append it to the bottom
 ```
 
 Edit an existing task interactively with `$EDITOR`, or replace only the body
 non-interactively with `-b`. Use `-b -` to read the replacement body from stdin:
 
 ```sh
-tsk edit -T tsk-12
-tsk edit -T tsk-12 -b "New body text"
-printf 'New body from a script\n' | tsk edit -T tsk-12 -b -
+tsk edit -t 12
+tsk edit -t 12 -b "New body text"
+printf 'New body from a script\n' | tsk edit -t 12 -b -
 ```
 
 Reopen completed work when it becomes active again:
 
 ```sh
-tsk reopen -T tsk-12
-tsk reopen --no-queue -T tsk-12
+tsk reopen -t 12
+tsk reopen --no-queue -t 12
 ```
+
+## Task text syntax
+
+The first line is the title. The remaining lines form the body. Line breaks stay intact.
+Task text uses these markers, not standard Markdown emphasis:
+
+| Syntax | Meaning |
+| --- | --- |
+| `!important!` | Bold |
+| `*optional*` | Italic |
+| `_required_` | Underline |
+| `~obsolete~` | Strikethrough |
+| `=warning=` | Highlight |
+| `` `cargo test` `` | Inline code |
+| `[docs](https://example.com)` | External link |
+| `<https://example.com>` | Raw URL link |
+| `[[tsk-12]]` | Task link in the active namespace |
+| `[[claude/tsk-3]]` | Task link in another namespace |
+| `[> provision database <]` | Create a new dependency task |
+
+Keep inline markers on one line. Separate marked text from adjacent text with whitespace or punctuation.
+
+```sh
+tsk push -- "Deploy service
+Run \`cargo test\`. See [docs](https://example.com) and [[tsk-12]].
+Blocked by [> provision database <]."
+tsk follow -t 12           # list links
+tsk follow -t 12 -l 1      # open the first link
+```
+
+On save, `[> title <]` creates a task and becomes a task link.
+It also sets the protected `depends-on` and `blocks` properties.
+Ordinary task links reference existing tasks without creating dependencies.
+Use `tsk show -R` to print the text without rendering its markers.
 
 ## Queue order
 
 Move important work up and park lower-priority work at the bottom:
 
 ```sh
-tsk prioritize -T tsk-9
-tsk deprioritize -T tsk-15
+tsk prioritize -t 9
+tsk deprioritize -t 15
 tsk swap
 tsk rot
 tsk tor
@@ -99,7 +134,7 @@ tsk tor
 Every task, namespace, and queue is backed by git history:
 
 ```sh
-tsk log task -T tsk-9
+tsk log task -t 9
 tsk log namespace
 tsk log namespace claude
 tsk log queue
@@ -115,14 +150,14 @@ Share a task into another namespace when another user or agent needs a local id
 for the same underlying task:
 
 ```sh
-tsk share claude -T tsk-9
+tsk share claude -t 9
 ```
 
 Assign a task from the active queue to another queue's inbox:
 
 ```sh
-tsk assign review -T tsk-9
-tsk assign review -T tsk-9 -R ""
+tsk assign review -t 9
+tsk assign review -t 9 -R ""
 ```
 
 The `-R ""` form skips the default auto-push. Without it, assign tries to push
@@ -134,7 +169,7 @@ Work an inbox from the receiving queue:
 tsk queue switch review
 tsk inbox
 tsk accept
-tsk accept -T tsk-9
+tsk accept -t 9
 tsk accept review-1
 tsk reject review-2
 tsk inbox -R ""
@@ -146,7 +181,7 @@ tsk reject review-2 -R ""
   default.
 - `tsk accept [key]` moves an inbox item onto the active queue; with no key,
   it accepts the top inbox item.
-- `tsk accept -T tsk-N` moves an open task with no queue assignment onto the
+- `tsk accept -t N` moves an open task with no queue assignment onto the
   active queue.
 - `tsk reject [key]` returns an inbox item to its source queue's inbox.
 - Use `-R ""` on inbox, accept, or reject to skip the default remote action.
@@ -225,11 +260,9 @@ tsk git-push
 ## Agent rules of thumb
 
 - Run `tsk list` before choosing work unless the user gave an explicit task.
-- If in the tsk repo during development, use `cargo run --bin tsk --` to ensure local
-  changes are picked up and apply.
 - Commit completed code changes before dropping the task. Include the
   human-readable task id at the bottom of the commit message body, then drop the
-  task with `./target/release/tsk drop -x -T tsk-N` so `closed-on` records the
+  task with `./target/release/tsk drop -x -t N` so `closed-on` records the
   implementing commit. Drop without `-x` only when the user explicitly confirms
   or there is no code commit.
 - Treat properties and queue changes as user-visible state.
